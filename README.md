@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.1
+Version 0.12.2
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -170,9 +170,17 @@ Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.
    Lamellenmaße, keine Fenstermaße. Die **Grundflächen der Räume** stehen
    sehr wohl darin und werden mit übernommen.
 
-   Für die Datei gibt es **zwei Wege**, und der empfohlene führt am Browser
-   vorbei:
+   Dafür gibt es **drei Wege**, und der empfohlene braucht die Datei gar
+   nicht erst auf dem LoxBerry:
 
+   * **Einen Auszug einfügen.** Die Projektdatei ist knapp 4 MB — was das
+     Plugin daraus braucht, sind rund **2,5 kB**: je Rollladenbaustein ein
+     Titel und eine Himmelsrichtung, je Raum ein Titel und eine
+     Grundfläche. Das mitgelieferte PowerShell-Skript liest genau das auf
+     dem eigenen Rechner aus und legt es in die Zwischenablage; im Reiter
+     *Einstellungen* einfügen, Knopf drücken. **Kommt an jeder
+     Absendegrenze und an jedem Dateimanager vorbei.** Die Namensregeln
+     bleiben dabei im Plugin, damit alle Wege dieselben Kürzel ergeben.
    * **Datei auf den LoxBerry legen** — über die Windows-Freigabe, mit
      WinSCP oder per `scp`, nach `data/plugins/fensterbilanz/`. Sie steht
      dann im Reiter *Einstellungen* zur Auswahl. **Ohne Größenbeschränkung**,

@@ -346,10 +346,74 @@ function fb_glasdurchlass($cos_theta, $b0 = 0.10)
  * $modell: 'isotrop' oder 'hdkr'.
  * $hoehe_geo und $ts werden nur fuer HDKR gebraucht.
  */
+/**
+ * Welcher Anteil des Fensters liegt im Schatten des Dachueberstands?
+ *
+ * Gerechnet wird ueber den PROFILWINKEL - den Winkel, unter dem die Sonne
+ * in der senkrechten Ebene des Fensters steht:
+ *
+ *     tan(Profil) = tan(Sonnenhoehe) / cos(seitlicher Versatz)
+ *
+ * Er ist steiler als die Sonnenhoehe, sobald die Sonne seitlich steht, und
+ * genau er bestimmt, wie weit der Schatten an der Wand herunterreicht:
+ *
+ *     Schattentiefe = Auskragung * tan(Profil)
+ *
+ * Davon geht der Abstand zwischen Ueberstand und Fensteroberkante ab; was
+ * uebrig bleibt, liegt auf dem Fenster.
+ *
+ * WAS DIESE RECHNUNG NICHT KANN: sie nimmt einen Ueberstand an, der sich
+ * seitlich weit genug erstreckt. Ein kurzes Vordach ueber einem breiten
+ * Fenster verschattet in Wirklichkeit nur einen Teil der Breite. Das waere
+ * mit zwei weiteren Zahlen zu haben und ist bewusst nicht gebaut - der
+ * uebliche Fall ist ein durchlaufender Dachueberstand.
+ *
+ * @param float $hoehe   Sonnenhoehe in Grad
+ * @param float $az_sonne  Azimut der Sonne in Grad
+ * @param float $az_fenster Azimut des Fensters in Grad
+ * @param float $tiefe   Auskragung des Ueberstands in cm
+ * @param float $ueber   Abstand Ueberstand zur Fensteroberkante in cm
+ * @param float $fenster Hoehe des Fensters in cm
+ *
+ * Rueckgabe: 0.0 (gar nicht verschattet) bis 1.0 (ganz im Schatten).
+ */
+function fb_dach_anteil($hoehe, $az_sonne, $az_fenster, $tiefe, $ueber, $fenster)
+{
+    $tiefe = (float) $tiefe;
+    $fenster = max(1.0, (float) $fenster);
+    if ($tiefe <= 0.0) { return 0.0; }
+    $hoehe = (float) $hoehe;
+    /* Steht die Sonne unter dem Horizont, gibt es ohnehin keine direkte
+     * Strahlung - und ein Schatten von nichts ist keiner. */
+    if ($hoehe <= 0.0) { return 0.0; }
+
+    $d = deg2rad((float) $az_sonne - (float) $az_fenster);
+    $c = cos($d);
+    /* Steht die Sonne hinter dem Fenster oder streift sie die Scheibe
+     * genau von der Seite, faellt kein direktes Licht darauf. Dann
+     * verschattet auch der Ueberstand nichts - es gibt nichts zu
+     * verschatten. */
+    if ($c <= 0.001) { return 0.0; }
+
+    $profil = atan(tan(deg2rad($hoehe)) / $c);
+    $schatten = $tiefe * tan($profil);
+    $auf_dem_fenster = $schatten - (float) $ueber;
+    if ($auf_dem_fenster <= 0.0) { return 0.0; }
+    return fb_klemme($auf_dem_fenster / $fenster, 0.0, 1.0);
+}
+
 function fb_fensterstrahlung($dni, $diffus_h, $global, $cos_theta, $neigung,
                              $albedo = 0.2, $b0 = 0.10, $verschattet = false,
-                             $modell = 'isotrop', $hoehe_geo = 0.0, $ts = 0)
+                             $modell = 'isotrop', $hoehe_geo = 0.0, $ts = 0,
+                             $dach_frei = 1.0)
 {
+    /* $dach_frei ist der Anteil des Fensters, den der Dachueberstand NICHT
+     * verschattet - 1.0 heisst "kein Ueberstand oder er wirft gerade
+     * keinen Schatten". Er wirkt auf den direkten Anteil UND auf den
+     * Sonnenkranz: beide kommen aus der Richtung der Sonne, und der
+     * Ueberstand steht dazwischen. Das Himmelslicht und der Bodenreflex
+     * bleiben unberuehrt - die kommen von ueberall her. */
+    $dach_frei = fb_klemme((float) $dach_frei, 0.0, 1.0);
     $n = deg2rad((float) $neigung);
     $dni = (float) $dni;
     $diffus_h = (float) $diffus_h;
@@ -357,7 +421,7 @@ function fb_fensterstrahlung($dni, $diffus_h, $global, $cos_theta, $neigung,
 
     $direkt = 0.0;
     if (!$verschattet && $cos_theta > 0.0) {
-        $direkt = $dni * $cos_theta * fb_glasdurchlass($cos_theta, $b0);
+        $direkt = $dni * $cos_theta * fb_glasdurchlass($cos_theta, $b0) * $dach_frei;
     }
 
     $himmelsanteil = (1.0 + cos($n)) / 2.0;
@@ -407,7 +471,10 @@ function fb_fensterstrahlung($dni, $diffus_h, $global, $cos_theta, $neigung,
 
     if (!$verschattet && $cos_theta > 0.0 && $hoehe_geo > 1.0 && $ai > 0.0) {
         $rb = $cos_theta / sin(deg2rad($hoehe_geo));
-        $kranz = $diffus_h * $ai * $rb * fb_glasdurchlass($cos_theta, $b0);
+        /* Auch der Sonnenkranz kommt aus der Richtung der Sonne - der
+         * Dachueberstand steht also ebenso davor wie vor dem direkten
+         * Anteil. Ihn hier auszunehmen waere ein stiller Zuschlag. */
+        $kranz = $diffus_h * $ai * $rb * fb_glasdurchlass($cos_theta, $b0) * $dach_frei;
     }
 
     $horizontglied = 1.0 + $f * pow(sin($n / 2.0), 3);
@@ -427,6 +494,121 @@ function fb_fensterstrahlung($dni, $diffus_h, $global, $cos_theta, $neigung,
  * Unlesbare Paare werden ABGEWIESEN, nicht zurechtgebogen - der Aufrufer
  * bekommt die Fehlerliste im zweiten Rueckgabewert und meldet sie.
  */
+/**
+ * Aus Laienangaben die Stuetzpunkte des Verschattungshorizonts rechnen.
+ *
+ * WARUM DIE FUENF ZAHLEN SO UND NICHT ANDERS:
+ *
+ * Gefragt wird nach einer DRAUFSICHT - geradeaus und seitlich in Metern.
+ * Das ist die einzige Ansicht, die ein Laie wirklich hat: eine Landkarte
+ * oder ein Luftbild, und beides kann man ausmessen. Ein einzelner
+ * "Abstand" waere zweideutig - Luftlinie zum Hindernis oder senkrecht von
+ * der Fassade weg? -, und an genau dieser Zweideutigkeit sind zwei
+ * Beispiele in der Hilfe um drei Grad auseinandergelaufen.
+ *
+ * Gerechnet wird je Kante UND fuer die Mitte, denn die Mitte steht naeher
+ * und damit hoeher als die Kanten. Zwischen den Stuetzpunkten rechnet das
+ * Plugin geradeaus; ohne den mittleren Punkt saehe ein breites Haus wie
+ * eine flache Mulde aus, und es waere zu niedrig angesetzt.
+ *
+ * Die beiden Nullpunkte aussen sagen "hier hoert es auf". Ohne sie gilt
+ * ausserhalb der jeweils naechste Punkt weiter - das Haus reichte dann
+ * rechnerisch bis zum Horizont. Sie zu vergessen ist der wahrscheinlichste
+ * Fehler beim Eintragen von Hand, und deshalb setzt sie diese Funktion.
+ *
+ * @param float $h_hindernis  Hoehe des Hindernisses ueber dem Boden, m
+ * @param float $h_fenster    Hoehe des Fensters ueber dem Boden, m
+ * @param float $vor          Entfernung geradeaus vom Fenster weg, m
+ * @param float $seit         seitlicher Versatz der Mitte, m (negativ = links)
+ * @param float $breite       Breite des Hindernisses, m
+ * @param int   $azimut       Himmelsrichtung des Fensters, Grad
+ *
+ * Rueckgabe: array(Zeichenkette, Meldungen, Einzelwerte). Eine leere
+ * Zeichenkette heisst: hier gibt es nichts einzutragen, und die Meldungen
+ * sagen warum.
+ */
+function fb_horizont_rechnen($h_hindernis, $h_fenster, $vor, $seit, $breite, $azimut)
+{
+    $meldungen = array();
+    $h = (float) $h_hindernis - (float) $h_fenster;
+    $vor = (float) $vor;
+    $seit = (float) $seit;
+    $breite = max(0.0, (float) $breite);
+
+    if ($vor <= 0.0) {
+        return array('', array('ABSTAND'), array());
+    }
+    if ($h <= 0.0) {
+        /* Ein Hindernis unterhalb der Fensteroberkante verschattet dieses
+         * Fenster nicht. Das ist kein Fehler, sondern eine Antwort. */
+        return array('', array('ZU_NIEDRIG'), array());
+    }
+
+    /* Die drei Stellen: linke Kante, Mitte, rechte Kante. */
+    $stellen = array($seit - $breite / 2.0, $seit, $seit + $breite / 2.0);
+    $punkte = array();
+    foreach ($stellen as $x) {
+        /* Waagerechte Entfernung zu DIESER Stelle - nicht der Wert aus dem
+         * Formular. Die Kanten stehen schraeg und damit weiter weg. */
+        $weite = sqrt($vor * $vor + $x * $x);
+        $hoehe = rad2deg(atan2($h, $weite));
+        $ab = rad2deg(atan2($x, $vor));
+        $punkte[] = array(
+            'azimut' => fb_azimut_normieren((float) $azimut + $ab),
+            'hoehe'  => $hoehe,
+            'weite'  => $weite,
+        );
+    }
+
+    /* Bei einem schmalen Hindernis fallen die drei Stellen zusammen -
+     * dann genuegt ein Punkt. Doppelte Stuetzpunkte auf demselben Azimut
+     * waeren keine Verfeinerung, sondern eine Fehlerquelle. */
+    $liste = array();
+    foreach ($punkte as $pt) {
+        $az = (int) round($pt['azimut']);
+        $ho = (int) round($pt['hoehe']);
+        if ($liste && (int) $liste[count($liste) - 1][0] === $az) {
+            if ($ho > (int) $liste[count($liste) - 1][1]) {
+                $liste[count($liste) - 1][1] = $ho;
+            }
+            continue;
+        }
+        $liste[] = array($az, $ho);
+    }
+
+    /* Die Nullpunkte aussen, vier Grad daneben. Vier, weil der Rand eines
+     * Gebaeudes keine Kante im Sonnenlauf ist: die Sonne braucht ein paar
+     * Minuten, um daran vorbeizuwandern. */
+    $links  = fb_azimut_normieren($liste[0][0] - 4);
+    $rechts = fb_azimut_normieren($liste[count($liste) - 1][0] + 4);
+    $alle = array_merge(array(array((int) round($links), 0)), $liste,
+                        array(array((int) round($rechts), 0)));
+
+    $teile = array();
+    foreach ($alle as $pt) { $teile[] = $pt[0] . ':' . $pt[1]; }
+
+    if ($punkte[1]['hoehe'] >= 80.0) {
+        $meldungen[] = 'SEHR_HOCH';
+    }
+    if ($breite <= 0.0) {
+        $meldungen[] = 'OHNE_BREITE';
+    }
+    return array(implode(', ', $teile), $meldungen, array(
+        'hoehe_mitte' => round($punkte[1]['hoehe'], 1),
+        'hoehe_kante' => round($punkte[0]['hoehe'], 1),
+        'weite_mitte' => round($punkte[1]['weite'], 1),
+        'ueber'       => round($h, 2),
+    ));
+}
+
+/** Einen Winkel auf 0 bis unter 360 Grad bringen. */
+function fb_azimut_normieren($grad)
+{
+    $g = fmod((float) $grad, 360.0);
+    if ($g < 0.0) { $g += 360.0; }
+    return $g;
+}
+
 function fb_horizont_lesen($text)
 {
     $punkte = array();

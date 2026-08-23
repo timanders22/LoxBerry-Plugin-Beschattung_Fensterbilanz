@@ -9,6 +9,21 @@ PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
 BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
 
 rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+
+# ERST NENNEN, DANN LOESCHEN.
+#
+# In diesem Ordner liegt nicht nur, was das Plugin selbst angelegt hat: die
+# Anleitung hat lange dazu geraten, die .Loxone-Projektdatei hierher zu
+# legen. Die ist Eigentum des Anwenders, mehrere Megabyte gross und nach
+# einem "rm -rf" weg - und zwar lautlos. Genau das ist einmal passiert:
+# die Datei war per scp kopiert, danach wurde das Plugin neu installiert,
+# und die Oberflaeche meldete nur noch, es liege nichts da.
+FREMD=$(find "$BASE/data/plugins/$PFOLDER" -maxdepth 2 -iname '*.Loxone' 2>/dev/null)
+if [ -n "$FREMD" ]; then
+    echo "<INFO> Diese Projektdatei(en) lagen im Datenordner und werden mit geloescht:"
+    echo "$FREMD" | sed 's/^/<INFO>    /'
+    echo "<INFO> Sie liegen auf dem PC weiterhin vor - das Plugin hat sie nur gelesen."
+fi
 rm -rf "$BASE/data/plugins/$PFOLDER"
 
 echo "<OK> Fensterbilanz entfernt, Sicherungsdatei und Messwerte geloescht."

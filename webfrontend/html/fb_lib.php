@@ -130,6 +130,18 @@ function fb_fenster_vorgabe()
          * Tief stehende Sonne blendet auch im Januar, wenn die Waerme
          * hochwillkommen ist. Wer beides in eine Zahl mischt, kann hinterher
          * nicht mehr sagen, warum ein Fenster zu ist. 0 = abgeschaltet. */
+        /* ---- Dachueberstand ----
+         * Das haeufigste Verschattungselement am Haus - und eines, das der
+         * Verschattungshorizont nicht abbilden kann: der Horizont nimmt die
+         * Sonne weg, wenn sie TIEF steht, ein Ueberstand, wenn sie HOCH
+         * steht. Alles in Zentimetern, weil ein Zollstock keine Meter mit
+         * Nachkommastellen anzeigt.
+         *
+         * 0 fuer die Auskragung heisst "kein Ueberstand" und schaltet die
+         * ganze Rechnung ab. */
+        'dach_tiefe'   => 0,      // Auskragung in cm
+        'dach_hoehe'   => 30,     // cm zwischen Ueberstand und Fensteroberkante
+        'fenster_hoehe' => 140,   // Hoehe des Fensters in cm
         'blend_hoehe'  => 0,    // Grad Sonnenhoehe, darunter blendet es
         'blend_winkel' => 40,   // Grad Einfallswinkel, darunter blendet es
         /* Nachtdaemmung: soll dieses Fenster nachts geschlossen werden? */
@@ -562,6 +574,9 @@ function fb_config_richten($cfg)
         $f['flaeche']   = round(fb_klemme((float) $f['flaeche'], 0.1, 30.0), 2);
         $f['gwert']     = (int) fb_klemme((int) $f['gwert'], 5, 95);
         $f['traegheit'] = (int) fb_klemme((int) $f['traegheit'], 0, 50);
+        $f['dach_tiefe']    = (int) fb_klemme((int) $f['dach_tiefe'], 0, 300);
+        $f['dach_hoehe']    = (int) fb_klemme((int) $f['dach_hoehe'], 0, 300);
+        $f['fenster_hoehe'] = (int) fb_klemme((int) $f['fenster_hoehe'], 20, 400);
         $f['blend_hoehe']  = (int) fb_klemme((int) $f['blend_hoehe'], 0, 60);
         $f['blend_winkel'] = (int) fb_klemme((int) $f['blend_winkel'], 5, 89);
         $f['daemmen']      = empty($f['daemmen']) ? 0 : 1;
@@ -1328,9 +1343,21 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
         $hindernis = count($punkte) > 0 ? fb_horizont_hoehe($punkte, $sonne['azimut']) : -90.0;
         $verschattet = ($sonne['hoehe_geo'] <= $hindernis);
 
+        /* DER DACHUEBERSTAND.
+         *
+         * Er verschattet von OBEN und damit genau umgekehrt zum Horizont:
+         * die hohe Sommersonne bleibt draussen, die tiefe Wintersonne kommt
+         * herein. Genau dafuer baut man ihn. Zurueck kommt der Anteil des
+         * Fensters, der im Schatten liegt - der Rest der direkten Strahlung
+         * geht durch. */
+        $dach_anteil = fb_dach_anteil($sonne['hoehe_geo'], $sonne['azimut'],
+                                      $f['azimut'], $f['dach_tiefe'],
+                                      $f['dach_hoehe'], $f['fenster_hoehe']);
+        $e['dach'] = (int) round($dach_anteil * 100.0);
         $strahlen = fb_fensterstrahlung($dni, $diffus, $global, $cos_theta, $f['neigung'],
                                         $cfg['albedo'] / 100.0, $cfg['iam_b0'] / 100.0,
-                                        $verschattet, $modell, $sonne['hoehe_geo'], $jetzt);
+                                        $verschattet, $modell, $sonne['hoehe_geo'], $jetzt,
+                                        1.0 - $dach_anteil);
         $glas = $strahlen['gesamt'];
         $e['glas'] = (int) round($glas);
         $e['kranz'] = (int) round($strahlen['kranz']);
@@ -1637,6 +1664,11 @@ function fb_begruendung($e, $sonne, $n_raum, $n_tag, $raum_ist, $raum_grenze,
         $t[] = sprintf('Einfall %d Grad zur Senkrechten', (int) $e['einfall']);
     } else {
         $t[] = 'Sonne steht hinter dem Fenster';
+    }
+    if (!empty($e['dach'])) {
+        /* Nur nennen, wenn er auch wirkt - ein Satzteil "0 Prozent
+         * verschattet" bei jedem Fenster den ganzen Winter waere Laerm. */
+        $t[] = sprintf('Dachueberstand verschattet %d Prozent des Glases', (int) $e['dach']);
     }
     if ($verschattet) {
         $t[] = 'vom eingetragenen Horizont verdeckt, nur Himmelslicht';
@@ -3054,11 +3086,11 @@ function fb_bericht_text($cfg, $bilanz, $stand)
  */
 function fb_projekt_lesen($inhalt)
 {
-    $liste = array();
+    $roh = array();
     $fehler = array();
     $inhalt = (string) $inhalt;
     if (strpos($inhalt, '<C Type="AutoJalousie"') === false) {
-        return array($liste, array('KEIN_AUTOJALOUSIE'));
+        return array(array(), array('KEIN_AUTOJALOUSIE'));
     }
     $laenge = strlen($inhalt);
     $pos = 0;
@@ -3101,18 +3133,146 @@ function fb_projekt_lesen($inhalt)
         if (preg_match('/<Co\s[^>]*K="DirTol"[^>]*\sDef="(-?\d+(?:\.\d+)?)"/', $blk, $m)) {
             $dirtol = (int) round((float) $m[1]);
         }
+        /* Ein Baustein, dessen Dir an einem Eingang haengt statt an einer
+         * Konstanten, hat hier keine ablesbare Zahl. Er wird mit null
+         * weitergereicht und in fb_projekt_liste_bauen() GEMELDET - eine
+         * erfundene 180 saehe aus wie eine abgelesene. */
+        $roh[] = array($titel, $dir, $dirtol);
+    }
+    return fb_projekt_liste_bauen($roh, $fehler);
+}
+
+/**
+ * Was steht in diesem Feld ab Werk?
+ *
+ * "Was muss ich hier eintragen?" ist die haeufigste Frage an eine
+ * Einstellungsseite. Die ehrlichste Antwort steht schon im Programm - der
+ * Vorgabewert -, und sie gehoert neben das Feld statt in eine Anleitung,
+ * die niemand daneben aufschlaegt.
+ *
+ * Gelesen wird aus fb_vorgaben(), nicht abgeschrieben: eine abgeschriebene
+ * Zahl waere beim naechsten Aendern der Vorgabe still falsch, und "still
+ * falsch" ist die schlechteste Sorte.
+ */
+function fb_abwerk($schluessel)
+{
+    $v = fb_vorgaben();
+    if (!isset($v[$schluessel])) { return ''; }
+    $w = $v[$schluessel];
+    if (is_array($w) || is_bool($w)) { return ''; }
+    /* Kommazahlen ohne Nachkommastellen sehen als "20" besser aus als als
+     * "20.0" - gemeint ist dasselbe. */
+    if (is_float($w) && $w == (int) $w) { $w = (int) $w; }
+    return sprintf(fb_t('EINST.AB_WERK'), (string) $w);
+}
+
+/**
+ * Der Vorlagenordner des Plugins - dort, wo auch die Sprachdateien liegen.
+ *
+ * Im Archiv und im installierten Zustand ist das nicht derselbe Pfad,
+ * deshalb eine Kandidatenliste statt einer festen Zeile.
+ */
+function fb_langdir_wurzel()
+{
+    $p = fb_paths();
+    $k = array();
+    if ($p['home'] !== '') {
+        $k[] = $p['home'] . '/templates/plugins/' . $p['plugin'];
+    }
+    $k[] = dirname(dirname(__DIR__)) . '/templates';
+    $k[] = dirname(__DIR__) . '/templates';
+    foreach ($k as $d) {
+        if (is_dir($d)) { return $d; }
+    }
+    return $k[count($k) - 1];
+}
+
+/**
+ * Einen eingefuegten AUSZUG lesen.
+ *
+ * DER DRITTE WEG - und der einzige, der ohne die Datei auf dem LoxBerry
+ * auskommt.
+ *
+ * Die Projektdatei ist knapp vier Megabyte gross. Was dieses Plugin daraus
+ * braucht, sind ein paar Kilobyte: je Rollladenbaustein ein Titel und eine
+ * Himmelsrichtung, je Raum ein Titel und eine Grundflaeche. Wer diesen
+ * Auszug auf dem eigenen Rechner erzeugt - das Skript dazu gibt es im
+ * Reiter Einstellungen zum Herunterladen - und hier einfuegt, kommt an
+ * jeder Absendegrenze und an jedem Dateimanager vorbei.
+ *
+ * Die NAMENSREGELN bleiben hier: was aus einem Bausteinnamen als Kuerzel
+ * und als Raumschluessel wird, entscheidet fb_projekt_liste_bauen() - fuer
+ * beide Wege dieselbe Stelle. Der Auszug traegt nur, was in der Datei
+ * stand.
+ *
+ * Rueckgabe: array(liste, fehler, raeume, mehrfach). Ein leerer erster
+ * Eintrag heisst: nichts brauchbar, und $fehler sagt warum.
+ */
+function fb_auszug_lesen($text)
+{
+    $text = trim((string) $text);
+    if ($text === '') { return array(array(), array('AUSZUG_LEER'), array(), array()); }
+    $d = json_decode($text, true);
+    if (!is_array($d) || !isset($d['fensterbilanz'])) {
+        return array(array(), array('AUSZUG_UNBEKANNT'), array(), array());
+    }
+    /* Die Fassung des Auszugs steht drin, damit ein alter Auszug nicht
+     * stillschweigend halb gelesen wird. Groesser als bekannt heisst:
+     * melden, nicht raten. */
+    if ((int) $d['fensterbilanz'] > 1) {
+        return array(array(), array('AUSZUG_ZU_NEU'), array(), array());
+    }
+    $roh_f = array();
+    if (isset($d['fenster']) && is_array($d['fenster'])) {
+        foreach ($d['fenster'] as $f) {
+            if (!is_array($f) || !isset($f['titel'])) { continue; }
+            $dir = (isset($f['dir']) && $f['dir'] !== null && $f['dir'] !== '')
+                   ? (int) round((float) $f['dir']) : null;
+            $roh_f[] = array((string) $f['titel'], $dir,
+                             isset($f['dirtol']) ? (int) $f['dirtol'] : null);
+        }
+    }
+    $roh_r = array();
+    if (isset($d['raeume']) && is_array($d['raeume'])) {
+        foreach ($d['raeume'] as $r) {
+            if (!is_array($r) || !isset($r['titel'])) { continue; }
+            $roh_r[] = array((string) $r['titel'],
+                             isset($r['qm']) ? (float) $r['qm'] : 0.0);
+        }
+    }
+    if (!$roh_f) { return array(array(), array('AUSZUG_OHNE_FENSTER'), array(), array()); }
+    list($liste, $fehler) = fb_projekt_liste_bauen($roh_f);
+    list($raeume, $mehrfach) = fb_projekt_raeume_bauen($roh_r);
+    return array($liste, $fehler, $raeume, $mehrfach);
+}
+
+/**
+ * Aus Titel und Himmelsrichtung die Vorschlagsliste bauen.
+ *
+ * Steht getrennt vom Lesen, weil es ZWEI Wege hierher gibt: die
+ * Projektdatei und der eingefuegte Auszug. Die Namensregeln - was aus einem
+ * Bausteinnamen als Kuerzel und als Raumschluessel wird - duerfen nur an
+ * einer Stelle stehen; zwei Kopien liefen auseinander, und dann hiesse
+ * dasselbe Fenster je nach Weg anders. Genau daran haengen die virtuellen
+ * Eingaenge in Loxone.
+ *
+ * $roh: Liste aus array(Titel, Dir, DirTol).
+ */
+function fb_projekt_liste_bauen($roh, $fehler = array())
+{
+    $liste = array();
+    foreach ($roh as $e) {
+        $titel = (string) $e[0];
+        $dir = $e[1];
         if ($dir === null) {
-            /* MELDEN, nicht raten. Ein Baustein, dessen Dir an einem
-             * Eingang haengt statt an einer Konstanten, hat hier keine
-             * ablesbare Zahl - und eine erfundene 180 saehe aus wie eine
-             * abgelesene. */
             $fehler[] = ($titel !== '' ? $titel : 'ohne Titel');
             continue;
         }
+        $dir = (int) $dir;
         $liste[] = array(
             'titel'   => $titel,
             'azimut'  => (($dir % 360) + 360) % 360,
-            'dirtol'  => $dirtol,
+            'dirtol'  => isset($e[2]) ? $e[2] : null,
             'kuerzel' => fb_kuerzel_vorschlag($titel),
             'raum'    => fb_raum_vorschlag($titel),
         );
@@ -3284,7 +3444,38 @@ function fb_projekt_ordner()
 {
     $p = fb_paths();
     $basis = $p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__));
-    $o = array($p['datadir'], $basis . '/data', '/tmp');
+    /* MEHRERE WURZELN, weil die Datei auf verschiedenen Wegen hereinkommt
+     * und jeder Weg woanders endet:
+     *
+     *   data/plugins/fensterbilanz  - der Ort, auf den die Anleitung zeigt
+     *   data/                       - was ueber die Windows-Freigabe kommt
+     *   /home/loxberry              - wo "scp datei loxberry@host:" landet
+     *   /tmp und LoxBerrys tmp      - was Werkzeuge dort ablegen
+     *   /media                      - USB-Stick
+     *
+     * Der LoxBerry-Dateimanager scheidet als Weg oft aus: er haengt an
+     * denselben PHP-Grenzen wie jede andere Absendung. Gemessen: eine
+     * Absendung ueber post_max_size laesst $_FILES und $_POST LEER, und ein
+     * Skript, das dort etwas erwartet, tut daraufhin schlicht nichts. */
+    /* KEIN BENUTZERVERZEICHNIS.
+     *
+     * Der erste Entwurf hatte /home/loxberry hingeschrieben - auf der
+     * Anlage, fuer die dieses Plugin gebaut ist, gibt es das Verzeichnis
+     * gar nicht, und dasselbe galt fuer /opt/loxberry/tmp. Zwei von sechs
+     * Wurzeln waren Zierde; aufgefallen ist es erst, als die Seite je
+     * Ordner ausgab, was sie dort vorfindet.
+     *
+     * Der zweite Entwurf hat das Heimatverzeichnis gemessen statt geraten -
+     * und war damit noch schlechter dran: auf einem LoxBerry kann das
+     * /opt/loxberry sein, also der ganze Baum. Zwei Ebenen tief durch alles
+     * zu laufen kostet Zeit, und zwar bei JEDEM Aufruf der
+     * Einstellungsseite. Gemessen im Pruefstand: die Vollprobe lief in die
+     * Zeitschranke.
+     *
+     * Die Anleitung nennt ohnehin einen vollstaendigen Zielpfad. Wer ihn
+     * abschreibt, landet nicht im Heimatverzeichnis. */
+    $o = array($p['datadir'], $basis . '/data',
+               (string) sys_get_temp_dir(), '/tmp', '/media', '/mnt');
     /* Doppelte herausnehmen, ohne die Reihenfolge zu verlieren: der eigene
      * Datenordner MUSS oben stehen, weil die Anleitung in der Oberflaeche
      * genau auf den ersten Eintrag zeigt.
@@ -3300,11 +3491,47 @@ function fb_projekt_ordner()
      * ueberspringt ihn. */
     $raus = array();
     foreach ($o as $d) {
+        $d = (string) $d;
         $k = rtrim(str_replace('\\', '/', $d), '/');
-        if ($k === '' || isset($raus[$k])) { continue; }
+        if ($d === '' || $k === '' || isset($raus[$k])) { continue; }
         $raus[$k] = $d;
     }
     return array_values($raus);
+}
+
+/**
+ * Welcher Ordner wird zum ABLEGEN empfohlen?
+ *
+ * Nicht einfach der erste der Suchliste. Der erste ist der Datenordner des
+ * Plugins - und der ist der einzige der ganzen Liste, den das Plugin selbst
+ * wieder loescht: die Deinstallation raeumt ihn mitsamt Inhalt weg, und
+ * viele Anwender deinstallieren vor einer Neuinstallation. Wer seine
+ * Projektdatei dorthin gelegt hat, findet sie danach nicht mehr, und die
+ * Seite sagt nur noch, es liege nichts da. Genau so ist es passiert.
+ *
+ * Empfohlen wird deshalb der erste Ordner, der DREI Bedingungen erfuellt:
+ * es gibt ihn, es laesst sich hineinschreiben, und ein Update oder eine
+ * Deinstallation dieses Plugins fasst ihn nicht an. Gibt es keinen solchen,
+ * bleibt der Datenordner - dann aber mit dem Hinweis, was ihm zustoesst.
+ *
+ * Rueckgabe: array(Pfad, ueberlebt_deinstallation).
+ */
+function fb_ablageordner($ordner = null, $eigener = null)
+{
+    /* Beide Argumente sind AUSSCHLIESSLICH fuer den Selbsttest da; die
+     * Oberflaeche ruft immer ohne auf. Ohne sie kam der Selbsttest an der
+     * entscheidenden Verzweigung gar nicht vorbei - im Pruefstand gibt es
+     * weder den Datenordner noch verlaesslich einen zweiten beschreibbaren
+     * Ordner, und beide Ruecknahmen blieben deshalb gruen. */
+    $p = fb_paths();
+    if ($ordner === null || !is_array($ordner)) { $ordner = fb_projekt_ordner(); }
+    if ($eigener === null) { $eigener = $p['datadir']; }
+    $eigen = rtrim(str_replace('\\', '/', $eigener), '/');
+    foreach ($ordner as $d) {
+        if (rtrim(str_replace('\\', '/', $d), '/') === $eigen) { continue; }
+        if (is_dir($d) && is_writable($d)) { return array($d, true); }
+    }
+    return array($eigener, false);
 }
 
 /**
@@ -3315,7 +3542,7 @@ function fb_projekt_ordner()
  * - das Formular nennt nur Ordnernummer und Dateinamen, und beides wird
  * gegen diese Liste gehalten.
  */
-function fb_projekt_dateien($hoechstens = 30, $ordner = null)
+function fb_projekt_dateien($hoechstens = 60, $ordner = null)
 {
     /* $ordner ist AUSSCHLIESSLICH fuer den Selbsttest da und wird von
      * keinem Handler gesetzt - die Oberflaeche ruft immer ohne auf. Der
@@ -3325,25 +3552,58 @@ function fb_projekt_dateien($hoechstens = 30, $ordner = null)
      * haben. Gemessen: sie hat C:\data\plugins\fensterbilanz erzeugt. */
     $liste = array();
     if ($ordner === null || !is_array($ordner)) { $ordner = fb_projekt_ordner(); }
+    /* ZWEI EBENEN TIEF, und nicht weiter.
+     *
+     * Tief genug fuer die Faelle, die wirklich vorkommen - ein Unterordner
+     * "Loxone" im Benutzerverzeichnis, ein USB-Stick unter /media/<name>.
+     * Und flach genug, dass die Seite nicht steht: /media und das
+     * Datenverzeichnis koennen viel enthalten, und diese Suche laeuft bei
+     * JEDEM Aufruf der Einstellungsseite. Die Schranke ist gewaehlt und
+     * nicht gemessen; sie begrenzt den Aufwand, nie das Ergebnis einer
+     * Rechnung. */
+    /* ZWEI SCHRANKEN, und beide begrenzen nur den AUFWAND.
+     *
+     * Die Zahl der Verzeichnisse allein genuegt nicht: ein einzelnes
+     * Verzeichnis mit zehntausend Eintraegen kostet mehr Zeit als
+     * vierhundert kleine. Deshalb zusaetzlich eine Uhr. Was danach nicht
+     * gefunden ist, wird nicht mehr gesucht - die Seite bleibt bedienbar,
+     * und der Weg ueber den Auszug steht ohnehin daneben. */
+    $besucht = 0;
+    $schluss = microtime(true) + 1.0;
     foreach ($ordner as $nr => $d) {
-        if (!is_dir($d) || !is_readable($d)) { continue; }
-        $eintraege = @scandir($d);
-        if (!is_array($eintraege)) { continue; }
-        foreach ($eintraege as $name) {
-            if ($name === '.' || $name === '..') { continue; }
-            if (!preg_match('/\.loxone$/i', $name)) { continue; }
-            $voll = $d . '/' . $name;
-            /* Kein Verzeichnis, keine Verknuepfung, lesbar - in dieser
-             * Reihenfolge. is_file() allein folgt einer Verknuepfung. */
-            if (is_link($voll) || !is_file($voll) || !is_readable($voll)) { continue; }
-            $liste[] = array(
-                'ordner'  => $nr,
-                'ordnerpfad' => $d,
-                'name'    => $name,
-                'pfad'    => $voll,
-                'groesse' => (int) filesize($voll),
-                'zeit'    => (int) filemtime($voll),
-            );
+        $warten = array(array($d, 0));
+        while ($warten) {
+            list($jetzt_d, $tiefe) = array_shift($warten);
+            if ($besucht++ > 400 || microtime(true) > $schluss) { break 2; }
+            if (!is_dir($jetzt_d) || !is_readable($jetzt_d)) { continue; }
+            $eintraege = @scandir($jetzt_d);
+            if (!is_array($eintraege)) { continue; }
+            foreach ($eintraege as $name) {
+                if ($name === '.' || $name === '..' || $name[0] === '.') { continue; }
+                $voll = $jetzt_d . '/' . $name;
+                /* Verknuepfungen werden NICHT verfolgt - weder als Ordner
+                 * noch als Datei. Eine Verknuepfung koennte aus der Wurzel
+                 * herausfuehren, und dann waere die Wurzelliste nur noch
+                 * Zierde. */
+                if (is_link($voll)) { continue; }
+                if (is_dir($voll)) {
+                    if ($tiefe < 2) { $warten[] = array($voll, $tiefe + 1); }
+                    continue;
+                }
+                if (!preg_match('/\.loxone$/i', $name)) { continue; }
+                if (!is_file($voll) || !is_readable($voll)) { continue; }
+                $liste[] = array(
+                    'ordner'  => $nr,
+                    'ordnerpfad' => $d,
+                    /* Der Pfad INNERHALB der Wurzel - das ist es, was das
+                     * Formular nennt, und nur er wird wiedergefunden. */
+                    'rel'     => ltrim(substr($voll, strlen($d)), '/'),
+                    'name'    => $name,
+                    'pfad'    => $voll,
+                    'groesse' => (int) filesize($voll),
+                    'zeit'    => (int) filemtime($voll),
+                );
+            }
         }
     }
     usort($liste, function ($a, $b) {
@@ -3360,10 +3620,10 @@ function fb_projekt_dateien($hoechstens = 30, $ordner = null)
  * Formular uebernommen. Damit ist es gleichgueltig, was im Formular steht:
  * was nicht in der frisch gelesenen Liste vorkommt, gibt es nicht.
  */
-function fb_projekt_datei_finden($ordner, $name, $ordnerliste = null)
+function fb_projekt_datei_finden($ordner, $rel, $ordnerliste = null)
 {
-    foreach (fb_projekt_dateien(30, $ordnerliste) as $d) {
-        if ((int) $d['ordner'] === (int) $ordner && $d['name'] === (string) $name) {
+    foreach (fb_projekt_dateien(60, $ordnerliste) as $d) {
+        if ((int) $d['ordner'] === (int) $ordner && $d['rel'] === (string) $rel) {
             return $d;
         }
     }
@@ -3392,11 +3652,9 @@ function fb_projekt_datei_finden($ordner, $name, $ordnerliste = null)
  */
 function fb_projekt_raeume($inhalt)
 {
-    $flaechen = array();
-    $mehrfach = array();
-    $titel_zu = array();
+    $roh = array();
     if (!preg_match_all('/<C\s[^>]*Type="Place"[^>]*>/', (string) $inhalt, $mm)) {
-        return array($flaechen, $mehrfach);
+        return array(array(), array());
     }
     foreach ($mm[0] as $tag) {
         if (!preg_match('/\sTitle="([^"]*)"/', $tag, $t)) { continue; }
@@ -3410,6 +3668,25 @@ function fb_projekt_raeume($inhalt)
          * Bausteinnamen den Raumschluessel, und nur wenn beide Seiten
          * denselben Weg gehen, treffen sie sich. Gemessen an der echten
          * Datei: 15 von 16 Fensterraeumen finden so ihren Place. */
+        $roh[] = array($titel, $qm);
+    }
+    return fb_projekt_raeume_bauen($roh);
+}
+
+/**
+ * Aus Titel und Grundflaeche die Raumliste bauen - fuer BEIDE Wege.
+ *
+ * $roh: Liste aus array(Titel, m2).
+ */
+function fb_projekt_raeume_bauen($roh)
+{
+    $flaechen = array();
+    $mehrfach = array();
+    $titel_zu = array();
+    foreach ($roh as $e) {
+        $titel = (string) $e[0];
+        $qm = (float) $e[1];
+        if ($qm <= 0.0) { continue; }
         $r = fb_raum_vorschlag($titel);
         if ($r === '') { continue; }
         if (isset($titel_zu[$r]) && abs($flaechen[$r] - $qm) > 0.05) {
