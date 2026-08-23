@@ -847,8 +847,25 @@ $ort = array(48.2, 11.6);
     if (is_dir($ordner_t)
         && @file_put_contents($probe_lox, '<C Type="AutoJalousie"></C>') !== false
         && @file_put_contents($probe_txt, 'kein Projekt') !== false) {
+        /* Und eine Ebene tiefer - "scp" und die Windows-Freigabe legen die
+         * Datei gern in einem Unterordner ab, und eine Suche, die nur die
+         * oberste Ebene sieht, findet sie dann nicht. */
+        @mkdir($ordner_t . '/unterordner', 0700, true);
+        @file_put_contents($ordner_t . '/unterordner/__tief.Loxone', '<C Type="AutoJalousie"></C>');
         $namen_g = array();
-        foreach (fb_projekt_dateien(30, $liste_t) as $g) { $namen_g[] = $g['name']; }
+        $rel_g = array();
+        foreach (fb_projekt_dateien(60, $liste_t) as $g) {
+            $namen_g[] = $g['name'];
+            $rel_g[] = $g['rel'];
+        }
+        $pruefe('Eine Datei im Unterordner wird auch gefunden',
+                in_array('unterordner/__tief.Loxone', $rel_g, true), implode(', ', $rel_g));
+        $pruefe('Sie wird ueber ihren Pfad in der Wurzel wiedergefunden',
+                fb_projekt_datei_finden(0, 'unterordner/__tief.Loxone', $liste_t) !== null,
+                'gefunden');
+        $pruefe('Ihr blosser Name genuegt dafuer NICHT',
+                fb_projekt_datei_finden(0, '__tief.Loxone', $liste_t) === null,
+                'abgewiesen');
         $pruefe('Eine abgelegte .Loxone-Datei wird gefunden',
                 in_array('__probe.Loxone', $namen_g, true),
                 implode(', ', $namen_g));
@@ -871,6 +888,8 @@ $ort = array(48.2, 11.6);
         $pruefe('Ein Name aus dem falschen Ordner wird nicht gefunden',
                 fb_projekt_datei_finden(99, '__probe.Loxone', $liste_t) === null,
                 'abgewiesen');
+        @unlink($ordner_t . '/unterordner/__tief.Loxone');
+        @rmdir($ordner_t . '/unterordner');
         @unlink($probe_lox);
         @unlink($probe_txt);
         @rmdir($ordner_t);
@@ -883,6 +902,52 @@ $ort = array(48.2, 11.6);
                 false, $ordner_t);
     }
 
+    /* --- Der empfohlene Ablageordner ist NICHT der eigene Datenordner ---
+     *
+     * Der Datenordner ist der einzige der ganzen Liste, den das Plugin
+     * selbst wieder loescht - die Deinstallation raeumt ihn mitsamt Inhalt
+     * weg. Solange es einen anderen beschreibbaren Ordner gibt, zeigt die
+     * Anleitung dorthin. Das ist kein Schoenheitsfehler: auf der Anlage,
+     * fuer die dieses Plugin gebaut ist, ist genau so eine per scp
+     * kopierte Projektdatei verschwunden, und die Seite meldete danach nur,
+     * es liege nichts da. */
+    $basis_a = sys_get_temp_dir() . '/fb_ablage_' . getmypid();
+    $eigen_a = $basis_a . '/data/plugins/fensterbilanz';
+    $ander_a = $basis_a . '/data';
+    @mkdir($eigen_a, 0700, true);
+    if (is_dir($eigen_a) && is_writable($eigen_a) && is_writable($ander_a)) {
+        /* Lage 1: es gibt einen zweiten beschreibbaren Ordner. Dann darf
+         * NICHT der eigene Datenordner empfohlen werden - er wird bei der
+         * Deinstallation mitsamt Inhalt geloescht. */
+        list($a1, $b1) = fb_ablageordner(array($eigen_a, $ander_a), $eigen_a);
+        $pruefe('Mit einem zweiten Ordner wird nicht der eigene Datenordner empfohlen',
+                $a1 === $ander_a && $b1 === true, $a1 . ' bleibt=' . var_export($b1, true));
+        /* Lage 2: es gibt keinen anderen. Dann bleibt der Datenordner - und
+         * es muss GESAGT werden, dass er eine Deinstallation nicht
+         * ueberlebt. Stillschweigend waere schlimmer als gar kein Vorschlag. */
+        list($a2, $b2) = fb_ablageordner(array($eigen_a), $eigen_a);
+        $pruefe('Ohne Ausweichordner bleibt der Datenordner - mit Warnung',
+                $a2 === $eigen_a && $b2 === false, $a2 . ' bleibt=' . var_export($b2, true));
+        /* Lage 3: ein Ordner, den es nicht gibt, wird nicht empfohlen. */
+        list($a3, $b3) = fb_ablageordner(array($eigen_a, $basis_a . '/gibtsnicht'), $eigen_a);
+        $pruefe('Ein nicht vorhandener Ordner wird nicht empfohlen',
+                $a3 === $eigen_a && $b3 === false, $a3);
+        @rmdir($eigen_a);
+        @rmdir($basis_a . '/data/plugins');
+        @rmdir($basis_a . '/data');
+        @rmdir($basis_a);
+    } else {
+        @rmdir($eigen_a);
+        @rmdir($basis_a . '/data/plugins');
+        @rmdir($basis_a . '/data');
+        @rmdir($basis_a);
+        $pruefe('Ein Probeordner unter dem Systemtemp laesst sich anlegen', false, $basis_a);
+    }
+    /* Und im BETRIEB: was empfohlen wird, muss auch durchsucht werden. */
+    list($ablage_t) = fb_ablageordner();
+    $pruefe('Der empfohlene Ordner steht auch in der Suchliste',
+            in_array($ablage_t, fb_projekt_ordner(), true), $ablage_t);
+
     /* Und die Ordnerliste des BETRIEBS - dass der eigene Datenordner darin
      * an erster Stelle steht, ist keine Kosmetik: die Anleitung in der
      * Oberflaeche nennt genau diesen ersten Eintrag als Ablageort. */
@@ -892,6 +957,214 @@ $ort = array(48.2, 11.6);
             && rtrim(str_replace('\\', '/', $ordnerliste_t[0]), '/')
                === rtrim(str_replace('\\', '/', fb_paths()['datadir']), '/'),
             isset($ordnerliste_t[0]) ? $ordnerliste_t[0] : 'leer');
+
+    /* --- Der Dachueberstand ---
+     *
+     * Er verschattet von OBEN und damit genau umgekehrt zum Horizont. Die
+     * Zahlen hier stehen so in der Hilfe; laufen sie auseinander, ist
+     * entweder die Hilfe falsch oder die Rechnung.
+     *
+     * 80 cm Auskragung, 30 cm ueber einem 140 cm hohen Suedfenster. */
+    $pruefe('Bei 15 Grad Sonnenhoehe erreicht der Schatten das Fenster nicht',
+            abs(fb_dach_anteil(15, 180, 180, 80, 30, 140)) < 0.001,
+            round(fb_dach_anteil(15, 180, 180, 80, 30, 140) * 100, 1) . ' Prozent');
+    $pruefe('Bei 45 Grad liegen rund 36 Prozent im Schatten',
+            abs(fb_dach_anteil(45, 180, 180, 80, 30, 140) - 0.357) < 0.01,
+            round(fb_dach_anteil(45, 180, 180, 80, 30, 140) * 100, 1) . ' Prozent');
+    $pruefe('Bei 60 Grad liegen rund 78 Prozent im Schatten',
+            abs(fb_dach_anteil(60, 180, 180, 80, 30, 140) - 0.775) < 0.02,
+            round(fb_dach_anteil(60, 180, 180, 80, 30, 140) * 100, 1) . ' Prozent');
+    /* DIE ENTSCHEIDENDE EIGENSCHAFT: hoehere Sonne, mehr Schatten. Genau
+     * umgekehrt zum Horizont - und wer das verwechselt, baut die
+     * Verschattung falsch herum ein. */
+    $pruefe('Je hoeher die Sonne, desto mehr Schatten - anders als beim Horizont',
+            fb_dach_anteil(60, 180, 180, 80, 30, 140)
+            > fb_dach_anteil(30, 180, 180, 80, 30, 140),
+            round(fb_dach_anteil(30, 180, 180, 80, 30, 140), 3) . ' -> '
+            . round(fb_dach_anteil(60, 180, 180, 80, 30, 140), 3));
+    /* Seitlich stehende Sonne wirft einen TIEFEREN Schatten - der
+     * Profilwinkel ist steiler als die Sonnenhoehe. */
+    $pruefe('Seitlich stehende Sonne verschattet staerker',
+            fb_dach_anteil(45, 225, 180, 80, 30, 140)
+            > fb_dach_anteil(45, 180, 180, 80, 30, 140),
+            round(fb_dach_anteil(45, 180, 180, 80, 30, 140), 3) . ' -> '
+            . round(fb_dach_anteil(45, 225, 180, 80, 30, 140), 3));
+    $pruefe('Ohne Auskragung verschattet nichts',
+            fb_dach_anteil(60, 180, 180, 0, 30, 140) === 0.0, 'null');
+    $pruefe('Steht die Sonne hinter dem Fenster, verschattet der Ueberstand nichts',
+            fb_dach_anteil(45, 10, 180, 80, 30, 140) === 0.0, 'null');
+    $pruefe('Unter dem Horizont gibt es keinen Schatten',
+            fb_dach_anteil(-5, 180, 180, 80, 30, 140) === 0.0, 'null');
+    $pruefe('Der Anteil bleibt zwischen 0 und 1',
+            fb_dach_anteil(85, 180, 180, 300, 0, 20) <= 1.0
+            && fb_dach_anteil(85, 180, 180, 300, 0, 20) >= 0.0,
+            fb_dach_anteil(85, 180, 180, 300, 0, 20));
+    /* Und die WIRKUNG im Rechenkern: derselbe Fall einmal mit und einmal
+     * ohne Ueberstand - die Wattzahl muss kleiner werden. */
+    $cfg_dach = fb_config_richten($cfg);
+    $cfg_dach['fenster'][0]['dach_tiefe'] = 80;
+    $cfg_dach['fenster'][0]['dach_hoehe'] = 30;
+    $cfg_dach['fenster'][0]['fenster_hoehe'] = 140;
+    $cfg_dach = fb_config_richten($cfg_dach);
+    $ohne_d = fb_rechnen($cfg, $mess_august, $t0, array())['fenster']['1'];
+    $mit_d  = fb_rechnen($cfg_dach, $mess_august, $t0, array())['fenster']['1'];
+    $pruefe('Ein Dachueberstand senkt die Wattzahl am Glas',
+            $mit_d['watt'] < $ohne_d['watt'] && $mit_d['watt'] > 0,
+            $ohne_d['watt'] . ' W ohne, ' . $mit_d['watt'] . ' W mit Ueberstand');
+    $pruefe('Und der Begruendungssatz nennt ihn',
+            strpos($mit_d['begruendung'], 'Dachueberstand') !== false,
+            $mit_d['begruendung']);
+
+    /* --- Der Horizontrechner ---
+     *
+     * Gerechnet wird der Fall, den ein Anwender in der Hilfe liest: ein
+     * Haus 12 m hoch, 13 m geradeaus, mittig vor einem Suedfenster. Die 39
+     * Grad in der Mitte stehen dort als Beispiel - stimmen sie hier nicht,
+     * ist entweder die Hilfe falsch oder die Rechnung. */
+    list($ht, $hm, $hw) = fb_horizont_rechnen(12, 1.5, 13, 0, 30, 180);
+    $pruefe('Der Rechner trifft das Beispiel aus der Hilfe (39 Grad)',
+            abs($hw['hoehe_mitte'] - 38.9) < 0.15, $hw['hoehe_mitte'] . ' Grad');
+    $pruefe('Die Mitte steht hoeher als die Kante - sie ist naeher',
+            $hw['hoehe_mitte'] > $hw['hoehe_kante'],
+            $hw['hoehe_mitte'] . ' gegen ' . $hw['hoehe_kante']);
+    $pruefe('Die Stuetzpunkte lassen sich wieder einlesen',
+            count(fb_horizont_lesen($ht)[0]) === 5 && !fb_horizont_lesen($ht)[1], $ht);
+    /* DIE BEIDEN NULLPUNKTE.
+     *
+     * Ohne sie gilt ausserhalb der jeweils naechste Punkt weiter - das Haus
+     * reichte rechnerisch bis zum Horizont und naehme dem Fenster den
+     * ganzen Tag. Sie zu vergessen ist der wahrscheinlichste Fehler beim
+     * Eintragen von Hand; genau deshalb setzt der Rechner sie. */
+    list($hp) = fb_horizont_lesen($ht);
+    $pruefe('Der Rechner setzt die Nullpunkte an den Raendern',
+            abs(fb_horizont_hoehe($hp, 180)) > 30.0
+            && abs(fb_horizont_hoehe($hp, 0)) < 0.001,
+            'bei 180 Grad ' . round(fb_horizont_hoehe($hp, 180), 1)
+            . ', bei 0 Grad ' . round(fb_horizont_hoehe($hp, 0), 1));
+
+    /* Zweites Beispiel aus der Hilfe: 13 m hoch, 18 m Luftlinie, 25 Grad
+     * links. In der Draufsicht sind das 16,3 m geradeaus und 7,6 m
+     * seitlich - und dieselben 33 Grad. */
+    list($ht2, $hm2, $hw2) = fb_horizont_rechnen(13, 1.5, 16.3, -7.6, 15, 180);
+    $pruefe('Der Rechner trifft auch das zweite Beispiel (33 Grad)',
+            abs($hw2['hoehe_mitte'] - 32.6) < 0.2, $hw2['hoehe_mitte'] . ' Grad');
+    $pruefe('Und die Luftlinie stimmt mit den 18 m der Hilfe ueberein',
+            abs($hw2['weite_mitte'] - 18.0) < 0.1, $hw2['weite_mitte'] . ' m');
+    $pruefe('Ein Hindernis links liegt im Azimut UNTER der Fensterrichtung',
+            fb_horizont_lesen($ht2)[0][1][0] < 180.0, $ht2);
+
+    /* Ueber Norden hinweg: die Reihe laeuft von 3xx nach 0xx. Das
+     * Einlesen und die Auswertung muessen das aushalten - sonst waere der
+     * Rechner fuer jedes Nordfenster eine Falle. */
+    list($ht3) = fb_horizont_rechnen(10, 1.5, 12, 0, 20, 0);
+    list($hp3, $hu3) = fb_horizont_lesen($ht3);
+    $pruefe('Ein Hindernis vor einem Nordfenster laeuft ueber 0 Grad',
+            !$hu3 && fb_horizont_hoehe($hp3, 0) > 30.0
+            && fb_horizont_hoehe($hp3, 350) > 25.0
+            && abs(fb_horizont_hoehe($hp3, 180)) < 0.001,
+            $ht3 . ' | bei 350 Grad ' . round(fb_horizont_hoehe($hp3, 350), 1));
+
+    /* Und was der Rechner NICHT tut. */
+    list($ht4, $hm4) = fb_horizont_rechnen(1.0, 1.5, 10, 0, 5, 180);
+    $pruefe('Ein Hindernis unter der Fensteroberkante ergibt nichts',
+            $ht4 === '' && in_array('ZU_NIEDRIG', $hm4, true), implode(',', $hm4));
+    list($ht5, $hm5) = fb_horizont_rechnen(10, 1.5, 0, 0, 5, 180);
+    $pruefe('Ohne Entfernung wird nicht gerechnet, sondern gemeldet',
+            $ht5 === '' && in_array('ABSTAND', $hm5, true), implode(',', $hm5));
+    list($ht6, $hm6) = fb_horizont_rechnen(10, 1.5, 1.0, 0, 0, 180);
+    $pruefe('Ein sehr steiles Hindernis wird gemeldet',
+            in_array('SEHR_HOCH', $hm6, true), implode(',', $hm6));
+
+    /* --- Der eingefuegte Auszug ---
+     *
+     * DIE EINE FRAGE, DIE ZAEHLT: liefert er dasselbe wie die Datei? Zwei
+     * Wege, die verschiedene Kuerzel ergeben, waeren schlimmer als ein Weg
+     * weniger - in Loxone haengen die virtuellen Eingaenge an genau diesen
+     * Namen. Deshalb werden hier beide Wege mit DEMSELBEN Inhalt gefahren
+     * und Zeichen fuer Zeichen verglichen. */
+    $xml_a = '<C Type="AutoJalousie" Title="Rollladen EG Wohnzimmer Fenster">'
+           . '<Co K="Dir" Def="194"/><Co K="DirTol" Def="85"/></C>'
+           . '<C Type="AutoJalousie" Title="Rollläden OG Schlafzimmer Tür">'
+           . '<Co K="Dir" Def="14"/></C>'
+           . '<C Type="Place" Title="EG Wohnzimmer" Sqm="25"/>'
+           . '<C Type="Place" Title="OG Schlafzimmer" Sqm="19"/>';
+    $json_a = '{"fensterbilanz":1,"quelle":"probe.Loxone","fenster":['
+            . '{"titel":"Rollladen EG Wohnzimmer Fenster","dir":194,"dirtol":85},'
+            . '{"titel":"Rollläden OG Schlafzimmer Tür","dir":14,"dirtol":null}],'
+            . '"raeume":[{"titel":"EG Wohnzimmer","qm":25},'
+            . '{"titel":"OG Schlafzimmer","qm":19}]}';
+    list($l_datei, $f_datei) = fb_projekt_lesen($xml_a);
+    list($r_datei, $m_datei) = fb_projekt_raeume($xml_a);
+    list($l_ausz, $f_ausz, $r_ausz, $m_ausz) = fb_auszug_lesen($json_a);
+    $pruefe('Der Auszug ergibt dieselbe Fensterliste wie die Datei',
+            json_encode($l_datei) === json_encode($l_ausz),
+            'Datei ' . json_encode($l_datei) . ' | Auszug ' . json_encode($l_ausz));
+    $pruefe('Der Auszug ergibt dieselben Raumflaechen wie die Datei',
+            json_encode($r_datei) === json_encode($r_ausz),
+            'Datei ' . json_encode($r_datei) . ' | Auszug ' . json_encode($r_ausz));
+    $pruefe('Und der Umlaut ueberlebt beide Wege',
+            isset($l_ausz[1]) && strpos($l_ausz[1]['titel'], 'Rollläden') === 0
+            && $l_ausz[1]['raum'] === 'og_schlaf',
+            isset($l_ausz[1]) ? $l_ausz[1]['titel'] . ' -> ' . $l_ausz[1]['raum'] : 'fehlt');
+
+    /* Ein Baustein ohne ablesbare Richtung wird GEMELDET, nicht geraten -
+     * auf beiden Wegen gleich. Eine erfundene 180 saehe aus wie eine
+     * abgelesene, und das Fenster wuerde ein halbes Jahr lang falsch
+     * beschattet. */
+    list($l_o, $f_o, $r_o, $m_o) = fb_auszug_lesen(
+        '{"fensterbilanz":1,"fenster":[{"titel":"Ohne Richtung","dir":null},'
+        . '{"titel":"Mit Richtung","dir":90}]}');
+    $pruefe('Ein Auszugseintrag ohne Richtung wird gemeldet und uebergangen',
+            count($l_o) === 1 && in_array('Ohne Richtung', $f_o, true),
+            count($l_o) . ' Fenster, gemeldet: ' . implode(',', $f_o));
+
+    /* Und was NICHT gelesen werden darf. Jede dieser Zeilen steht fuer eine
+     * Zwischenablage, die etwas anderes enthielt, als der Anwender dachte. */
+    /* Geprueft wird der GRUND, nicht nur das Abweisen. Sonst faellt es
+     * nicht auf, wenn zufaelliger Text aus der Zwischenablage als "kein
+     * Fenster im Auszug" gemeldet wird - der Anwender sucht dann am
+     * falschen Ende. Gefunden hat diese Luecke die Eichung: die Ruecknahme
+     * der Kopfzeilenpruefung blieb gruen. */
+    foreach (array(
+        array('AUSZUG_LEER',         '   '),
+        array('AUSZUG_UNBEKANNT',    'irgendein Text aus der Zwischenablage'),
+        array('AUSZUG_UNBEKANNT',    '{"etwas":"anderes"}'),
+        array('AUSZUG_UNBEKANNT',    '[1,2,3]'),
+        array('AUSZUG_ZU_NEU',       '{"fensterbilanz":2,"fenster":[{"titel":"A","dir":1}]}'),
+        array('AUSZUG_OHNE_FENSTER', '{"fensterbilanz":1,"fenster":[]}'),
+    ) as $fall) {
+        list($erwartet, $text) = $fall;
+        list($l_x, $f_x, $r_x, $m_x) = fb_auszug_lesen($text);
+        $pruefe('Abgewiesen mit dem richtigen Grund: ' . $erwartet,
+                $l_x === array() && isset($f_x[0]) && $f_x[0] === $erwartet,
+                'gemeldet: ' . implode(',', $f_x));
+    }
+
+    /* DIE VERDRAHTUNG SELBST.
+     *
+     * Dass Datei und Auszug dasselbe liefern, beweist nicht, dass sie das
+     * Richtige liefern: eine gemeinsame Funktion irrt fuer beide gleich.
+     * Also wird nachgesehen, ob in der Liste wirklich das steht, was die
+     * Namensregeln sagen. Auch das hat die Eichung gefunden - die
+     * Ruecknahme "Kuerzel anders bilden" blieb gruen. */
+    $titel_v = 'Rollläden OG Schlafzimmer Valerie Fenster';
+    list($l_v) = fb_projekt_liste_bauen(array(array($titel_v, 194, 85)));
+    $pruefe('Das Kuerzel in der Liste kommt aus fb_kuerzel_vorschlag()',
+            isset($l_v[0]) && $l_v[0]['kuerzel'] === fb_kuerzel_vorschlag($titel_v),
+            (isset($l_v[0]) ? $l_v[0]['kuerzel'] : 'fehlt')
+            . ' gegen ' . fb_kuerzel_vorschlag($titel_v));
+    $pruefe('Der Raumschluessel in der Liste kommt aus fb_raum_vorschlag()',
+            isset($l_v[0]) && $l_v[0]['raum'] === fb_raum_vorschlag($titel_v),
+            (isset($l_v[0]) ? $l_v[0]['raum'] : 'fehlt')
+            . ' gegen ' . fb_raum_vorschlag($titel_v));
+
+    /* Ein halber Auszug - beim Einfuegen abgeschnitten - ist kein gueltiges
+     * JSON und muss deshalb ebenso abgewiesen werden. Gemessen, weil
+     * abgeschnittene Zwischenablagen der wahrscheinlichste Fehlerfall
+     * ueberhaupt sind. */
+    list($l_h, $f_h) = fb_auszug_lesen(substr($json_a, 0, (int) (strlen($json_a) / 2)));
+    $pruefe('Abgewiesen: ein abgeschnittener Auszug', $l_h === array() && $f_h !== array(),
+            implode(',', $f_h));
 
     /* --- Die Raumflaechen aus der Projektdatei ---
      *

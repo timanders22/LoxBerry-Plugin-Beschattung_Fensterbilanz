@@ -101,6 +101,57 @@ if ($fb_post) {
 $fb_ergaenzt = fb_cfg_vervollstaendigen();
 
 /* ---------------- Vorlagen herunterladen ---------------- */
+/* Das Auslese-Skript zum Herunterladen.
+ *
+ * Es liegt im Vorlagenordner und nicht unter html/: dort waere es ohne
+ * Anmeldung abrufbar. Es enthaelt zwar kein Geheimnis, aber der Grundsatz
+ * gilt trotzdem - was zum Plugin gehoert, geht durch den angemeldeten
+ * Bereich. */
+if ($fb_post && isset($_POST['auszug_skript'])) {
+    $fb_skript = fb_langdir_wurzel() . '/fensterbilanz_auszug.ps1';
+    $fb_inhalt_s = is_file($fb_skript) ? fb_holen_datei($fb_skript) : false;
+    if ($fb_inhalt_s === false) {
+        $fb_fehler[] = fb_t('PROJEKT.SKRIPT_FEHLT');
+        $fb_tab = 'tab-settings';
+    } else {
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="fensterbilanz_auszug.ps1"');
+        echo $fb_inhalt_s;
+        exit;
+    }
+}
+
+/* Der eingefuegte Auszug.
+ *
+ * Ein paar Kilobyte Text in einem Formularfeld - daran scheitert keine
+ * Absendegrenze, kein Dateimanager und keine Freigabe. Ausgewertet wird er
+ * mit denselben Namensregeln wie die Datei selbst. */
+if ($fb_post && isset($_POST['auszug_lesen'])) {
+    $fb_tab = 'tab-settings';
+    $fb_text_a = isset($_POST['auszug']) && is_string($_POST['auszug']) ? $_POST['auszug'] : '';
+    list($fb_l_a, $fb_f_a, $fb_r_a, $fb_m_a) = fb_auszug_lesen($fb_text_a);
+    if (!$fb_l_a) {
+        $fb_grund_a = isset($fb_f_a[0]) ? (string) $fb_f_a[0] : 'AUSZUG_UNBEKANNT';
+        $fb_fehler[] = fb_t('PROJEKT.' . (in_array($fb_grund_a, array('AUSZUG_LEER',
+            'AUSZUG_UNBEKANNT', 'AUSZUG_ZU_NEU', 'AUSZUG_OHNE_FENSTER'), true)
+            ? $fb_grund_a : 'AUSZUG_UNBEKANNT'));
+    } else {
+        fb_json_schreiben($fb_p['datadir'] . '/vorschlag.json',
+            array('zeit' => time(), 'liste' => $fb_l_a,
+                  'unlesbar' => $fb_f_a, 'raeume' => $fb_r_a), 0644);
+        $fb_meldungen[] = sprintf(fb_t('PROJEKT.AUSZUG_GELESEN'),
+            count($fb_l_a), count($fb_r_a), round(strlen($fb_text_a) / 1024.0, 1));
+        if ($fb_m_a) {
+            $fb_namen_a = array();
+            foreach ($fb_m_a as $fb_tt) { $fb_namen_a[] = $fb_tt[0] . ' / ' . $fb_tt[1]; }
+            $fb_fehler[] = sprintf(fb_t('PROJEKT.RAEUME_DOPPELT'), fb_liste_kurz($fb_namen_a));
+        }
+        if ($fb_f_a) {
+            $fb_fehler[] = sprintf(fb_t('PROJEKT.UNLESBAR'), fb_liste_kurz($fb_f_a));
+        }
+    }
+}
+
 if ($fb_post && isset($_POST['vorlage'])) {
     $fb_welche = is_string($_POST['vorlage']) ? $_POST['vorlage'] : '';
     list($fb_name, $fb_inhalt) = ($fb_welche === 'vq') ? fb_vorlage_out() : fb_vorlage();
@@ -273,6 +324,7 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
         return isset($a[$i]) ? $fb_sauber($a[$i]) : '';
     };
     $fb_neu = array();
+    $fb_geleert = array();
     $fb_kuerzel_gesehen = array();
     /* Nur EIN Fall blockiert das Speichern, und er wird hier als Merker
      * gefuehrt - nicht durch Nachsehen im Meldungstext. Ein Blockieren, das
@@ -298,6 +350,9 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
             'flaeche'   => array('f_flaeche', 0.1, 30.0, 'EINST.L_FLAECHE', 2),
             'gwert'     => array('f_gwert', 5, 95, 'EINST.L_GWERT', 0),
             'traegheit' => array('f_traegheit', 0, 50, 'EINST.L_TRAEGHEIT', 0),
+            'dach_tiefe'    => array('f_dach_t', 0, 300, 'EINST.L_DACH_TIEFE', 0),
+            'dach_hoehe'    => array('f_dach_h', 0, 300, 'EINST.L_DACH_HOEHE', 0),
+            'fenster_hoehe' => array('f_fh', 20, 400, 'EINST.L_FENSTER_HOEHE', 0),
             'blend_hoehe'  => array('f_blend_h', 0, 60, 'EINST.L_BLEND_HOEHE', 0),
             'blend_winkel' => array('f_blend_w', 5, 89, 'EINST.L_BLEND_WINKEL', 0),
         ) as $fb_f => $fb_d) {
@@ -349,6 +404,23 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
                                        implode(' | ', $fb_unlesbar));
             }
         }
+        /* ZEILE LEEREN.
+         *
+         * Aus der Projektdatei kommt nicht nur, was ein Fenster ist: in
+         * dieser Anlage stand eine "Beamerleinwand" unter den
+         * AutoJalousie-Bausteinen. Sie gehoert wieder heraus, und ohne
+         * diesen Haken ginge das nur, indem man jedes Feld der Zeile von
+         * Hand leert - und dabei eines uebersieht.
+         *
+         * Geleert wird auf die VORGABE, nicht auf leere Zeichenketten:
+         * eine Zeile mit Azimut 0 und Flaeche 0 waere etwas anderes als
+         * eine unbenutzte. Und gemeldet wird es, mit Namen - ein Haken,
+         * der lautlos eine Zeile wegnimmt, ist ein Loeschwerkzeug ohne
+         * Quittung. */
+        if (!empty($_POST['f_loeschen'][$fb_i])) {
+            if ($f['kuerzel'] !== '') { $fb_geleert[] = $f['kuerzel']; }
+            $f = fb_fenster_vorgabe();
+        }
         $fb_neu[$fb_i] = $f;
     }
     /* Beanstandungen melden, aber speichern, was in Ordnung ist - sonst
@@ -362,6 +434,11 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
         if (fb_config_speichern($fb_neu_cfg)) {
             fb_config_freigeben($fb_sperre); $fb_sperre = null;
             $fb_meldungen[] = fb_t('ALLG.GESPEICHERT');
+            if ($fb_geleert) {
+                $fb_meldungen[] = sprintf(fb_t('EINST.GELEERT'),
+                    count($fb_geleert), fb_liste_kurz($fb_geleert));
+                fb_log('Fensterzeilen geleert: ' . implode(', ', $fb_geleert));
+            }
             fb_log('Fensterliste gespeichert (' . count(fb_fenster()) . ' belegte Zeilen).');
             /* Nur bei einer echten Aenderung neu rechnen - Begruendung beim
              * Modell-Handler weiter oben. */
@@ -372,6 +449,147 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
     }
     fb_config_freigeben($fb_sperre);
     $fb_tab = 'tab-settings';
+}
+
+/* ---------------- Luecken in der Fensterliste schliessen ----------------
+ *
+ * Die Zeilennummer ist mehr als eine Ordnungszahl: die Tagesbilanz merkt
+ * sich die Wattstunden JE NUMMER. Wuerde man nur die Zeilen verschieben,
+ * lieferte der Tagesbericht am Abend die Wattstunden des falschen Fensters.
+ * Deshalb wandert die Bilanz mit.
+ *
+ * Die Namen in Loxone bleiben unberuehrt - die virtuellen Eingaenge heissen
+ * nach dem Kuerzel und nicht nach der Zeile.
+ */
+if ($fb_post && isset($_POST['luecken_schliessen'])) {
+    $fb_tab = 'tab-settings';
+    $fb_sperre = fb_config_sperre();
+    $fb_cfg_l = fb_config();
+    $fb_alt_l = array();
+    $fb_neu_l = array();
+    foreach ($fb_cfg_l['fenster'] as $fb_li => $fb_lf) {
+        if ($fb_lf['kuerzel'] !== '') {
+            $fb_alt_l[] = $fb_li;          // wo es stand
+            $fb_neu_l[] = $fb_lf;          // was dort stand
+        }
+    }
+    $fb_luecken = 0;
+    foreach ($fb_alt_l as $fb_neu_nr => $fb_alt_nr) {
+        if ($fb_alt_nr !== $fb_neu_nr) { $fb_luecken++; }
+    }
+    if ($fb_luecken === 0) {
+        $fb_meldungen[] = fb_t('EINST.LUECKEN_KEINE');
+    } else {
+        for ($fb_li = 0; $fb_li < FB_FENSTER; $fb_li++) {
+            $fb_cfg_l['fenster'][$fb_li] = isset($fb_neu_l[$fb_li])
+                ? $fb_neu_l[$fb_li] : fb_fenster_vorgabe();
+        }
+        $fb_neu_cfg_l = fb_config_richten($fb_cfg_l);
+        if (fb_config_speichern($fb_neu_cfg_l)) {
+            fb_config_freigeben($fb_sperre); $fb_sperre = null;
+            /* DIE TAGESBILANZ MIT UMSCHREIBEN.
+             *
+             * Sie ist nach Zeilennummer abgelegt. Ohne diesen Schritt
+             * traegt nach dem Zusammenruecken jedes Fenster die
+             * Wattstunden seines Nachbarn - und niemand merkt es, weil
+             * beide Zahlen plausibel aussehen. */
+            $fb_bil_l = fb_json_lesen($fb_p['bilanz']);
+            if (isset($fb_bil_l['fenster']) && is_array($fb_bil_l['fenster'])) {
+                $fb_bf = array();
+                $fb_bs = array();
+                foreach ($fb_alt_l as $fb_neu_nr => $fb_alt_nr) {
+                    /* Die Bilanz zaehlt ab 1, die Konfiguration ab 0. */
+                    $fb_a = (string) ($fb_alt_nr + 1);
+                    $fb_n = (string) ($fb_neu_nr + 1);
+                    if (isset($fb_bil_l['fenster'][$fb_a])) {
+                        $fb_bf[$fb_n] = $fb_bil_l['fenster'][$fb_a];
+                    }
+                    if (isset($fb_bil_l['spitze'][$fb_a])) {
+                        $fb_bs[$fb_n] = $fb_bil_l['spitze'][$fb_a];
+                    }
+                }
+                $fb_bil_l['fenster'] = $fb_bf;
+                if ($fb_bs) { $fb_bil_l['spitze'] = $fb_bs; }
+                fb_json_schreiben($fb_p['bilanz'], $fb_bil_l, 0644);
+            }
+            $fb_meldungen[] = sprintf(fb_t('EINST.LUECKEN_ZU'),
+                $fb_luecken, count($fb_alt_l));
+            fb_log('Luecken in der Fensterliste geschlossen: '
+                 . $fb_luecken . ' Zeilen verschoben.');
+            fb_lauf(true);
+        } else {
+            $fb_fehler[] = fb_t('FEHLER.SPEICHERN');
+        }
+    }
+    fb_config_freigeben($fb_sperre);
+}
+
+/* ---------------- Der Horizontrechner ----------------
+ *
+ * Fuenf Zahlen aus einer Draufsicht, heraus kommen die Stuetzpunkte. Der
+ * Knopf "Berechnen" zeigt nur; erst der zweite Knopf traegt ein. Gerechnet
+ * wird dabei BEIDE Male neu aus den Formularfeldern und nicht aus einem
+ * versteckten Feld - was der Anwender sieht, ist dann garantiert das, was
+ * eingetragen wird.
+ */
+$fb_rechner = null;
+if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_eintragen']))) {
+    $fb_tab = 'tab-settings';
+    $fb_rz = function ($name, $vorgabe = 0.0) {
+        if (!isset($_POST[$name]) || !is_string($_POST[$name])) { return $vorgabe; }
+        $roh = trim(str_replace(',', '.', $_POST[$name]));
+        if ($roh === '' || !is_numeric($roh)) { return $vorgabe; }
+        return (float) $roh;
+    };
+    $fb_zeile_r = isset($_POST['h_zeile']) && is_string($_POST['h_zeile'])
+                  ? (int) $_POST['h_zeile'] : -1;
+    $fb_cfg_r = fb_config();
+    $fb_az_r = ($fb_zeile_r >= 0 && $fb_zeile_r < FB_FENSTER)
+               ? (int) $fb_cfg_r['fenster'][$fb_zeile_r]['azimut'] : -1;
+    if ($fb_az_r < 0 || $fb_cfg_r['fenster'][$fb_zeile_r]['kuerzel'] === '') {
+        $fb_fehler[] = fb_t('EINST.R_KEIN_FENSTER');
+    } else {
+        list($fb_r_text, $fb_r_meld, $fb_r_werte) = fb_horizont_rechnen(
+            $fb_rz('h_hoehe'), $fb_rz('h_fenster', 1.5), $fb_rz('h_vor'),
+            $fb_rz('h_seit'), $fb_rz('h_breite'), $fb_az_r);
+        foreach ($fb_r_meld as $fb_mm) {
+            if ($fb_mm === 'ABSTAND')    { $fb_fehler[] = fb_t('EINST.R_ABSTAND'); }
+            if ($fb_mm === 'ZU_NIEDRIG') { $fb_meldungen[] = fb_t('EINST.R_ZU_NIEDRIG'); }
+            if ($fb_mm === 'SEHR_HOCH')  { $fb_meldungen[] = fb_t('EINST.R_SEHR_HOCH'); }
+            if ($fb_mm === 'OHNE_BREITE'){ $fb_meldungen[] = fb_t('EINST.R_OHNE_BREITE'); }
+        }
+        if ($fb_r_text !== '') {
+            $fb_rechner = array('text' => $fb_r_text, 'werte' => $fb_r_werte,
+                                'zeile' => $fb_zeile_r,
+                                'kuerzel' => $fb_cfg_r['fenster'][$fb_zeile_r]['kuerzel']);
+            if (isset($_POST['horizont_eintragen'])) {
+                $fb_sperre = fb_config_sperre();
+                $fb_cfg_e = fb_config();
+                $fb_alt_h = trim((string) $fb_cfg_e['fenster'][$fb_zeile_r]['horizont']);
+                /* ANHAENGEN, nicht ersetzen - ausser der Anwender will es.
+                 * Ein Fenster kann mehrere Hindernisse haben, und ein
+                 * Rechner, der die vorige Eingabe stillschweigend
+                 * ueberschreibt, ist keine Hilfe, sondern eine Falle. */
+                $fb_ersetzen = !empty($_POST['h_ersetzen']) || $fb_alt_h === '';
+                $fb_cfg_e['fenster'][$fb_zeile_r]['horizont'] = $fb_ersetzen
+                    ? $fb_r_text : ($fb_alt_h . ', ' . $fb_r_text);
+                $fb_neu_r = fb_config_richten($fb_cfg_e);
+                if (fb_config_speichern($fb_neu_r)) {
+                    fb_config_freigeben($fb_sperre); $fb_sperre = null;
+                    $fb_meldungen[] = sprintf(
+                        fb_t($fb_ersetzen ? 'EINST.R_GESETZT' : 'EINST.R_ANGEHAENGT'),
+                        $fb_zeile_r + 1, $fb_rechner['kuerzel'],
+                        $fb_neu_r['fenster'][$fb_zeile_r]['horizont']);
+                    fb_log('Horizont fuer ' . $fb_rechner['kuerzel'] . ' aus dem Rechner: '
+                         . $fb_neu_r['fenster'][$fb_zeile_r]['horizont']);
+                    fb_lauf(true);
+                } else {
+                    $fb_fehler[] = fb_t('FEHLER.SPEICHERN');
+                }
+                fb_config_freigeben($fb_sperre);
+            }
+        }
+    }
 }
 
 /* ---------------- Speichern: die Raumflaechen ----------------
@@ -491,6 +709,10 @@ if ($fb_post && isset($_POST['projekt_datei'])) {
     $fb_o = isset($_POST['d_ordner']) && is_string($_POST['d_ordner'])
             ? (int) $_POST['d_ordner'] : -1;
     $fb_n = isset($_POST['d_name']) && is_string($_POST['d_name']) ? $_POST['d_name'] : '';
+    /* $fb_n ist der Pfad INNERHALB der Wurzel, nicht nur der Dateiname:
+     * gesucht wird zwei Ebenen tief, und zwei Unterordner duerfen dieselbe
+     * Datei tragen. Gehalten wird er trotzdem nur gegen die frisch gelesene
+     * Liste - was dort nicht vorkommt, gibt es nicht. */
     $fb_d = ($fb_n === '') ? null : fb_projekt_datei_finden($fb_o, $fb_n);
     if ($fb_d === null) {
         $fb_fehler[] = fb_t('PROJEKT.DATEI_WEG');
@@ -529,12 +751,11 @@ if ($fb_post && isset($_POST['projekt_lesen'])) {
          * Ohne die Zahlen sucht der Anwender an der falschen Stelle, und
          * ohne den Ordner haelt er die Sache fuer erledigt, sobald er
          * merkt, dass er dafuer an die php.ini muesste. */
-        $fb_ord = fb_projekt_ordner();
+        list($fb_ord_a) = fb_ablageordner();
         $fb_fehler[] = sprintf(fb_t('PROJEKT.UPLOAD_FEHLER'),
             (int) $_FILES['projekt']['error'],
             (string) ini_get('upload_max_filesize'),
-            (string) ini_get('post_max_size'),
-            isset($fb_ord[0]) ? $fb_ord[0] : '');
+            (string) ini_get('post_max_size'), $fb_ord_a);
     } else {
         $fb_roh_projekt = fb_holen_datei($_FILES['projekt']['tmp_name']);
         $fb_projekt_auswerten($fb_roh_projekt);
@@ -771,6 +992,53 @@ if ($fb_rahmen) {
    einen eigenen Rollbehaelter. Ohne ihn ist auf einem schmalen Schirm die
    letzte Spalte unerreichbar - nicht bloss unbequem. */
 .sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+/* EIN ROLLBALKEN, DER KLEBEN BLEIBT.
+ *
+ * Der eine am Tabellenende genuegt nicht: wer in Zeile 3 einer
+ * dreissigzeiligen Tabelle arbeitet, musste ans Ende rollen, dort nach
+ * rechts schieben und wieder nach oben - und das bei jeder Spalte neu.
+ *
+ * Ein Balken alle fuenf Zeilen waere der naheliegende Gedanke und
+ * funktioniert nicht: er saesse INNERHALB des Rollbehaelters und wanderte
+ * beim Schieben mit, liefe also genau dann aus dem Bild, wenn man ihn
+ * braucht. Dieser hier klebt statt dessen am unteren Bildschirmrand,
+ * solange die Tabelle zu sehen ist - erreichbar aus jeder Zeile.
+ *
+ * Er wird von fbRollbalken() mit der Tabelle gekoppelt und erscheint nur,
+ * wenn es ueberhaupt etwas zu schieben gibt. */
+.sm-rollen-unten {
+  position: -webkit-sticky; position: sticky; bottom: 0; z-index: 5;
+  overflow-x: auto; overflow-y: hidden;
+  background: rgba(255,255,255,0.92);
+  border-top: 1px solid rgba(0,0,0,0.12);
+  margin: 0 0 10px 0;
+}
+.sm-rollen-unten > div { height: 1px; }
+
+/* DER EIGENE ROLLBALKEN DES BEHAELTERS WIRD AUSGEBLENDET.
+ *
+ * Sonst stehen zwei uebereinander - einer vom Behaelter, einer vom
+ * klebenden Balken. Geschoben wird weiterhin: mit dem Rad, mit dem Finger
+ * und ueber den klebenden Balken. Nur der doppelte Strich ist weg. */
+.sm-breit.sm-hat-balken { scrollbar-width: none; -ms-overflow-style: none; }
+.sm-breit.sm-hat-balken::-webkit-scrollbar { width: 0; height: 0; }
+
+/* DIE ERSTE SPALTE BLEIBT STEHEN.
+ *
+ * Beim Schieben nach rechts verschwindet sonst die Zeilennummer - und
+ * damit die einzige Angabe, an der man erkennt, welches Fenster man
+ * gerade bearbeitet. Eine zweite Nummernspalte am Ende waere die
+ * Notloesung; eine stehenbleibende erste Spalte ist die richtige.
+ *
+ * Der Hintergrund muss deckend sein, sonst scheint der Text der
+ * Nachbarspalten beim Schieben durch. */
+.sm-breit .sm-tbl th:first-child,
+.sm-breit .sm-tbl td:first-child {
+  position: -webkit-sticky; position: sticky; left: 0; z-index: 3;
+  background: #fff;
+  box-shadow: 1px 0 0 rgba(0,0,0,0.10);
+}
+.sm-breit .sm-tbl th:first-child { z-index: 4; background: #eef3e6; }
 .sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
@@ -835,6 +1103,57 @@ if ($fb_rahmen) {
 .sm-log { background: #1e1e1e; color: #ddd; font-family: monospace; font-size: 0.82em;
   padding: 10px; border-radius: 6px; max-height: 460px; overflow: auto; white-space: pre-wrap; }
 </style>
+<script>
+/* Jeder breiten Tabelle einen Rollbalken NACH OBEN geben.
+ *
+ * Angehaengt wird nur dort, wo wirklich mehr Inhalt als Platz ist -
+ * ein Balken ueber einer Tabelle, die ohnehin passt, waere Zierde. Die
+ * Breite wird bei jeder Groessenaenderung neu genommen, sonst stimmt sie
+ * nach dem Drehen eines Tablets nicht mehr. */
+function fbRollbalken() {
+  var kaesten = document.querySelectorAll('.sm-breit');
+  for (var i = 0; i < kaesten.length; i++) {
+    var kasten = kaesten[i];
+    var bar = kasten.nextElementSibling;
+    var neu = false;
+    if (!bar || bar.className !== 'sm-rollen-unten') {
+      bar = document.createElement('div');
+      bar.className = 'sm-rollen-unten';
+      bar.appendChild(document.createElement('div'));
+      neu = true;
+    }
+    if (kasten.scrollWidth <= kasten.clientWidth + 1) {
+      if (!neu && bar.parentNode) { bar.parentNode.removeChild(bar); }
+      kasten.className = kasten.className.replace(' sm-hat-balken', '');
+      continue;
+    }
+    bar.firstChild.style.width = kasten.scrollWidth + 'px';
+    /* Erst jetzt den eigenen Rollbalken des Behaelters ausblenden - vorher
+     * waere die Tabelle ohne Bedienung, falls dieses Skript nicht laeuft. */
+    if (kasten.className.indexOf('sm-hat-balken') < 0) {
+      kasten.className += ' sm-hat-balken';
+    }
+    if (neu) {
+      /* Hinter den Behaelter, nicht davor: nur so kann er unten kleben
+       * bleiben, solange die Tabelle im Bild ist. */
+      kasten.parentNode.insertBefore(bar, kasten.nextSibling);
+      (function (o, k) {
+        var sperre = false;
+        o.addEventListener('scroll', function () {
+          if (sperre) { return; } sperre = true; k.scrollLeft = o.scrollLeft; sperre = false;
+        });
+        k.addEventListener('scroll', function () {
+          if (sperre) { return; } sperre = true; o.scrollLeft = k.scrollLeft; sperre = false;
+        });
+      })(bar, kasten);
+    }
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', fbRollbalken);
+} else { fbRollbalken(); }
+window.addEventListener('resize', fbRollbalken);
+</script>
 
 <div class="sm-wrap">
 
@@ -961,6 +1280,7 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_breite"><?= fb_e(fb_t('EINST.L_BREITE')) ?></label>
   <input data-role="none" type="text" id="fb_breite" name="breite" value="<?= fb_e($fb_cfg['breite']) ?>">
+  <p class="sm-hilfe"><?= fb_t('EINST.H_BREITE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_laenge"><?= fb_e(fb_t('EINST.L_LAENGE')) ?></label>
@@ -973,62 +1293,79 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_tagesgrenze"><?= fb_e(fb_t('EINST.L_TAGESGRENZE')) ?></label>
   <input data-role="none" type="text" id="fb_tagesgrenze" name="tagesgrenze" value="<?= (int) $fb_cfg['tagesgrenze'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('tagesgrenze')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_TAGESGRENZE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_spreizung_tag"><?= fb_e(fb_t('EINST.L_SPREIZUNG_TAG')) ?></label>
   <input data-role="none" type="text" id="fb_spreizung_tag" name="spreizung_tag" value="<?= (int) $fb_cfg['spreizung_tag'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('spreizung_tag')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_SPREIZUNG_TAG') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_spreizung_raum"><?= fb_e(fb_t('EINST.L_SPREIZUNG_RAUM')) ?></label>
   <input data-role="none" type="text" id="fb_spreizung_raum" name="spreizung_raum" value="<?= (int) $fb_cfg['spreizung_raum'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('spreizung_raum')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SPREIZUNG') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_gewicht_raum"><?= fb_e(fb_t('EINST.L_GEWICHT_RAUM')) ?></label>
   <input data-role="none" type="text" id="fb_gewicht_raum" name="gewicht_raum" value="<?= (int) $fb_cfg['gewicht_raum'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_raum')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_RAUM') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_gewicht_tag"><?= fb_e(fb_t('EINST.L_GEWICHT_TAG')) ?></label>
   <input data-role="none" type="text" id="fb_gewicht_tag" name="gewicht_tag" value="<?= (int) $fb_cfg['gewicht_tag'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_tag')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHTE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_schwelle_ein"><?= fb_e(fb_t('EINST.L_SCHWELLE_EIN')) ?></label>
   <input data-role="none" type="text" id="fb_schwelle_ein" name="schwelle_ein" value="<?= (int) $fb_cfg['schwelle_ein'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('schwelle_ein')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_SCHWELLE_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_schwelle_aus"><?= fb_e(fb_t('EINST.L_SCHWELLE_AUS')) ?></label>
   <input data-role="none" type="text" id="fb_schwelle_aus" name="schwelle_aus" value="<?= (int) $fb_cfg['schwelle_aus'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('schwelle_aus')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SCHWELLEN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_e_ref"><?= fb_e(fb_t('EINST.L_E_REF')) ?></label>
   <input data-role="none" type="text" id="fb_e_ref" name="e_ref" value="<?= (int) $fb_cfg['e_ref'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('e_ref')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_E_REF') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_albedo"><?= fb_e(fb_t('EINST.L_ALBEDO')) ?></label>
   <input data-role="none" type="text" id="fb_albedo" name="albedo" value="<?= (int) $fb_cfg['albedo'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('albedo')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_ALBEDO') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_iam"><?= fb_e(fb_t('EINST.L_IAM')) ?></label>
   <input data-role="none" type="text" id="fb_iam" name="iam_b0" value="<?= (int) $fb_cfg['iam_b0'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('iam_b0')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_IAM') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_hoechstalter"><?= fb_e(fb_t('EINST.L_HOECHSTALTER')) ?></label>
   <input data-role="none" type="text" id="fb_hoechstalter" name="hoechstalter" value="<?= (int) $fb_cfg['hoechstalter'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('hoechstalter')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_HOECHSTALTER') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_rechentakt"><?= fb_e(fb_t('EINST.L_RECHENTAKT')) ?></label>
   <input data-role="none" type="text" id="fb_rechentakt" name="rechentakt" value="<?= (int) $fb_cfg['rechentakt'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('rechentakt')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_RECHENTAKT') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_glaettung"><?= fb_e(fb_t('EINST.L_GLAETTUNG')) ?></label>
   <input data-role="none" type="text" id="fb_glaettung" name="glaettung" value="<?= (int) $fb_cfg['glaettung'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('glaettung')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GLAETTUNG') ?></p>
 </div>
 <div class="sm-feld">
@@ -1044,6 +1381,7 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_vorschau"><?= fb_e(fb_t('EINST.L_VORSCHAU')) ?></label>
   <input data-role="none" type="text" id="fb_vorschau" name="vorschau" value="<?= (int) $fb_cfg['vorschau'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('vorschau')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_VORSCHAU') ?></p>
 </div>
 
@@ -1052,15 +1390,19 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_gewicht_bilanz"><?= fb_e(fb_t('EINST.L_GEWICHT_BILANZ')) ?></label>
   <input data-role="none" type="text" id="fb_gewicht_bilanz" name="gewicht_bilanz" value="<?= (int) $fb_cfg['gewicht_bilanz'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_bilanz')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_BILANZ') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_bilanz_voll"><?= fb_e(fb_t('EINST.L_BILANZ_VOLL')) ?></label>
   <input data-role="none" type="text" id="fb_bilanz_voll" name="bilanz_voll_qm" value="<?= (int) $fb_cfg['bilanz_voll_qm'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('bilanz_voll_qm')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BILANZ_VOLL') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_raumflaeche_vorgabe"><?= fb_e(fb_t('EINST.L_RAUMFLAECHE_VORGABE')) ?></label>
   <input data-role="none" type="text" id="fb_raumflaeche_vorgabe" name="raumflaeche_vorgabe" value="<?= (int) $fb_cfg['raumflaeche_vorgabe'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('raumflaeche_vorgabe')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_RAUMFLAECHE_VORGABE') ?></p>
 </div>
 <div class="sm-feld">
@@ -1073,34 +1415,45 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_gewicht_morgen"><?= fb_e(fb_t('EINST.L_GEWICHT_MORGEN')) ?></label>
   <input data-role="none" type="text" id="fb_gewicht_morgen" name="gewicht_morgen" value="<?= (int) $fb_cfg['gewicht_morgen'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_morgen')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_MORGEN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_vorabend_ab"><?= fb_e(fb_t('EINST.L_VORABEND_AB')) ?></label>
   <input data-role="none" type="text" id="fb_vorabend_ab" name="vorabend_ab" value="<?= (int) $fb_cfg['vorabend_ab'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('vorabend_ab')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_VORABEND_AB') ?></p>
 </div>
 
 <h3><?= fb_e(fb_t('EINST.H_DAEMMEN')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.DAEMMEN_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="daemmen_ein" value="1"<?= $fb_cfg['daemmen_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_DAEMMEN_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_daemm_grenze"><?= fb_e(fb_t('EINST.L_DAEMM_GRENZE')) ?></label>
   <input data-role="none" type="text" id="fb_daemm_grenze" name="daemm_grenze" value="<?= (int) $fb_cfg['daemm_grenze'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('daemm_grenze')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_DAEMM_GRENZE') ?></p>
 </div>
 
 <h3><?= fb_e(fb_t('EINST.H_STELLUNG')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.STELLUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="stellung_ein" value="1"<?= $fb_cfg['stellung_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_STELLUNG_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_stellung_zu"><?= fb_e(fb_t('EINST.L_STELLUNG_ZU')) ?></label>
   <input data-role="none" type="text" id="fb_stellung_zu" name="stellung_zu" value="<?= (int) $fb_cfg['stellung_zu'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('stellung_zu')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_ZU') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_stellung_frist"><?= fb_e(fb_t('EINST.L_STELLUNG_FRIST')) ?></label>
   <input data-role="none" type="text" id="fb_stellung_frist" name="stellung_frist" value="<?= (int) $fb_cfg['stellung_frist'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('stellung_frist')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_FRIST') ?></p>
 </div>
 
@@ -1112,16 +1465,21 @@ if ($fb_rahmen) {
 <div class="sm-feld">
   <label for="fb_bericht_stunde"><?= fb_e(fb_t('EINST.L_BERICHT_STUNDE')) ?></label>
   <input data-role="none" type="text" id="fb_bericht_stunde" name="bericht_stunde" value="<?= (int) $fb_cfg['bericht_stunde'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('bericht_stunde')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_BERICHT_STUNDE') ?></p>
 </div>
 
 <h3><?= fb_e(fb_t('EINST.H_PV')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.PV_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="pv_gegenprobe" value="1"<?= $fb_cfg['pv_gegenprobe'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_PV_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_PV_GEGENPROBE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_pv_abweichung"><?= fb_e(fb_t('EINST.L_PV_ABWEICHUNG')) ?></label>
   <input data-role="none" type="text" id="fb_pv_abweichung" name="pv_abweichung" value="<?= (int) $fb_cfg['pv_abweichung'] ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('pv_abweichung')) ?></span>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_PV_ABWEICHUNG') ?></p>
 </div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
@@ -1143,8 +1501,10 @@ if ($fb_rahmen) {
     <th><?= fb_e(fb_t('EINST.L_FLAECHE')) ?></th><th><?= fb_e(fb_t('EINST.L_GWERT')) ?></th>
     <th><?= fb_e(fb_t('EINST.L_RAUM')) ?></th><th><?= fb_e(fb_t('EINST.L_TRAEGHEIT')) ?></th>
     <th><?= fb_e(fb_t('EINST.L_HORIZONT')) ?></th>
+    <th><?= fb_e(fb_t('EINST.L_DACH')) ?></th>
     <th><?= fb_e(fb_t('EINST.L_BLEND_HOEHE')) ?></th>
-    <th><?= fb_e(fb_t('EINST.L_AKTIV')) ?></th></tr>
+    <th><?= fb_e(fb_t('EINST.L_AKTIV')) ?></th>
+    <th><?= fb_e(fb_t('EINST.L_LOESCHEN')) ?></th></tr>
 <?php for ($fb_i = 0; $fb_i < FB_FENSTER; $fb_i++) { $f = $fb_cfg['fenster'][$fb_i]; ?>
 <tr>
   <td><?= $fb_i + 1 ?></td>
@@ -1158,10 +1518,16 @@ if ($fb_rahmen) {
       <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_raumwerte[<?= $fb_i ?>]" value="1"<?= $f['raumwerte'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_RAUMWERTE')) ?></label></td>
   <td><input data-role="none" type="text" size="3" name="f_traegheit[<?= $fb_i ?>]" value="<?= (int) $f['traegheit'] ?>"></td>
   <td><input data-role="none" type="text" size="20" name="f_horizont[<?= $fb_i ?>]" value="<?= fb_e($f['horizont']) ?>"></td>
+  <td><input data-role="none" type="text" size="3" name="f_dach_t[<?= $fb_i ?>]" value="<?= (int) $f['dach_tiefe'] ?>">
+      <input data-role="none" type="text" size="3" name="f_dach_h[<?= $fb_i ?>]" value="<?= (int) $f['dach_hoehe'] ?>">
+      <input data-role="none" type="text" size="3" name="f_fh[<?= $fb_i ?>]" value="<?= (int) $f['fenster_hoehe'] ?>"></td>
   <td><input data-role="none" type="text" size="3" name="f_blend_h[<?= $fb_i ?>]" value="<?= (int) $f['blend_hoehe'] ?>">
       <input data-role="none" type="text" size="3" name="f_blend_w[<?= $fb_i ?>]" value="<?= (int) $f['blend_winkel'] ?>"></td>
   <td><input data-role="none" type="checkbox" name="f_aktiv[<?= $fb_i ?>]" value="1"<?= $f['aktiv'] ? ' checked' : '' ?>>
       <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_daemmen[<?= $fb_i ?>]" value="1"<?= $f['daemmen'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN')) ?></label></td>
+  <td><?php if ($f['kuerzel'] !== '') { ?>
+      <input data-role="none" type="checkbox" name="f_loeschen[<?= $fb_i ?>]" value="1">
+      <?php } else { ?><span class="sm-hilfe">&ndash;</span><?php } ?></td>
 </tr>
 <?php } ?>
 </table>
@@ -1188,6 +1554,135 @@ if ($fb_ohne_flaeche) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_fenster" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<?php
+/* Der Knopf steht in einem EIGENEN Formular - nicht im Fensterformular.
+ * Sonst schickte er dessen Felder mit, und das Zusammenruecken traefe auf
+ * Werte, die der Anwender vielleicht gerade halb geaendert hat. */
+$fb_luecke_da = false;
+$fb_gesehen_leer = false;
+foreach ($fb_cfg['fenster'] as $fb_lf) {
+    if ($fb_lf['kuerzel'] === '') { $fb_gesehen_leer = true; }
+    elseif ($fb_gesehen_leer) { $fb_luecke_da = true; break; }
+}
+if ($fb_luecke_da) { ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<div class="sm-hinweis"><?= fb_t('EINST.LUECKEN_ERKLAERUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="luecken_schliessen" value="1"><?= fb_e(fb_t('EINST.K_LUECKEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+
+<?php
+/* VIER ERKLAERUNGEN ZUM AUFKLAPPEN - UND SIE STEHEN AUSSERHALB DES
+ * FORMULARS.
+ *
+ * Beim ersten Anlauf standen sie mittendrin, und darin steckt der
+ * Horizontrechner mit seinem EIGENEN Formular. Verschachtelte Formulare
+ * sind in HTML nicht erlaubt: der Browser schliesst das aeussere beim
+ * inneren <form>, und der Speichern-Knopf der Fenstertabelle schickte
+ * deren Felder danach nicht mehr mit. Gemeldet wurde das als "Haken
+ * gesetzt, gespeichert, nichts passiert" - betroffen war aber JEDE
+ * Aenderung an der Tabelle, nicht nur das Loeschen.
+ *
+ * Aufgefallen ist es keiner Pruefung, weil die Vollprobe das Formular
+ * selbst zusammenbaut und abschickt. Sie kann alles messen - ausser der
+ * Frage, ob ein Browser diese Felder ueberhaupt zusammen abschicken
+ * WUERDE. Genau dafuer gibt es jetzt eine eigene Zeile. */ ?>
+<?php
+/* DREI ERKLAERUNGEN ZUM AUFKLAPPEN.
+ *
+ * Sie stehen hier und nicht in der Hilfeseite, weil man sie GENAU DANN
+ * braucht, wenn man in der Zeile darueber eine Zahl eintragen soll -
+ * und nicht in einem anderen Reiter. Aufgeklappt wird nur, was gerade
+ * fehlt; zugeklappt kosten sie eine Zeile. */ ?>
+<details><summary><?= fb_e(fb_t('EINST.W_GWERT')) ?></summary>
+<div class="sm-step"><?= fb_t('EINST.W_GWERT_TEXT') ?></div>
+</details>
+<details<?= $fb_rechner !== null ? ' open' : '' ?>><summary><?= fb_e(fb_t('EINST.W_HORIZONT')) ?></summary>
+<div class="sm-step"><?= fb_t('EINST.W_HORIZONT_TEXT') ?></div>
+
+<h3><?= fb_e(fb_t('EINST.R_H')) ?></h3>
+<div class="sm-step"><?= fb_t('EINST.R_ERKLAERUNG') ?></div>
+<?php
+$fb_r_alt = function ($name, $vorgabe) {
+    return isset($_POST[$name]) && is_string($_POST[$name]) ? $_POST[$name] : $vorgabe;
+};
+$fb_r_liste = array();
+foreach ($fb_cfg['fenster'] as $fb_ri => $fb_rf) {
+    if ($fb_rf['kuerzel'] !== '') { $fb_r_liste[$fb_ri] = $fb_rf; }
+}
+if (!$fb_r_liste) { ?>
+<div class="sm-hinweis"><?= fb_t('EINST.R_KEIN_FENSTER') ?></div>
+<?php } else { ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<div class="sm-feld">
+  <label for="fb_h_zeile"><?= fb_e(fb_t('EINST.R_L_ZEILE')) ?></label>
+  <select data-role="none" id="fb_h_zeile" name="h_zeile">
+<?php foreach ($fb_r_liste as $fb_ri => $fb_rf) { ?>
+    <option value="<?= (int) $fb_ri ?>"<?= (isset($_POST['h_zeile']) && (int) $_POST['h_zeile'] === (int) $fb_ri) ? ' selected' : '' ?>><?= fb_e(sprintf('%d. %s (%s, %d Grad)', $fb_ri + 1, $fb_rf['kuerzel'],
+        $fb_rf['name'] !== '' ? $fb_rf['name'] : '-', (int) $fb_rf['azimut'])) ?></option>
+<?php } ?>
+  </select>
+</div>
+<div class="sm-feld">
+  <label for="fb_h_hoehe"><?= fb_e(fb_t('EINST.R_L_HOEHE')) ?></label>
+  <input data-role="none" type="text" id="fb_h_hoehe" name="h_hoehe" value="<?= fb_e($fb_r_alt('h_hoehe', '')) ?>">
+</div>
+<div class="sm-feld">
+  <label for="fb_h_fenster"><?= fb_e(fb_t('EINST.R_L_FENSTER')) ?></label>
+  <input data-role="none" type="text" id="fb_h_fenster" name="h_fenster" value="<?= fb_e($fb_r_alt('h_fenster', '1.5')) ?>">
+</div>
+<div class="sm-feld">
+  <label for="fb_h_vor"><?= fb_e(fb_t('EINST.R_L_VOR')) ?></label>
+  <input data-role="none" type="text" id="fb_h_vor" name="h_vor" value="<?= fb_e($fb_r_alt('h_vor', '')) ?>">
+</div>
+<div class="sm-feld">
+  <label for="fb_h_seit"><?= fb_e(fb_t('EINST.R_L_SEIT')) ?></label>
+  <input data-role="none" type="text" id="fb_h_seit" name="h_seit" value="<?= fb_e($fb_r_alt('h_seit', '0')) ?>">
+</div>
+<div class="sm-feld">
+  <label for="fb_h_breite"><?= fb_e(fb_t('EINST.R_L_BREITE')) ?></label>
+  <input data-role="none" type="text" id="fb_h_breite" name="h_breite" value="<?= fb_e($fb_r_alt('h_breite', '')) ?>">
+</div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="h_ersetzen" value="1"<?= !empty($_POST['h_ersetzen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.R_L_ERSETZEN')) ?></label>
+</div>
+<?php if ($fb_rechner !== null) { ?>
+<div class="sm-hinweis"><?= sprintf(fb_t('EINST.R_ERGEBNIS'),
+    fb_e($fb_rechner['kuerzel']),
+    $fb_rechner['werte']['ueber'], $fb_rechner['werte']['weite_mitte'],
+    $fb_rechner['werte']['hoehe_mitte'], $fb_rechner['werte']['hoehe_kante'],
+    fb_e($fb_rechner['text'])) ?></div>
+<?php } ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="horizont_rechnen" value="1"><?= fb_e(fb_t('EINST.R_K_RECHNEN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="horizont_eintragen" value="1"><?= fb_e(fb_t('EINST.R_K_EINTRAGEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+</details>
+<details><summary><?= fb_e(fb_t('EINST.W_DACH')) ?></summary>
+<div class="sm-step"><?= fb_t('EINST.W_DACH_TEXT') ?></div>
+</details>
+<details><summary><?= fb_e(fb_t('EINST.W_BLENDUNG')) ?></summary>
+<div class="sm-step"><?= fb_t('EINST.W_BLENDUNG_TEXT') ?></div>
+</details>
+<details><summary><?= fb_e(fb_t('EINST.W_TRAEGHEIT')) ?></summary>
+<div class="sm-step"><?= fb_t('EINST.W_TRAEGHEIT_TEXT') ?></div>
+</details>
 
 <h2><?= fb_e(fb_t('EINST.H_RAEUME')) ?></h2>
 <div class="sm-step"><?= fb_t('EINST.RAEUME_ERKLAERUNG') ?></div>
@@ -1271,6 +1766,8 @@ if (!$fb_raeume_benutzt) { ?>
 $fb_gr = fb_grenzen();
 $fb_dateien = fb_projekt_dateien();
 $fb_ordner  = fb_projekt_ordner();
+/* NICHT der erste der Suchliste - siehe fb_ablageordner(). */
+list($fb_ablage, $fb_ablage_bleibt) = fb_ablageordner();
 /* Drei Megabyte als Massstab: die kleinste .Loxone-Datei dieser Anlage ist
  * knapp darueber. Die Zahl ist GEWAEHLT und nicht gemessen - sie entscheidet
  * nur, ob gewarnt wird, nie, ob gelesen wird. */
@@ -1279,15 +1776,100 @@ $fb_reicht = $fb_gr['grenze'] >= 3 * 1048576;
 <div class="<?= $fb_reicht ? 'sm-hinweis' : 'sm-warnung' ?>">
 <?= sprintf(fb_t($fb_reicht ? 'PROJEKT.GRENZEN_OK' : 'PROJEKT.GRENZEN_ENG'),
     fb_e($fb_gr['upload_max_filesize'][0]), fb_e($fb_gr['post_max_size'][0]),
-    fb_e(isset($fb_ordner[0]) ? $fb_ordner[0] : '')) ?>
+    fb_e($fb_ablage)) ?>
 </div>
 
+<h3><?= fb_e(fb_t('PROJEKT.H_AUSZUG')) ?></h3>
+<div class="sm-step"><?= fb_t('PROJEKT.AUSZUG_ERKLAERUNG') ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="auszug_skript" value="1"><?= fb_e(fb_t('PROJEKT.K_SKRIPT')) ?></button>
+</div>
+</form>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<div class="sm-feld">
+  <label for="fb_auszug"><?= fb_e(fb_t('PROJEKT.L_AUSZUG')) ?></label>
+  <textarea data-role="none" id="fb_auszug" name="auszug" rows="4" cols="80" spellcheck="false"></textarea>
+  <p class="sm-hilfe"><?= fb_t('PROJEKT.H_AUSZUG_FELD') ?></p>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="auszug_lesen" value="1"><?= fb_e(fb_t('PROJEKT.K_AUSZUG')) ?></button>
+</div>
+</form>
+
 <h3><?= fb_e(fb_t('PROJEKT.H_ORDNER')) ?></h3>
-<div class="sm-step"><?= sprintf(fb_t('PROJEKT.ORDNER_ERKLAERUNG'),
-    fb_e(isset($fb_ordner[0]) ? $fb_ordner[0] : '')) ?></div>
+<div class="sm-step"><?= sprintf(fb_t('PROJEKT.ORDNER_ERKLAERUNG'), fb_e($fb_ablage)) ?></div>
+<?php if (!$fb_ablage_bleibt) { ?>
+<div class="sm-warnung"><?= sprintf(fb_t('PROJEKT.ORDNER_FLUECHTIG'), fb_e($fb_ablage)) ?></div>
+<?php } ?>
+<?php
+/* EIN BEFEHL ZUM ABSCHREIBEN, mit dem Namen, unter dem der Anwender
+ * gerade hier ist. Der LoxBerry-Dateimanager scheidet als Weg oft aus - er
+ * haengt an denselben PHP-Grenzen wie jede andere Absendung -, und wer
+ * dann "nehmen Sie halt scp" liest, sucht als naechstes die Adresse.
+ *
+ * HTTP_HOST ist eine Angabe des Browsers und wird deshalb wie jede fremde
+ * Zeichenkette behandelt: nur Buchstaben, Ziffern, Punkt, Doppelpunkt und
+ * Bindestrich bleiben stehen. */
+$fb_host = isset($_SERVER['HTTP_HOST']) && is_string($_SERVER['HTTP_HOST'])
+           ? preg_replace('/[^A-Za-z0-9.:\-]/', '', $_SERVER['HTTP_HOST']) : '';
+if ($fb_host === '') { $fb_host = 'loxberry'; }
+$fb_host = preg_replace('/:\d+$/', '', $fb_host);
+?>
+<div class="sm-hinweis"><?= sprintf(fb_t('PROJEKT.ORDNER_BEFEHL'),
+    fb_e($fb_host), fb_e($fb_ablage)) ?></div>
+<p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.ORDNER_WURZELN'),
+    fb_e(implode('   ', $fb_ordner))) ?></p>
 <?php if (!$fb_dateien) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('PROJEKT.ORDNER_LEER'),
     fb_e(implode(', ', $fb_ordner))) ?></div>
+<?php
+/* WARUM NICHTS GEFUNDEN WURDE - je Ordner nachgesehen.
+ *
+ * "Es liegt nichts da" ist die eine moegliche Antwort. Die anderen sind:
+ * den Ordner gibt es nicht, er ist fuer den Webserver nicht lesbar, oder er
+ * ist voller Dateien mit anderer Endung. Ohne diese Auskunft raet man
+ * herum - und genau das ist einmal passiert: die Datei lag nachweislich
+ * da, und die Seite sagte nur, es liege nichts da. */
+?>
+<table class="sm-tbl">
+<tr><th><?= fb_e(fb_t('PROJEKT.D_ORDNER')) ?></th><th><?= fb_e(fb_t('PROJEKT.D_LAGE')) ?></th>
+    <th><?= fb_e(fb_t('PROJEKT.D_INHALT')) ?></th></tr>
+<?php foreach ($fb_ordner as $fb_dn) {
+    $fb_da = @is_dir($fb_dn);
+    $fb_les = $fb_da ? @is_readable($fb_dn) : false;
+    $fb_eintr = $fb_les ? @scandir($fb_dn) : false;
+    $fb_anz = is_array($fb_eintr) ? max(0, count($fb_eintr) - 2) : -1;
+    $fb_lox = 0;
+    if (is_array($fb_eintr)) {
+        foreach ($fb_eintr as $fb_en) {
+            if (preg_match('/\.loxone$/i', $fb_en)) { $fb_lox++; }
+        }
+    }
+    $fb_lage = !$fb_da ? fb_t('PROJEKT.D_FEHLT')
+             : (!$fb_les ? fb_t('PROJEKT.D_GESPERRT')
+             : ($fb_anz < 0 ? fb_t('PROJEKT.D_UNLESBAR') : fb_t('PROJEKT.D_OK'))); ?>
+<tr>
+  <td class="sm-mono"><?= fb_e($fb_dn) ?></td>
+  <td><?= $fb_lage ?></td>
+  <td class="sm-hilfe"><?= $fb_anz < 0 ? '&ndash;'
+      : fb_e(sprintf(fb_t('PROJEKT.D_ZAHLEN'), $fb_anz, $fb_lox)) ?></td>
+</tr>
+<?php } ?>
+</table>
+<p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.D_FUSS'),
+    fb_e(function_exists('posix_getpwuid') && function_exists('posix_geteuid')
+         ? (string) @posix_getpwuid(@posix_geteuid())['name'] : '?')) ?></p>
 <?php } else { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -1296,9 +1878,9 @@ $fb_reicht = $fb_gr['grenze'] >= 3 * 1048576;
   <label for="fb_d_name"><?= fb_e(fb_t('PROJEKT.L_ORDNERDATEI')) ?></label>
   <select data-role="none" id="fb_d_name" name="d_name" onchange="fbOrdnerSetzen(this)">
 <?php foreach ($fb_dateien as $fb_nr => $fb_dd) { ?>
-    <option value="<?= fb_e($fb_dd['name']) ?>" data-ordner="<?= (int) $fb_dd['ordner'] ?>"<?= $fb_nr === 0 ? ' selected' : '' ?>><?= fb_e(sprintf('%s  (%.1f MB, %s, %s)',
-        $fb_dd['name'], $fb_dd['groesse'] / 1048576.0,
-        date('d.m.Y H:i', $fb_dd['zeit']), $fb_dd['ordnerpfad'])) ?></option>
+    <option value="<?= fb_e($fb_dd['rel']) ?>" data-ordner="<?= (int) $fb_dd['ordner'] ?>"<?= $fb_nr === 0 ? ' selected' : '' ?>><?= fb_e(sprintf('%s  (%.1f MB, %s)',
+        $fb_dd['pfad'], $fb_dd['groesse'] / 1048576.0,
+        date('d.m.Y H:i', $fb_dd['zeit']))) ?></option>
 <?php } ?>
   </select>
   <input data-role="none" type="hidden" id="fb_d_ordner" name="d_ordner" value="<?= (int) $fb_dateien[0]['ordner'] ?>">
@@ -1396,10 +1978,12 @@ function fbOrdnerSetzen(sel) {
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $fb_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_MQTT_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_thema"><?= fb_e(fb_t('MQTT.THEMA')) ?></label>
   <input data-role="none" type="text" id="fb_thema" name="mqtt_topic" value="<?= fb_e($fb_cfg['mqtt_topic']) ?>">
+  <span class="sm-hilfe"><?= fb_e(fb_abwerk('mqtt_topic')) ?></span>
   <p class="sm-hilfe"><?= fb_t('MQTT.THEMA_HILFE') ?></p>
 </div>
 <div class="sm-legende">
