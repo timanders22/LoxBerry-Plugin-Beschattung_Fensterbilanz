@@ -33,7 +33,13 @@ mkdir -p "$PDATA" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
-chmod 755 "$PDATA" "$PLOG" 2>/dev/null
+# 775 statt 755 auf den Datenordner: dort soll der Anwender seine
+# .Loxone-Projektdatei ABLEGEN koennen (ueber die Windows-Freigabe oder
+# scp). Der Weg ueber den Browser scheitert an upload_max_filesize, und
+# das Plugin kann diese Grenze nicht anheben - sie gilt je Verzeichnis und
+# wird ausgewertet, bevor eine Zeile des Plugins laeuft.
+chmod 775 "$PDATA" 2>/dev/null
+chmod 755 "$PLOG" 2>/dev/null
 chmod 700 "$PCONFIG" 2>/dev/null
 
 [ -f "$PCONFIG/fensterbilanz.json" ] || echo '{}' > "$PCONFIG/fensterbilanz.json"
@@ -105,7 +111,12 @@ echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
 echo "<INFO>  1. Reiter Einstellungen: Standort (Breite und Laenge) eintragen."
 echo "<INFO>     Ohne ihn gibt es keinen Sonnenstand und damit kein Urteil."
 echo "<INFO>  2. Reiter Einstellungen: je Fenster eine Zeile - Kuerzel,"
-echo "<INFO>     Himmelsrichtung, Flaeche, Raum."
+echo "<INFO>     Himmelsrichtung, GLASFLAECHE in m2, Raum."
+echo "<INFO>     Die Liste laesst sich aus der Loxone-Projektdatei fuellen."
+echo "<INFO>     PHP nimmt ueber den Browser meist nur 2 MB an, eine"
+echo "<INFO>     Projektdatei ist groesser. Legen Sie sie deshalb hierhin:"
+echo "<INFO>       $PDATA"
+echo "<INFO>     Von dort liest das Plugin sie ohne Groessenbeschraenkung."
 echo "<INFO>  3. Reiter Einbindung in Loxone: BEIDE Vorlagen herunterladen."
 echo "<INFO>     Die Ausgangs-Vorlage liefert die Messwerte herein, ohne sie"
 echo "<INFO>     rechnet das Plugin nichts."

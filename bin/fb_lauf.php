@@ -810,6 +810,89 @@ $ort = array(48.2, 11.6);
             !in_array($cfg_fl2['fenster'][0]['kuerzel'], fb_flaeche_vorgabe($cfg_fl2), true),
             implode(',', fb_flaeche_vorgabe($cfg_fl2)));
 
+    /* --- Die Grenzen der Absendung, als Zahl statt als Text ---
+     *
+     * ini_get() liefert "2M" und nicht 2097152. Ohne diese Umrechnung
+     * koennte die Oberflaeche die Werte nur anzeigen und nicht die Frage
+     * beantworten, auf die es ankommt: reicht das fuer DIESE Datei? */
+    $pruefe('2M werden zu 2097152 Byte', fb_ini_byte('2M') === 2097152, fb_ini_byte('2M'));
+    $pruefe('8M werden zu 8388608 Byte', fb_ini_byte('8M') === 8388608, fb_ini_byte('8M'));
+    $pruefe('512K werden zu 524288 Byte', fb_ini_byte('512K') === 524288, fb_ini_byte('512K'));
+    $pruefe('1G wird zu 1073741824 Byte', fb_ini_byte('1G') === 1073741824, fb_ini_byte('1G'));
+    /* -1 heisst UNBEGRENZT und nicht "minus ein Byte". Ohne diesen Fall
+     * haette ein memory_limit von -1 - eine durchaus uebliche Einstellung -
+     * als kleinster denkbarer Wert gegolten, und die Oberflaeche haette
+     * ausgerechnet dort gewarnt, wo gar keine Grenze besteht. */
+    $pruefe('-1 heisst unbegrenzt und nicht negativ',
+            fb_ini_byte('-1') === PHP_INT_MAX, fb_ini_byte('-1'));
+    $pruefe('Eine blanke Zahl bleibt, was sie ist', fb_ini_byte('1024') === 1024,
+            fb_ini_byte('1024'));
+
+    /* --- Die abgelegte Datei wird gefunden - und nur sie ---
+     *
+     * Der zweite Weg liest aus einem Ordner statt aus einer Absendung.
+     * Geprueft wird beides: dass eine abgelegte .Loxone-Datei auftaucht,
+     * und dass alles andere es NICHT tut. Der Pfad kommt nie aus dem
+     * Formular; was nicht in der frisch gelesenen Liste steht, gibt es
+     * nicht - und genau das misst die dritte Zeile. */
+    /* Gearbeitet wird in einem EIGENEN Ordner unter dem Systemtemp, nicht
+     * im Datenordner des Plugins: eine Pruefung, die dafuer eine LoxBerry-
+     * Umgebung braucht, prueft die Umgebung mit - und legt auf jedem
+     * anderen Rechner Ordner an, die dort nichts zu suchen haben. */
+    $ordner_t = sys_get_temp_dir() . '/fb_selbsttest_' . getmypid();
+    @mkdir($ordner_t, 0700, true);
+    $probe_lox = $ordner_t . '/__probe.Loxone';
+    $probe_txt = $ordner_t . '/__probe.txt';
+    $liste_t = array($ordner_t);
+    if (is_dir($ordner_t)
+        && @file_put_contents($probe_lox, '<C Type="AutoJalousie"></C>') !== false
+        && @file_put_contents($probe_txt, 'kein Projekt') !== false) {
+        $namen_g = array();
+        foreach (fb_projekt_dateien(30, $liste_t) as $g) { $namen_g[] = $g['name']; }
+        $pruefe('Eine abgelegte .Loxone-Datei wird gefunden',
+                in_array('__probe.Loxone', $namen_g, true),
+                implode(', ', $namen_g));
+        $pruefe('Eine Datei mit anderer Endung wird uebergangen',
+                !in_array('__probe.txt', $namen_g, true), implode(', ', $namen_g));
+        $treffer_t = fb_projekt_datei_finden(0, '__probe.Loxone', $liste_t);
+        $pruefe('Die gefundene Datei laesst sich ueber Ordner und Namen wiederholen',
+                $treffer_t !== null && $treffer_t['pfad'] === $probe_lox,
+                $treffer_t === null ? 'nicht gefunden' : $treffer_t['pfad']);
+        /* DIE WICHTIGSTE ZEILE DIESES ABSCHNITTS.
+         *
+         * Ein Name mit ../ darf nicht dazu fuehren, dass etwas ausserhalb
+         * der Ordnerliste gelesen wird. Er kommt gar nicht erst in die
+         * Naehe eines Dateizugriffs, weil er in der frisch gelesenen Liste
+         * nicht vorkommt - aber gemessen gehoert es trotzdem. */
+        $pruefe('Ein Name mit Pfadanteil wird nicht gefunden',
+                fb_projekt_datei_finden(0, '../__probe.Loxone', $liste_t) === null
+                && fb_projekt_datei_finden(0, '/etc/passwd', $liste_t) === null,
+                'beide abgewiesen');
+        $pruefe('Ein Name aus dem falschen Ordner wird nicht gefunden',
+                fb_projekt_datei_finden(99, '__probe.Loxone', $liste_t) === null,
+                'abgewiesen');
+        @unlink($probe_lox);
+        @unlink($probe_txt);
+        @rmdir($ordner_t);
+        $pruefe('Der Probeordner ist wieder weg', !is_dir($ordner_t), 'aufgeraeumt');
+    } else {
+        @unlink($probe_lox);
+        @unlink($probe_txt);
+        @rmdir($ordner_t);
+        $pruefe('Ein Probeordner unter dem Systemtemp laesst sich anlegen',
+                false, $ordner_t);
+    }
+
+    /* Und die Ordnerliste des BETRIEBS - dass der eigene Datenordner darin
+     * an erster Stelle steht, ist keine Kosmetik: die Anleitung in der
+     * Oberflaeche nennt genau diesen ersten Eintrag als Ablageort. */
+    $ordnerliste_t = fb_projekt_ordner();
+    $pruefe('Die Suche beginnt im Datenordner des Plugins',
+            isset($ordnerliste_t[0])
+            && rtrim(str_replace('\\', '/', $ordnerliste_t[0]), '/')
+               === rtrim(str_replace('\\', '/', fb_paths()['datadir']), '/'),
+            isset($ordnerliste_t[0]) ? $ordnerliste_t[0] : 'leer');
+
     /* --- Die Raumflaechen aus der Projektdatei ---
      *
      * Nachgestellt, nicht mit der echten Datei: der Selbsttest laeuft auch

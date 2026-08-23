@@ -3142,6 +3142,191 @@ function fb_projekt_lesen($inhalt)
 }
 
 /**
+ * Eine Datei lesen, ohne dass eine Warnung als Befund liegenbleibt.
+ *
+ * Das vorangestellte @ unterdrueckt die AUSGABE einer Warnung, nicht den
+ * Fehler selbst: ein gesetzter Fehlerbehandler bekommt sie weiterhin zu
+ * sehen. Genau das ist hier der Regelfall - eine Datei, die inzwischen weg
+ * ist oder nicht gelesen werden darf, ist eine Lage, die das Plugin sauber
+ * behandelt und ordentlich meldet, und trotzdem stand die Warnung danach im
+ * Pruefstand als Befund da.
+ *
+ * Ein Rueckgabewert false bleibt false - unterdrueckt wird die Meldung,
+ * nicht die Aussage.
+ */
+function fb_holen_datei($pfad)
+{
+    set_error_handler(function () { return true; });
+    $inhalt = file_get_contents($pfad);
+    restore_error_handler();
+    return $inhalt;
+}
+
+/**
+ * Eine Groessenangabe aus der php.ini in Byte umrechnen.
+ *
+ * ini_get() liefert "2M", "8M", "512K" oder "-1" - also gerade NICHT eine
+ * Zahl, mit der sich rechnen laesst. Ohne diese Umrechnung koennte die
+ * Oberflaeche nur den Text anzeigen und nicht die Frage beantworten, auf
+ * die es ankommt: reicht das fuer DIESE Datei?
+ *
+ * -1 heisst "unbegrenzt" und wird als PHP_INT_MAX zurueckgegeben.
+ */
+function fb_ini_byte($wert)
+{
+    $wert = trim((string) $wert);
+    if ($wert === '') { return 0; }
+    if ($wert === '-1') { return PHP_INT_MAX; }
+    $zahl = (float) $wert;
+    $letzt = strtolower(substr($wert, -1));
+    if ($letzt === 'g') { $zahl *= 1024 * 1024 * 1024; }
+    elseif ($letzt === 'm') { $zahl *= 1024 * 1024; }
+    elseif ($letzt === 'k') { $zahl *= 1024; }
+    return (int) $zahl;
+}
+
+/**
+ * Was laesst dieses PHP bei einer Absendung durch?
+ *
+ * WARUM DAS HIER STEHT UND NICHT NUR IN DER FEHLERMELDUNG:
+ *
+ * Die Grenzen werden erst dann sichtbar, wenn eine Absendung schon
+ * gescheitert ist - PHP weist die Datei ab, BEVOR eine Zeile dieses Plugins
+ * laeuft. Der Anwender laedt also erst eine Datei hoch, wartet, und
+ * erfaehrt danach, dass es nie haette klappen koennen. Diese Werte gehoeren
+ * deshalb VOR das Formular.
+ *
+ * Und das Plugin kann sie nicht selbst anheben: upload_max_filesize und
+ * post_max_size sind PHP_INI_PERDIR. Gemessen mit PHP 7.4.33 und 8.4.24
+ * gibt ini_set() fuer beide false zurueck und der Wert bleibt stehen.
+ * Selbst wenn es ginge, waere es zu spaet - die Absendung ist beim ersten
+ * Befehl des Skripts bereits abgewiesen.
+ *
+ * Rueckgabe je Groesse: array(Text, Byte).
+ */
+function fb_grenzen()
+{
+    $g = array();
+    foreach (array('upload_max_filesize', 'post_max_size', 'memory_limit') as $k) {
+        $t = (string) ini_get($k);
+        $g[$k] = array($t, fb_ini_byte($t));
+    }
+    /* Die kleinere der beiden ersten entscheidet: eine Absendung, die
+     * post_max_size sprengt, wird abgewiesen, auch wenn die Datei allein
+     * unter upload_max_filesize bliebe. */
+    $g['grenze'] = min($g['upload_max_filesize'][1], $g['post_max_size'][1]);
+    return $g;
+}
+
+/**
+ * In welchen Ordnern wird nach einer abgelegten Projektdatei gesucht?
+ *
+ * DER WEG AN DER ABSENDUNG VORBEI.
+ *
+ * Eine .Loxone-Datei ist in dieser Anlage 3 bis 4 MB gross, und die Vorgabe
+ * von PHP fuer upload_max_filesize ist 2M. Der Weg ueber das Formular
+ * scheitert damit auf den meisten Anlagen, und das Plugin kann daran
+ * nichts aendern (siehe fb_grenzen()). Wer die Datei stattdessen auf den
+ * LoxBerry LEGT - ueber die Windows-Freigabe, mit WinSCP oder scp -, an dem
+ * kommt keine dieser Grenzen mehr vor: file_get_contents() liest sie
+ * geradewegs.
+ *
+ * Gesucht wird in einer FESTEN Liste. Ein Pfad aus dem Formular waere
+ * bequemer und waere ein Leseloch: die Oberflaeche liegt zwar im
+ * angemeldeten Bereich, aber ein Eingabefeld, in das man /etc/shadow
+ * schreiben kann, gehoert nicht in ein Beschattungsplugin.
+ */
+function fb_projekt_ordner()
+{
+    $p = fb_paths();
+    $basis = $p['home'] !== '' ? $p['home'] : dirname(dirname(__DIR__));
+    $o = array($p['datadir'], $basis . '/data', '/tmp');
+    /* Doppelte herausnehmen, ohne die Reihenfolge zu verlieren: der eigene
+     * Datenordner MUSS oben stehen, weil die Anleitung in der Oberflaeche
+     * genau auf den ersten Eintrag zeigt.
+     *
+     * Verglichen wird der geschriebene Pfad und NICHT realpath(). Der erste
+     * Entwurf nahm realpath() und liess damit jeden Ordner fallen, den es
+     * noch nicht gibt - und der Datenordner ist vor der ersten Installation
+     * genau so einer. Die Folge waere gewesen: die Oberflaeche nennt
+     * .../data als Ablageort, gesucht wird aber zuerst woanders. Gefunden
+     * hat das der Selbsttest, weil er nachsieht, ob beide dasselbe sagen.
+     *
+     * Ein Ordner, den es nicht gibt, kostet nichts: fb_projekt_dateien()
+     * ueberspringt ihn. */
+    $raus = array();
+    foreach ($o as $d) {
+        $k = rtrim(str_replace('\\', '/', $d), '/');
+        if ($k === '' || isset($raus[$k])) { continue; }
+        $raus[$k] = $d;
+    }
+    return array_values($raus);
+}
+
+/**
+ * Die abgelegten Projektdateien auflisten.
+ *
+ * Rueckgabe: Liste aus array(ordner, name, pfad, groesse, zeit), die
+ * neueste zuerst. Der PFAD wird hier gebaut und kommt nie aus dem Formular
+ * - das Formular nennt nur Ordnernummer und Dateinamen, und beides wird
+ * gegen diese Liste gehalten.
+ */
+function fb_projekt_dateien($hoechstens = 30, $ordner = null)
+{
+    /* $ordner ist AUSSCHLIESSLICH fuer den Selbsttest da und wird von
+     * keinem Handler gesetzt - die Oberflaeche ruft immer ohne auf. Der
+     * Grund fuer das Argument: eine Pruefung, die dafuer in den echten
+     * Datenordner schreiben muss, prueft die Umgebung mit und legt auf
+     * jedem Rechner ohne LoxBerry Ordner an, die dort nichts zu suchen
+     * haben. Gemessen: sie hat C:\data\plugins\fensterbilanz erzeugt. */
+    $liste = array();
+    if ($ordner === null || !is_array($ordner)) { $ordner = fb_projekt_ordner(); }
+    foreach ($ordner as $nr => $d) {
+        if (!is_dir($d) || !is_readable($d)) { continue; }
+        $eintraege = @scandir($d);
+        if (!is_array($eintraege)) { continue; }
+        foreach ($eintraege as $name) {
+            if ($name === '.' || $name === '..') { continue; }
+            if (!preg_match('/\.loxone$/i', $name)) { continue; }
+            $voll = $d . '/' . $name;
+            /* Kein Verzeichnis, keine Verknuepfung, lesbar - in dieser
+             * Reihenfolge. is_file() allein folgt einer Verknuepfung. */
+            if (is_link($voll) || !is_file($voll) || !is_readable($voll)) { continue; }
+            $liste[] = array(
+                'ordner'  => $nr,
+                'ordnerpfad' => $d,
+                'name'    => $name,
+                'pfad'    => $voll,
+                'groesse' => (int) filesize($voll),
+                'zeit'    => (int) filemtime($voll),
+            );
+        }
+    }
+    usort($liste, function ($a, $b) {
+        if ($a['zeit'] === $b['zeit']) { return strcmp($a['name'], $b['name']); }
+        return $b['zeit'] - $a['zeit'];
+    });
+    return array_slice($liste, 0, $hoechstens);
+}
+
+/**
+ * Eine abgelegte Datei anhand von Ordnernummer und Namen wiederfinden.
+ *
+ * Der Pfad wird NEU aus fb_projekt_dateien() geholt und nicht aus dem
+ * Formular uebernommen. Damit ist es gleichgueltig, was im Formular steht:
+ * was nicht in der frisch gelesenen Liste vorkommt, gibt es nicht.
+ */
+function fb_projekt_datei_finden($ordner, $name, $ordnerliste = null)
+{
+    foreach (fb_projekt_dateien(30, $ordnerliste) as $d) {
+        if ((int) $d['ordner'] === (int) $ordner && $d['name'] === (string) $name) {
+            return $d;
+        }
+    }
+    return null;
+}
+
+/**
  * Die GRUNDFLAECHEN der Raeume aus der Projektdatei lesen.
  *
  * Die Fensterflaeche steht NICHT in der Projektdatei - gemessen an der

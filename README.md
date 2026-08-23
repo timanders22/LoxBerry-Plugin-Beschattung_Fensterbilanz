@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.11.0
+Version 0.12.0
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -169,6 +169,22 @@ Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.
    dazu — der `AutoJalousie`-Baustein führt die Richtung und die
    Lamellenmaße, keine Fenstermaße. Die **Grundflächen der Räume** stehen
    sehr wohl darin und werden mit übernommen.
+
+   Für die Datei gibt es **zwei Wege**, und der empfohlene führt am Browser
+   vorbei:
+
+   * **Datei auf den LoxBerry legen** — über die Windows-Freigabe, mit
+     WinSCP oder per `scp`, nach `data/plugins/fensterbilanz/`. Sie steht
+     dann im Reiter *Einstellungen* zur Auswahl. **Ohne Größenbeschränkung**,
+     weil nichts abgesendet wird.
+   * **Datei über den Browser absenden** — bequemer, scheitert aber meist:
+     PHP nimmt ab Werk 2 MB je Datei an, eine Projektdatei ist 3 bis 4 MB
+     groß. **Das Plugin kann diese Grenze nicht anheben** —
+     `upload_max_filesize` und `post_max_size` gelten je Verzeichnis, und
+     PHP wertet sie aus, bevor eine Zeile des Plugins läuft; `ini_set()`
+     gibt für beide eine Fehlanzeige zurück (gemessen mit PHP 7.4.33 und
+     8.4.24). Die Oberfläche zeigt die beiden Werte deshalb **vor** dem
+     Formular an, nicht erst in der Fehlermeldung.
 3. **Beide Vorlagen** im Reiter *Einbindung in Loxone* herunterladen und in
    Loxone Config einlesen. Die Ausgangs-Vorlage liefert die Messwerte herein;
    **ohne sie rechnet das Plugin nichts.**

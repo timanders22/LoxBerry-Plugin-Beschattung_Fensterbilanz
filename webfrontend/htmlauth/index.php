@@ -430,60 +430,114 @@ if ($fb_post && isset($_POST['speichern_raeume'])) {
  * Zwischendatei, wird angezeigt, und erst ein zweiter Knopf uebernimmt sie -
  * und auch dann nur in LEERE Zeilen. Wer schon Fenster eingerichtet hat,
  * verliert sie nicht. */
+/* EIN Auswerter fuer BEIDE Wege.
+ *
+ * Die Datei kommt entweder ueber die Absendung oder aus einem Ordner auf
+ * dem LoxBerry. Was danach mit ihrem Inhalt geschieht, ist beide Male
+ * dasselbe - und gehoert deshalb an EINE Stelle. Zwei Kopien liefen
+ * auseinander, sobald am Einlesen etwas geaendert wird, und der seltener
+ * benutzte Weg faellt dabei monatelang nicht auf. */
+$fb_projekt_auswerten = function ($inhalt) use (&$fb_meldungen, &$fb_fehler, $fb_p) {
+    if ($inhalt === false || $inhalt === '') {
+        $fb_fehler[] = fb_t('PROJEKT.LEER');
+        return;
+    }
+    list($liste_p, $fehler_p) = fb_projekt_lesen($inhalt);
+    /* Die Grundflaechen der Raeume kommen aus demselben Lesevorgang. Sie
+     * sind NICHT die Fensterflaeche - die steht nirgends in der Datei -,
+     * sondern die Groesse, an der der Bilanzteil haengt. */
+    list($raum_p, $raum_doppelt) = fb_projekt_raeume($inhalt);
+    if (!$liste_p) {
+        $fb_fehler[] = sprintf(fb_t('PROJEKT.NICHTS'), fb_liste_kurz($fehler_p));
+        return;
+    }
+    fb_json_schreiben($fb_p['datadir'] . '/vorschlag.json',
+        array('zeit' => time(), 'liste' => $liste_p,
+              'unlesbar' => $fehler_p, 'raeume' => $raum_p), 0644);
+    $fb_meldungen[] = sprintf(fb_t('PROJEKT.GELESEN'),
+        count($liste_p), count($fehler_p));
+    if ($raum_p) {
+        $fb_meldungen[] = sprintf(fb_t('PROJEKT.RAEUME_GELESEN'), count($raum_p));
+    }
+    if ($raum_doppelt) {
+        /* MELDEN, NICHT WAEHLEN. "KG Vorrat Ost" und "KG Vorrat Nord"
+         * ergeben denselben Raumschluessel; welche der beiden Flaechen
+         * gemeint ist, weiss nur der Anwender. */
+        $namen_d = array();
+        foreach ($raum_doppelt as $rr => $tt) { $namen_d[] = $tt[0] . ' / ' . $tt[1]; }
+        $fb_fehler[] = sprintf(fb_t('PROJEKT.RAEUME_DOPPELT'), fb_liste_kurz($namen_d));
+    }
+    if ($fehler_p) {
+        $fb_fehler[] = sprintf(fb_t('PROJEKT.UNLESBAR'), fb_liste_kurz($fehler_p));
+    }
+};
+
+/* ---------------- Der Weg AN DER ABSENDUNG VORBEI ----------------
+ *
+ * Der Anlass ist gemessen: PHP nimmt ab Werk 2 MB je Datei an, eine
+ * .Loxone-Datei dieser Anlage ist 3 bis 4 MB gross, und das Plugin kann die
+ * Grenze NICHT anheben - ini_set() gibt fuer upload_max_filesize und
+ * post_max_size false zurueck (gemessen mit PHP 7.4.33 und 8.4.24). Selbst
+ * wenn es ginge, waere es zu spaet: PHP weist die Absendung ab, bevor die
+ * erste Zeile dieses Plugins laeuft.
+ *
+ * Wer die Datei stattdessen auf den LoxBerry LEGT, an dem kommt keine
+ * dieser Grenzen mehr vor. Der Pfad wird dabei nie aus dem Formular
+ * uebernommen: das Formular nennt Ordnernummer und Dateinamen, und beides
+ * wird gegen die frisch gelesene Liste gehalten. Ein freies Pfadfeld waere
+ * bequemer und waere ein Leseloch. */
+if ($fb_post && isset($_POST['projekt_datei'])) {
+    $fb_tab = 'tab-settings';
+    $fb_o = isset($_POST['d_ordner']) && is_string($_POST['d_ordner'])
+            ? (int) $_POST['d_ordner'] : -1;
+    $fb_n = isset($_POST['d_name']) && is_string($_POST['d_name']) ? $_POST['d_name'] : '';
+    $fb_d = ($fb_n === '') ? null : fb_projekt_datei_finden($fb_o, $fb_n);
+    if ($fb_d === null) {
+        $fb_fehler[] = fb_t('PROJEKT.DATEI_WEG');
+    } else {
+        /* memory_limit ist die EINZIGE Grenze, die auf diesem Weg noch gilt:
+         * die Datei wird als Zeichenkette gelesen. Sie vorher zu pruefen ist
+         * ehrlicher, als PHP mitten im Lesen abbrechen zu lassen - ein
+         * Abbruch dort sieht aus wie eine kaputte Datei. Der Faktor 4 ist
+         * gewaehlt und nicht gemessen: die Zeichenkette selbst, die Kopie
+         * beim Zerlegen und etwas Luft. */
+        $fb_gr = fb_grenzen();
+        if ($fb_gr['memory_limit'][1] < $fb_d['groesse'] * 4) {
+            $fb_fehler[] = sprintf(fb_t('PROJEKT.SPEICHER'),
+                $fb_d['name'], $fb_d['groesse'] / 1048576.0,
+                $fb_gr['memory_limit'][0]);
+        }
+        $fb_inhalt = fb_holen_datei($fb_d['pfad']);
+        if ($fb_inhalt === false) {
+            $fb_fehler[] = sprintf(fb_t('PROJEKT.NICHT_LESBAR'), $fb_d['pfad']);
+        } else {
+            $fb_meldungen[] = sprintf(fb_t('PROJEKT.AUS_ORDNER'),
+                $fb_d['name'], $fb_d['ordnerpfad'], $fb_d['groesse'] / 1048576.0);
+            $fb_projekt_auswerten($fb_inhalt);
+        }
+    }
+}
+
 if ($fb_post && isset($_POST['projekt_lesen'])) {
     $fb_tab = 'tab-settings';
     if (!isset($_FILES['projekt']) || !is_array($_FILES['projekt'])) {
         $fb_fehler[] = fb_t('PROJEKT.KEINE_DATEI');
     } elseif ((int) $_FILES['projekt']['error'] !== UPLOAD_ERR_OK) {
-        /* Den Grund NENNEN. Eine Projektdatei ist mehrere Megabyte gross,
-         * und die Vorgabe von PHP fuer upload_max_filesize ist 2M - das ist
-         * der wahrscheinlichste Fall, und ohne die Zahlen sucht der Anwender
-         * an der falschen Stelle. */
+        /* Den Grund NENNEN - und den AUSWEG gleich mit. Eine Projektdatei
+         * ist mehrere Megabyte gross, und die Vorgabe von PHP fuer
+         * upload_max_filesize ist 2M; das ist der wahrscheinlichste Fall.
+         * Ohne die Zahlen sucht der Anwender an der falschen Stelle, und
+         * ohne den Ordner haelt er die Sache fuer erledigt, sobald er
+         * merkt, dass er dafuer an die php.ini muesste. */
+        $fb_ord = fb_projekt_ordner();
         $fb_fehler[] = sprintf(fb_t('PROJEKT.UPLOAD_FEHLER'),
             (int) $_FILES['projekt']['error'],
             (string) ini_get('upload_max_filesize'),
-            (string) ini_get('post_max_size'));
+            (string) ini_get('post_max_size'),
+            isset($fb_ord[0]) ? $fb_ord[0] : '');
     } else {
-        $fb_roh_projekt = @file_get_contents($_FILES['projekt']['tmp_name']);
-        if ($fb_roh_projekt === false || $fb_roh_projekt === '') {
-            $fb_fehler[] = fb_t('PROJEKT.LEER');
-        } else {
-            list($fb_liste_p, $fb_fehler_p) = fb_projekt_lesen($fb_roh_projekt);
-            /* Die Grundflaechen der Raeume kommen aus demselben Lesevorgang.
-             * Sie sind NICHT die Fensterflaeche - die steht nirgends in der
-             * Datei -, sondern die Groesse, an der der Bilanzteil haengt. */
-            list($fb_raum_p, $fb_raum_doppelt) = fb_projekt_raeume($fb_roh_projekt);
-            if (!$fb_liste_p) {
-                $fb_fehler[] = sprintf(fb_t('PROJEKT.NICHTS'),
-                    fb_liste_kurz($fb_fehler_p));
-            } else {
-                fb_json_schreiben($fb_p['datadir'] . '/vorschlag.json',
-                    array('zeit' => time(), 'liste' => $fb_liste_p,
-                          'unlesbar' => $fb_fehler_p,
-                          'raeume' => $fb_raum_p), 0644);
-                $fb_meldungen[] = sprintf(fb_t('PROJEKT.GELESEN'),
-                    count($fb_liste_p), count($fb_fehler_p));
-                if ($fb_raum_p) {
-                    $fb_meldungen[] = sprintf(fb_t('PROJEKT.RAEUME_GELESEN'),
-                        count($fb_raum_p));
-                }
-                if ($fb_raum_doppelt) {
-                    /* MELDEN, NICHT WAEHLEN. "KG Vorrat Ost" und "KG Vorrat
-                     * Nord" ergeben denselben Raumschluessel; welche der
-                     * beiden Flaechen gemeint ist, weiss nur der Anwender. */
-                    $fb_namen_d = array();
-                    foreach ($fb_raum_doppelt as $fb_rr => $fb_tt) {
-                        $fb_namen_d[] = $fb_tt[0] . ' / ' . $fb_tt[1];
-                    }
-                    $fb_fehler[] = sprintf(fb_t('PROJEKT.RAEUME_DOPPELT'),
-                        fb_liste_kurz($fb_namen_d));
-                }
-                if ($fb_fehler_p) {
-                    $fb_fehler[] = sprintf(fb_t('PROJEKT.UNLESBAR'),
-                        fb_liste_kurz($fb_fehler_p));
-                }
-            }
-        }
+        $fb_roh_projekt = fb_holen_datei($_FILES['projekt']['tmp_name']);
+        $fb_projekt_auswerten($fb_roh_projekt);
     }
 }
 
@@ -1203,6 +1257,74 @@ if (!$fb_raeume_benutzt) { ?>
 
 <h2><?= fb_e(fb_t('PROJEKT.H')) ?></h2>
 <div class="sm-step"><?= fb_t('PROJEKT.ERKLAERUNG') ?></div>
+<?php
+/* DIE GRENZEN STEHEN VOR DEM FORMULAR, NICHT IN DER FEHLERMELDUNG.
+ *
+ * PHP weist eine zu grosse Absendung ab, BEVOR eine Zeile dieses Plugins
+ * laeuft. Wer die Grenzen erst hinterher erfaehrt, hat eine
+ * Vier-Megabyte-Datei hochgeladen und danach gelesen, dass es nie haette
+ * klappen koennen. Angezeigt wird deshalb vorher - und zwar mit der
+ * Antwort auf die Frage, die zaehlt: reicht das fuer eine Projektdatei?
+ *
+ * Anheben kann das Plugin sie nicht: upload_max_filesize und post_max_size
+ * sind PHP_INI_PERDIR, ini_set() gibt fuer beide false zurueck. */
+$fb_gr = fb_grenzen();
+$fb_dateien = fb_projekt_dateien();
+$fb_ordner  = fb_projekt_ordner();
+/* Drei Megabyte als Massstab: die kleinste .Loxone-Datei dieser Anlage ist
+ * knapp darueber. Die Zahl ist GEWAEHLT und nicht gemessen - sie entscheidet
+ * nur, ob gewarnt wird, nie, ob gelesen wird. */
+$fb_reicht = $fb_gr['grenze'] >= 3 * 1048576;
+?>
+<div class="<?= $fb_reicht ? 'sm-hinweis' : 'sm-warnung' ?>">
+<?= sprintf(fb_t($fb_reicht ? 'PROJEKT.GRENZEN_OK' : 'PROJEKT.GRENZEN_ENG'),
+    fb_e($fb_gr['upload_max_filesize'][0]), fb_e($fb_gr['post_max_size'][0]),
+    fb_e(isset($fb_ordner[0]) ? $fb_ordner[0] : '')) ?>
+</div>
+
+<h3><?= fb_e(fb_t('PROJEKT.H_ORDNER')) ?></h3>
+<div class="sm-step"><?= sprintf(fb_t('PROJEKT.ORDNER_ERKLAERUNG'),
+    fb_e(isset($fb_ordner[0]) ? $fb_ordner[0] : '')) ?></div>
+<?php if (!$fb_dateien) { ?>
+<div class="sm-hinweis"><?= sprintf(fb_t('PROJEKT.ORDNER_LEER'),
+    fb_e(implode(', ', $fb_ordner))) ?></div>
+<?php } else { ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<div class="sm-feld">
+  <label for="fb_d_name"><?= fb_e(fb_t('PROJEKT.L_ORDNERDATEI')) ?></label>
+  <select data-role="none" id="fb_d_name" name="d_name" onchange="fbOrdnerSetzen(this)">
+<?php foreach ($fb_dateien as $fb_nr => $fb_dd) { ?>
+    <option value="<?= fb_e($fb_dd['name']) ?>" data-ordner="<?= (int) $fb_dd['ordner'] ?>"<?= $fb_nr === 0 ? ' selected' : '' ?>><?= fb_e(sprintf('%s  (%.1f MB, %s, %s)',
+        $fb_dd['name'], $fb_dd['groesse'] / 1048576.0,
+        date('d.m.Y H:i', $fb_dd['zeit']), $fb_dd['ordnerpfad'])) ?></option>
+<?php } ?>
+  </select>
+  <input data-role="none" type="hidden" id="fb_d_ordner" name="d_ordner" value="<?= (int) $fb_dateien[0]['ordner'] ?>">
+  <p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.H_ORDNERDATEI'), count($fb_dateien)) ?></p>
+</div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="projekt_datei" value="1"><?= fb_e(fb_t('PROJEKT.K_ORDNER')) ?></button>
+</div>
+</form>
+<script>
+/* Die Ordnernummer wandert in ein verstecktes Feld mit. Sie kommt aus der
+ * Liste, die der Server selbst gelesen hat, und wird dort auch wieder
+ * dagegen gehalten - ohne dieses Skript stuende schlicht die Nummer der
+ * zuerst angebotenen Datei darin, und der Server faende die gewaehlte
+ * Datei im falschen Ordner nicht. Das ist die sichere Richtung. */
+function fbOrdnerSetzen(sel) {
+  var o = sel.options[sel.selectedIndex].getAttribute('data-ordner');
+  document.getElementById('fb_d_ordner').value = o;
+}
+</script>
+<?php } ?>
+
+<h3><?= fb_e(fb_t('PROJEKT.H_ABSENDEN')) ?></h3>
 <form action="index.php" method="post" enctype="multipart/form-data">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
@@ -1210,7 +1332,7 @@ if (!$fb_raeume_benutzt) { ?>
   <label for="fb_projekt"><?= fb_e(fb_t('PROJEKT.L_DATEI')) ?></label>
   <input data-role="none" type="file" id="fb_projekt" name="projekt" accept=".Loxone,.loxone,.xml">
   <p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.H_DATEI'),
-      fb_e((string) ini_get('upload_max_filesize')), fb_e((string) ini_get('post_max_size'))) ?></p>
+      fb_e($fb_gr['upload_max_filesize'][0]), fb_e($fb_gr['post_max_size'][0])) ?></p>
 </div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
