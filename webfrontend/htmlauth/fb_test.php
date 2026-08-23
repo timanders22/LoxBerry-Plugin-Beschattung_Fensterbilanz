@@ -266,6 +266,84 @@ function fb_pruefzeile($frage, $zustand = null, $antwort = '')
 }
 
 /**
+ * Nimmt dieses PHP eine Loxone-Projektdatei ueberhaupt entgegen?
+ *
+ * Die Frage ist nicht theoretisch: die Vorgabe von PHP sind 2 MB je Datei,
+ * eine Projektdatei ist 3 bis 4 MB gross. Beantwortet wird sie mit den
+ * Werten, die WIRKLICH gelten - und mit der Auskunft, ob die .user.ini des
+ * Plugins dabei etwas bewirkt hat.
+ *
+ * Nicht bestanden heisst hier NICHT "kaputt": der Weg ueber den
+ * Ablageordner steht davon unberuehrt offen und kennt keine Grenze.
+ */
+function fb_probe_upload()
+{
+    $g = fb_grenzen();
+    list($liegt, $greift, $pfad) = fb_user_ini();
+    $reicht = $g['grenze'] >= 3 * 1048576;
+    $wie = $liegt
+        ? ($greift ? fb_klartext('TEST.A_UPLOAD_INI_WIRKT')
+                   : fb_klartext('TEST.A_UPLOAD_INI_STUMM'))
+        : fb_klartext('TEST.A_UPLOAD_INI_FEHLT');
+    return array($reicht, sprintf(
+        fb_klartext($reicht ? 'TEST.A_UPLOAD_JA' : 'TEST.A_UPLOAD_NEIN'),
+        $g['upload_max_filesize'][0], $g['post_max_size'][0], $wie));
+}
+
+/**
+ * Tragen Meldungstexte Auszeichnung, obwohl sie maskiert ausgegeben werden?
+ *
+ * $fb_meldungen und $fb_fehler gehen durch fb_e(). Das ist richtig: in
+ * ihnen stehen Dateinamen, Raumschluessel und andere fremde Zeichenketten,
+ * und die gehoeren maskiert. Die Folge ist aber, dass ein Text MIT
+ * Auszeichnung dort woertlich auf dem Schirm landet - gemeldet wurde genau
+ * das: "<b>Das Plugin kann daran nichts aendern</b>" als sichtbarer Text.
+ *
+ * Gelesen wird die index.php, nicht das gerenderte HTML: welche Schluessel
+ * in eine Meldung gehen, steht dort ausgeschrieben, und eine zweite,
+ * gepflegte Liste liefe frueher oder spaeter davon weg. Sieben Texte waren
+ * betroffen, zwei davon seit der ersten Fassung - beide auf Wegen, die man
+ * selten geht.
+ *
+ * Rueckgabe: array(ok, Text). null heisst "nicht feststellbar" - die
+ * index.php liegt im installierten Zustand in einem anderen Baum.
+ */
+function fb_probe_meldungstexte()
+{
+    $datei = __DIR__ . '/index.php';
+    if (!is_file($datei) || !is_readable($datei)) {
+        return array(null, fb_klartext('TEST.A_MELDUNG_KEINE'));
+    }
+    $quelle = fb_holen_datei($datei);
+    if ($quelle === false) {
+        return array(null, fb_klartext('TEST.A_MELDUNG_KEINE'));
+    }
+    /* Jede Anweisung, die etwas an eine der beiden Listen anhaengt - und
+     * daraus die Sprachschluessel. Der Ausdruck ist absichtlich genuegsam:
+     * lieber ein Schluessel zu viel geprueft als einer zu wenig. */
+    $schluessel = array();
+    if (preg_match_all('/\$fb_(?:fehler|meldungen)\[\]\s*=(.{0,400}?);/s', $quelle, $mm)) {
+        foreach ($mm[1] as $stueck) {
+            if (preg_match_all("/fb_t\\('([A-Z0-9_]+\\.[A-Z0-9_]+)'\\)/", $stueck, $kk)) {
+                foreach ($kk[1] as $k) { $schluessel[$k] = true; }
+            }
+        }
+    }
+    if (!$schluessel) {
+        return array(null, fb_klartext('TEST.A_MELDUNG_KEINE'));
+    }
+    $roh = array();
+    foreach (array_keys($schluessel) as $k) {
+        if (strpos(fb_t($k), '<') !== false) { $roh[] = $k; }
+    }
+    if (!$roh) {
+        return array(true, sprintf(fb_klartext('TEST.A_MELDUNG_JA'), count($schluessel)));
+    }
+    return array(false, sprintf(fb_klartext('TEST.A_MELDUNG_NEIN'),
+                                count($roh), fb_liste_kurz($roh)));
+}
+
+/**
  * Stimmen Reiterleiste, Bereiche und Positivliste ueberein?
  *
  * Alle drei stehen in der index.php ausgeschrieben - genau deshalb koennen
@@ -464,6 +542,12 @@ function fb_test_selbstpruefung()
 
     list($ok, $txt) = fb_probe_messwerte();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_MESSWERTE'), $ok, $txt);
+
+    list($ok, $txt) = fb_probe_meldungstexte();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_MELDUNG'), $ok, $txt);
+
+    list($ok, $txt) = fb_probe_upload();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_UPLOAD'), $ok, $txt);
 
     $alter = fb_alter();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_LAUF'),

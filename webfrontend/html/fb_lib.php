@@ -3219,6 +3219,50 @@ function fb_grenzen()
 }
 
 /**
+ * Liegt die .user.ini des Plugins, und greift sie?
+ *
+ * Das Plugin legt in seinem htmlauth-Verzeichnis eine .user.ini ab, die
+ * upload_max_filesize und post_max_size fuer GENAU DIESES Verzeichnis
+ * anhebt. Ob das etwas bewirkt, haengt daran, wie PHP hier laeuft: bei
+ * CGI/FastCGI/FPM wird sie gelesen, als Apache-Modul uebergangen. Das laesst
+ * sich nicht vorhersagen - also wird es gemessen und gesagt.
+ *
+ * Rueckgabe: array(liegt_da, greift, Pfad). "greift" ist true, wenn die
+ * tatsaechlich geltende Grenze mindestens so gross ist wie die, die in der
+ * Datei steht - das ist der einzige Beweis, den es von innen gibt.
+ */
+function fb_user_ini()
+{
+    /* Die Datei gehoert neben die Oberflaeche, nicht neben diese
+     * Bibliothek: .user.ini wirkt auf das Verzeichnis des AUSGEFUEHRTEN
+     * Skripts, und abgesendet wird an htmlauth/index.php. Im installierten
+     * Zustand liegen html/ und htmlauth/ in getrennten Baeumen, deshalb die
+     * Kandidatenliste statt eines festen Pfades. */
+    $kandidaten = array(
+        dirname(__DIR__) . '/htmlauth/.user.ini',
+        dirname(dirname(__DIR__)) . '/webfrontend/htmlauth/.user.ini',
+    );
+    $p = fb_paths();
+    if ($p['home'] !== '') {
+        $kandidaten[] = $p['home'] . '/webfrontend/htmlauth/plugins/'
+                      . $p['plugin'] . '/.user.ini';
+    }
+    $pfad = '';
+    foreach ($kandidaten as $k) {
+        if (is_file($k)) { $pfad = $k; break; }
+    }
+    if ($pfad === '') { return array(false, false, ''); }
+    /* Was steht drin - und was gilt wirklich? */
+    $soll = 0;
+    $roh = fb_holen_datei($pfad);
+    if ($roh !== false && preg_match('/^\s*upload_max_filesize\s*=\s*(\S+)/mi', $roh, $m)) {
+        $soll = fb_ini_byte($m[1]);
+    }
+    $ist = fb_ini_byte((string) ini_get('upload_max_filesize'));
+    return array(true, $soll > 0 && $ist >= $soll, $pfad);
+}
+
+/**
  * In welchen Ordnern wird nach einer abgelegten Projektdatei gesucht?
  *
  * DER WEG AN DER ABSENDUNG VORBEI.
