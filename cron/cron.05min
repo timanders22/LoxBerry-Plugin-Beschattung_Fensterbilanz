@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# Fensterbilanz - der Lauf alle fuenf Minuten.
+#
+# Warum fuenf und nicht eine Minute: der Sonnenstand aendert sich um rund
+# ein Viertelgrad in der Minute, das Urteil je Fenster also kaum. Der Weg
+# ueber den Endpunkt ist ohnehin schneller - sobald Loxone einen neuen
+# Messwert abliefert, wird gerechnet. Dieser Lauf ist der Rueckhalt fuer den
+# Fall, dass gar keine Messwerte hereinkommen: dann muss trotzdem jemand
+# merken, dass die Sonne weitergewandert ist, und die Zahl HERZ hochzaehlen.
+#
+# Der Platzhalter in der Zeile LAUF= wird bei der Installation durch den
+# bin-Ordner des Plugins ersetzt. Er steht deshalb NUR dort und wird hier im
+# Kommentar bewusst nicht wiederholt: der Installer ersetzt ihn ueberall,
+# und danach stuende in diesem Kommentar ein fest verdrahteter Systempfad -
+# genau danach sucht der Pluginpruefer, ohne den Zusammenhang zu lesen.
+# (Ein Beispiel, das den beschriebenen Fehler selbst begeht, ist keines -
+# in der ersten Fassung dieser Datei stand er hier noch.)
+LAUF="REPLACELBPBINDIR/fb_lauf.php"
+
+# Fail loud statt still. Ein Cron, der schweigend nichts tut, ist schlimmer
+# als keiner: in Loxone sieht ein stehengebliebenes Urteil aus wie ein
+# gueltiges. Nur die Fehlerausgabe geht weiter, die normale Ausgabe nicht -
+# sonst schriebe jeder Lauf eine Zeile in die Systempost.
+if [ ! -f "$LAUF" ]; then
+    MELDUNG="Fensterbilanz: fb_lauf.php wurde nicht gefunden - es wird nicht gerechnet."
+    command -v logger >/dev/null 2>&1 && logger -t fensterbilanz "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 1
+fi
+
+php "$LAUF" >/dev/null

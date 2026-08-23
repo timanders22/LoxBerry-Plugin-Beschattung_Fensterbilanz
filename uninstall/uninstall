@@ -1,0 +1,17 @@
+#!/bin/bash
+# Fensterbilanz - Deinstallation
+#
+# Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
+# config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN bliebe liegen -
+# mitsamt dem Wortzeichen, mit dem der Endpunkt erreichbar war.
+SELF=$(cd "$(dirname "$0")" && pwd)
+PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
+BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+
+rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+rm -rf "$BASE/data/plugins/$PFOLDER"
+
+echo "<OK> Fensterbilanz entfernt, Sicherungsdatei und Messwerte geloescht."
+echo "<INFO> Die virtuellen Ein- und Ausgaenge in der Loxone-Projektdatei"
+echo "<INFO> bleiben bestehen und muessen dort von Hand entfernt werden."
+exit 0
