@@ -961,6 +961,55 @@ $fb_rahmen = class_exists('LBWeb', false);
 if ($fb_rahmen) {
     LBWeb::lbheader(fb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
+
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($fb_post && isset($_POST['fb_sichern'])) {
+    $fb_js = json_encode(fb_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($fb_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="beschattung_fensterbilanz_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $fb_js;
+        exit;
+    }
+    $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($fb_post && isset($_POST['fb_zurueck'])) {
+    if (!isset($_FILES['fb_sicherung']) || !is_array($_FILES['fb_sicherung'])
+        || !isset($_FILES['fb_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['fb_sicherung']['tmp_name'])) {
+        $fb_fehler[] = fb_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['fb_sicherung']['size'] > 262144) {
+        $fb_fehler[] = fb_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($fb_neu, $fb_mangel, $fb_n) = fb_sicherung_lesen(
+            (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']));
+        if ($fb_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $fb_fehler[] = fb_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $fb_mangel);
+        } elseif (fb_config_speichern($fb_neu)) {
+            $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
+        } else {
+            $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard: eigener Behaelter, kein Schattenwurf, Reiter im Fluss */
@@ -1949,6 +1998,28 @@ function fbOrdnerSetzen(sel) {
   </form>
 </div>
 <?php } ?>
+
+
+<h2><?= fb_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= fb_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= fb_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fb_sichern" value="1"><?= fb_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+    <input data-role="none" type="file" name="fb_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="fb_zurueck" value="1"><?= fb_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
