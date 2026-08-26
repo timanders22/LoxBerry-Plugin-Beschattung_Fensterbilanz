@@ -100,6 +100,23 @@ if ($fb_post) {
  * Endpunkt, weil sie schreibt. */
 $fb_ergaenzt = fb_cfg_vervollstaendigen();
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlagen herunterladen ---------------- */
 /* Das Auslese-Skript zum Herunterladen.
  *
@@ -958,9 +975,6 @@ $fb_ohne_standort = (abs((float) $fb_cfg['breite']) < 0.001
                      && abs((float) $fb_cfg['laenge']) < 0.001);
 
 $fb_rahmen = class_exists('LBWeb', false);
-if ($fb_rahmen) {
-    LBWeb::lbheader(fb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
-}
 
 
 /* ---------------- Einstellungen sichern ----------------
@@ -1008,6 +1022,11 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
             $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($fb_rahmen) {
+    LBWeb::lbheader(fb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
