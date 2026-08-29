@@ -1049,6 +1049,7 @@ function fb_log($text)
     if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
     /* log/plugins liegt auf einer Ramdisk - eine unbegrenzt wachsende Datei
      * frisst Arbeitsspeicher, nicht Plattenplatz. */
+    clearstatcache(true, $p['log']);
     if (is_file($p['log']) && filesize($p['log']) > 512000) {
         $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
@@ -1076,6 +1077,14 @@ function fb_log_wenn_neu($schluessel, $text)
      * ausgerechnet die ERSTE Zeile in der leeren Datei - also die eine
      * Meldung, die den Anwender interessiert. Gemessen: dritter Lauf nach
      * dem Leeren, Protokoll blieb bei null Zeilen. */
+    /* Der Zwischenspeicher von stat() muss vorher weg, sonst kehrt sich die
+     * Absicht um. fb_log_wenn_neu() wird in EINEM Lauf von fb_lauf.php an
+     * zwoelf Stellen gerufen. Sieht filesize() beim ersten Mal die leere
+     * Datei, merkt PHP sich diese Null fuer den ganzen Prozess - auch nachdem
+     * fb_log() geschrieben hat. Der Merker wuerde dann bei JEDEM weiteren
+     * Aufruf geloescht, und die Wiederholungssperre, um die es dieser
+     * Funktion einzig geht, waere fuer den ganzen Lauf ausser Kraft. */
+    clearstatcache(true, $p['log']);
     if (!is_file($p['log']) || filesize($p['log']) === 0) {
         @unlink($merk);
     }
