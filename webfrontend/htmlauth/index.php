@@ -2060,7 +2060,8 @@ function fbOrdnerSetzen(sel) {
 <div class="sm-warnung"><?= sprintf(fb_t('MQTT.ABO_V1'), fb_e($fb_cfg['mqtt_topic'])) ?></div>
 <?php } else { ?>
 <div class="sm-warnung"><?= sprintf(fb_t('MQTT.ABO_V1'), fb_e($fb_cfg['mqtt_topic'])) ?></div>
-<div class="sm-hilfe"><?= sprintf(fb_t('MQTT.ABO_V2'), fb_e($fb_cfg['mqtt_topic'])) ?></div>
+<div class="sm-hinweis"><?= sprintf(fb_t('MQTT.ABO_V2'), fb_e($fb_cfg['mqtt_topic'])) ?></div>
+<div class="sm-hilfe"><?= fb_t('MQTT.ABO_UNBEKANNT') ?></div>
 <?php } ?>
 
 <form action="index.php" method="post">
@@ -2119,7 +2120,8 @@ function fbOrdnerSetzen(sel) {
     if ((int) $fb_mqtt['fassung'] >= 2) { echo sprintf(fb_t('LOX.S2_V2'), fb_e($fb_cfg['mqtt_topic']));
     } elseif ((int) $fb_mqtt['fassung'] === 1) { echo sprintf(fb_t('LOX.S2_V1'), fb_e($fb_cfg['mqtt_topic']));
     } else { echo sprintf(fb_t('LOX.S2_V1'), fb_e($fb_cfg['mqtt_topic']))
-                  . '<br>' . sprintf(fb_t('LOX.S2_V2'), fb_e($fb_cfg['mqtt_topic'])); } ?></div>
+                  . '<br>' . sprintf(fb_t('LOX.S2_V2'), fb_e($fb_cfg['mqtt_topic']))
+                  . '<br>' . fb_t('MQTT.ABO_UNBEKANNT'); } ?></div>
 
 <h3><?= fb_e(fb_t('LOX.H_MESSWERTE')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.MESSWERTE_TEXT') ?></div>
