@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.3
+Version 0.12.7
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -182,9 +182,12 @@ Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.
      Absendegrenze und an jedem Dateimanager vorbei.** Die Namensregeln
      bleiben dabei im Plugin, damit alle Wege dieselben Kürzel ergeben.
    * **Datei auf den LoxBerry legen** — über die Windows-Freigabe, mit
-     WinSCP oder per `scp`, nach `data/plugins/fensterbilanz/`. Sie steht
-     dann im Reiter *Einstellungen* zur Auswahl. **Ohne Größenbeschränkung**,
-     weil nichts abgesendet wird.
+     WinSCP oder per `scp`. Sie steht dann im Reiter *Einstellungen* zur
+     Auswahl. **Ohne Größenbeschränkung**, weil nichts abgesendet wird.
+     **Nicht nach `data/plugins/fensterbilanz/`**: dieses Verzeichnis wird
+     bei jedem Update und bei der Deinstallation abgeräumt, und die Datei
+     ist dann lautlos weg. Den Ablageort, der beides übersteht, nennt der
+     Reiter *Einstellungen* mit vollem Pfad.
    * **Datei über den Browser absenden** — bequemer, scheitert aber meist:
      PHP nimmt ab Werk 2 MB je Datei an, eine Projektdatei ist 3 bis 4 MB
      groß. **Das Plugin kann diese Grenze nicht anheben** —
@@ -215,7 +218,7 @@ Zum Prüfen der Einrichtung gibt es Bilder statt Zahlenkolonnen:
 
 ## Was über die Zeit dazukommt
 
-Drei Dateien überleben jedes Update mit Absicht — in ihnen steht, was sich
+Vier Dateien werden über ein Update gerettet — in ihnen steht, was sich
 nicht nachrechnen lässt:
 
 | Datei | Inhalt |
@@ -223,6 +226,22 @@ nicht nachrechnen lässt:
 | `bilanz.json` | die Wattstunden des laufenden Tages, je Fenster und je Raum |
 | `lernen.json` | je Raum und Tag: Wärmeeintrag gegen gemessene Temperaturspanne |
 | `pv.json` | Tagessummen von gemeldeter Strahlung und Ertragsprognose |
+| `messwerte.json` | was zuletzt aus dem Miniserver hereinkam |
+
+**Wie das geht, und warum es bis 0.12.6 nicht ging.** Der LoxBerry-Installer
+räumt `data/plugins/<ordner>/` bei **jedem** Upgrade ab, nicht nur bei der
+Deinstallation — `purge_installation` in `plugininstall.pl` löscht das
+Verzeichnis, bevor `postinstall` und `postupgrade` überhaupt laufen. Bis
+0.12.6 stand an vier Stellen geschrieben, die drei Dateien überstünden ein
+Update; sie überstanden es nicht, und `postupgrade.sh` meldete es bei jedem
+Update ausdrücklich als gelungen. Seit 0.12.7 legt `preupgrade.sh` sie
+**neben** den Ordner (`data/plugins/<ordner>.rettung.<name>.json`), und
+`postinstall.sh` holt sie zurück; `postupgrade.sh` zählt nach und sagt, wie
+viele wieder da sind.
+
+`stand.json` wird weiterhin bewusst verworfen: ändert sich sein Aufbau
+zwischen zwei Fassungen, zeigte die Oberfläche sonst bis zum nächsten Lauf
+alte Felder. Der nächste Cron-Lauf ist höchstens fünf Minuten entfernt.
 
 Wann ein Raum als **voll** gilt, steht als Zahl **je Quadratmeter
 Grundfläche** — 150 Wh/m² sind für ein 5-m²-Bad 750 Wh und für ein
