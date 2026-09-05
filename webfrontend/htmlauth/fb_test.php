@@ -358,7 +358,20 @@ function fb_probe_reiter()
     $s = (string) @file_get_contents($d);
     preg_match_all('/data-ziel="(tab-[a-z0-9]+)"/', $s, $a);
     preg_match_all('/class="sm-seite[^"]*"[^>]*id="(tab-[a-z0-9]+)"/', $s, $b);
-    preg_match_all("/'(tab-[a-z0-9]+)'/", $s, $c);
+    /* DIE POSITIVLISTE WIRD IN IHRER EIGENEN ZEILE GESUCHT, nicht in der
+     * ganzen Datei.
+     *
+     * Bis 0.12.6 stand hier preg_match_all("/'(tab-[a-z0-9]+)'/", $s, $c)
+     * ueber den GESAMTEN Quelltext. 'tab-settings' kommt darin aber allein
+     * achtmal vor - in den Zuweisungen $fb_tab = ... der Handler. Wer einen
+     * Reiter aus $fb_reiter herausnimmt, wird deshalb in einer
+     * Handler-Zuweisung wiedergefunden, und die Zeile bleibt gruen: also
+     * genau der Fall, gegen den es sie gibt. Sie war in einer Richtung nie
+     * geeicht. */
+    $c = array(1 => array());
+    if (preg_match('/\$fb_reiter\s*=\s*array\(([^;]*)\);/', $s, $mreiter)) {
+        preg_match_all("/'(tab-[a-z0-9]+)'/", $mreiter[1], $c);
+    }
     $leiste = array_values(array_unique($a[1]));
     $bereiche = array_values(array_unique($b[1]));
     $liste = array_values(array_unique($c[1]));
@@ -392,11 +405,27 @@ function fb_probe_smactive()
  * nicht mitschickt - dann tut es einfach nichts mehr, und der Anwender
  * sucht den Fehler bei sich.
  */
+/**
+ * Sind alle Formulare geschlossen und keines verschachtelt?
+ *
+ * GELESEN WERDEN BEIDE OBERFLAECHENDATEIEN. index.php traegt sie heute
+ * alle, fb_test.php keines - aber sobald eines hierher wandert, meldete
+ * eine Zeile, die nur index.php liest, weiter eine Zahl, die mit sich
+ * selbst uebereinstimmt und trotzdem falsch ist. Die Grundmenge steht
+ * deshalb in der Antwort.
+ */
 function fb_probe_formulare()
 {
-    $d = __DIR__ . '/index.php';
-    if (!is_file($d)) { return array(null, fb_klartext('TEST.P_KEINE_DATEI')); }
-    $s = (string) @file_get_contents($d);
+    $dateien = array(__DIR__ . '/index.php', __FILE__);
+    $s = '';
+    $gelesen = 0;
+    foreach ($dateien as $d) {
+        if (!is_file($d)) { continue; }
+        $s .= (string) @file_get_contents($d) . "
+";
+        $gelesen++;
+    }
+    if ($gelesen === 0) { return array(null, fb_klartext('TEST.P_KEINE_DATEI')); }
     $gesamt = 0; $ohne = 0;
     if (preg_match_all('/<form\s/', $s, $y, PREG_OFFSET_CAPTURE)) {
         foreach ($y[0] as $f) {
@@ -411,7 +440,47 @@ function fb_probe_formulare()
     if ($ohne > 0) {
         return array(false, sprintf(fb_klartext('TEST.P_FORM_OHNE'), $ohne, $gesamt));
     }
-    return array(true, sprintf(fb_klartext('TEST.P_FORM_OK'), $gesamt));
+    return array(true, sprintf(fb_klartext('TEST.P_FORM_OK'), $gesamt, $gelesen));
+}
+
+/**
+ * Nimmt die Sicherung Gueltiges an und lehnt Fremdes ab?
+ *
+ * Drei Faelle, wie der Hausstandard sie verlangt - gueltig, halb gueltig,
+ * fremd -, gegen fb_sicherung_lesen() gefahren. Sie kostet kein Netz, kein
+ * Geraet und keine Datei: die Probe wird aus fb_vorgaben() gebaut.
+ *
+ * ES GAB SIE BIS 0.12.6 NICHT. Die Sicherungsknoepfe kamen in 0.12.3 und
+ * 0.12.4 hinzu, und nichts im Plugin hat je gemeldet, ob sie tragen.
+ */
+function fb_probe_sicherung()
+{
+    if (!function_exists('fb_sicherung_lesen')) {
+        return array(null, fb_klartext('TEST.A_SICH_KEINE'));
+    }
+    $voll = fb_vorgaben();
+    $faelle = array(
+        // Name              Inhalt                                 muss angenommen werden?
+        array('gueltig',     json_encode($voll),                                     true),
+        array('mit Kopf',    json_encode(array_merge(array('_stand' => 'x'), $voll)), true),
+        array('halb',        json_encode(array_merge($voll, array('unbekannt' => 1))), false),
+        array('fremd',       json_encode(array('broker' => 'x', 'topic' => 'y')),     false),
+        array('kein JSON',   'das ist keine Sicherung',                               false),
+        array('leer',        '{}',                                                    false),
+    );
+    $schlecht = array();
+    foreach ($faelle as $f) {
+        list($neu, $mangel, $n) = fb_sicherung_lesen($f[1]);
+        $angenommen = ($neu !== null);
+        if ($angenommen !== $f[2]) { $schlecht[] = $f[0]; }
+        /* Eine abgelehnte Datei MUSS sagen, warum. */
+        if (!$angenommen && !$mangel) { $schlecht[] = $f[0] . ' (ohne Begruendung)'; }
+    }
+    if ($schlecht) {
+        return array(false, sprintf(fb_klartext('TEST.A_SICH_NEIN'),
+                                    count($schlecht), implode(', ', $schlecht)));
+    }
+    return array(true, sprintf(fb_klartext('TEST.A_SICH_JA'), count($faelle)));
 }
 
 /** Sind alle Kuerzel eindeutig? Zwei gleiche ueberschreiben einander lautlos. */
@@ -545,6 +614,9 @@ function fb_test_selbstpruefung()
 
     list($ok, $txt) = fb_probe_meldungstexte();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_MELDUNG'), $ok, $txt);
+
+    list($ok, $txt) = fb_probe_sicherung();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_SICHERUNG'), $ok, $txt);
 
     list($ok, $txt) = fb_probe_upload();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_UPLOAD'), $ok, $txt);

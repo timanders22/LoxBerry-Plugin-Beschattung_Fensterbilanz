@@ -33,16 +33,22 @@ mkdir -p "$PDATA" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
-# 775 statt 755 auf den Datenordner: dort soll der Anwender seine
-# .Loxone-Projektdatei ABLEGEN koennen (ueber die Windows-Freigabe oder
-# scp). Der Weg ueber den Browser scheitert an upload_max_filesize, und
-# das Plugin kann diese Grenze nicht anheben - sie gilt je Verzeichnis und
-# wird ausgewertet, bevor eine Zeile des Plugins laeuft.
-chmod 775 "$PDATA" 2>/dev/null
+# 750 auf den Datenordner. Bis 0.12.6 stand hier 775, damit der Anwender
+# seine .Loxone-Projektdatei hier ABLEGEN konnte - und genau dahin hat ihn
+# die Meldung am Ende dieses Skripts auch geschickt. Der Ordner wird aber
+# bei JEDEM Upgrade abgeraeumt (plugininstall.pl:1631), und die Oberflaeche
+# warnt seit jeher davor. Der Ablageort steht jetzt im Reiter Einstellungen;
+# fb_ablageordner() sucht ihn ausserhalb dieses Ordners.
+chmod 750 "$PDATA" 2>/dev/null
 chmod 755 "$PLOG" 2>/dev/null
 chmod 700 "$PCONFIG" 2>/dev/null
 
-[ -f "$PCONFIG/fensterbilanz.json" ] || echo '{}' > "$PCONFIG/fensterbilanz.json"
+if [ ! -f "$PCONFIG/fensterbilanz.json" ]; then
+    echo '{}' > "$PCONFIG/fensterbilanz.json" || {
+        echo "<FAIL> Die Konfigurationsdatei liess sich nicht anlegen."
+        exit 1
+    }
+fi
 chmod 600 "$PCONFIG/fensterbilanz.json" 2>/dev/null
 
 # Sicherung zurueckspielen (uebersteht Update UND Neuinstallation).
@@ -53,8 +59,44 @@ CF="$PCONFIG/fensterbilanz.json"
 if [ -f "$BK" ]; then
     INHALT=$(cat "$CF" 2>/dev/null)
     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-        cp -p "$BK" "$CF" && echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+        if cp -p "$BK" "$CF"; then
+            chmod 600 "$CF" 2>/dev/null
+            echo "<OK> Konfiguration aus Sicherung wiederhergestellt."
+        else
+            echo "<FAIL> Die gesicherte Konfiguration liess sich NICHT zurueckspielen."
+            echo "<FAIL> Das Plugin startet mit Werkseinstellungen; das Wortzeichen"
+            echo "<FAIL> wechselt damit, und die im Miniserver eingetragenen Adressen"
+            echo "<FAIL> werden ungueltig. Die Sicherung liegt noch unter: $BK"
+        fi
     fi
+fi
+
+# ---------- Die Messreihen aus preupgrade.sh zurueckholen ----------
+#
+# purge_installation loescht data/plugins/<ordner>/ bei JEDEM Upgrade
+# (plugininstall.pl:1631, ohne Bedingung). preupgrade.sh legt deshalb vier
+# Dateien NEBEN den Ordner; hier kommen sie zurueck - aber nur, wenn am Ziel
+# nichts liegt, damit eine Neuinstallation nichts ueberschreibt.
+ZURUECK=0
+for N in bilanz lernen pv messwerte; do
+    R="$BASE/data/plugins/$PFOLDER.rettung.$N.json"
+    Z="$PDATA/$N.json"
+    if [ -s "$R" ] && [ ! -s "$Z" ]; then
+        if cp -p "$R" "$Z"; then
+            chmod 644 "$Z" 2>/dev/null
+            rm -f "$R"
+            ZURUECK=$((ZURUECK+1))
+        else
+            echo "<FAIL> $N.json liess sich nicht zurueckholen; die Rettung"
+            echo "<FAIL> bleibt unter $R liegen."
+        fi
+    elif [ -f "$R" ]; then
+        rm -f "$R"
+    fi
+done
+if [ "$ZURUECK" -gt 0 ]; then
+    echo "<OK> $ZURUECK Datei(en) mit Messreihen zurueckgeholt (Tagesbilanz,"
+    echo "<OK> Lernkurve, PV-Gegenprobe, Messwerte)."
 fi
 
 # ---------- Laeuft die Rechnung ueberhaupt? ----------
@@ -104,7 +146,10 @@ if [ -f "$PBIN/fb_lauf.php" ]; then
     fi
 fi
 
-chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+# Kein chown: plugininstall.pl ruft dieses Skript per "sudo -n -u loxberry"
+# auf (:862) und setzt Eigentuemer und Rechte selbst (setrights/setowner).
+# Ein chown als loxberry kann keinen Eigentuemer aendern - die Zeile hat mit
+# 2>/dev/null still nichts getan und dabei nach Absicherung ausgesehen.
 
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche:"
@@ -114,9 +159,11 @@ echo "<INFO>  2. Reiter Einstellungen: je Fenster eine Zeile - Kuerzel,"
 echo "<INFO>     Himmelsrichtung, GLASFLAECHE in m2, Raum."
 echo "<INFO>     Die Liste laesst sich aus der Loxone-Projektdatei fuellen."
 echo "<INFO>     PHP nimmt ueber den Browser meist nur 2 MB an, eine"
-echo "<INFO>     Projektdatei ist groesser. Legen Sie sie deshalb hierhin:"
-echo "<INFO>       $PDATA"
-echo "<INFO>     Von dort liest das Plugin sie ohne Groessenbeschraenkung."
+echo "<INFO>     Projektdatei ist groesser. Der Reiter Einstellungen nennt"
+echo "<INFO>     einen Ablageort, aus dem das Plugin sie ohne"
+echo "<INFO>     Groessenbeschraenkung liest - dort steht der volle Pfad."
+echo "<INFO>     NICHT in den Datenordner des Plugins legen: der wird bei"
+echo "<INFO>     jedem Update und bei der Deinstallation abgeraeumt."
 echo "<INFO>  3. Reiter Einbindung in Loxone: BEIDE Vorlagen herunterladen."
 echo "<INFO>     Die Ausgangs-Vorlage liefert die Messwerte herein, ohne sie"
 echo "<INFO>     rechnet das Plugin nichts."

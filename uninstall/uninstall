@@ -4,11 +4,55 @@
 # Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
 # config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN bliebe liegen -
 # mitsamt dem Wortzeichen, mit dem der Endpunkt erreichbar war.
-SELF=$(cd "$(dirname "$0")" && pwd)
-PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
-BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+#
+# DER ORDNERNAME KOMMT AUS DEM ARGUMENT, NICHT AUS DEM PFAD.
+#
+# Bis 0.12.6 stand hier
+#     PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
+# also der Ordner ueber dem Skript. Das war falsch, und zwar auf jeder
+# Anlage: plugininstall.pl kopiert diese Datei nach
+#     <home>/data/system/uninstall/<name>              (plugininstall.pl:1170)
+# und ruft sie von dort auf
+#     cd "<home>/data/system/uninstall" && "$file" \
+#         "$tempfile" "$pname" "$pfolder" "$pversion" "$lbhomedir" "$tempfolder"
+#                                                      (plugininstall.pl:1589)
+# $0 liegt damit in <home>/data/system/uninstall/, und basename eine Stufe
+# darueber ergibt "system". Gemessen an einem nachgestellten LoxBerry:
+# das Skript loeschte NICHTS, nannte die Projektdatei des Anwenders nicht,
+# meldete aber "Sicherungsdatei und Messwerte geloescht" mit Rueckgabe 0.
+# Die Zweitschrift mit dem Aktionstoken blieb liegen - sie loescht sonst
+# niemand, denn purge_installation raeumt nur das VERZEICHNIS
+# config/plugins/<ordner>/ ab, und die Datei liegt DANEBEN.
+#
+# preupgrade.sh und postupgrade.sh haben die Argumentform von Anfang an
+# richtig benutzt; nur diese Datei nicht.
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-fensterbilanz}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    # Aufwaertssuche statt fester Stufenzahl: das Skript liegt je nach
+    # Aufrufweg verschieden tief.
+    D="$SELF"
+    while [ "$D" != "/" ] && [ -n "$D" ]; do
+        if [ -d "$D/config/plugins" ] && [ -d "$D/data/plugins" ]; then BASE="$D"; break; fi
+        D=$(dirname "$D")
+    done
+fi
 
-rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+# FAIL CLOSED: ohne einen erkennbaren LoxBerry wird nichts geloescht.
+# Ein "rm -rf" auf einen falsch geratenen Pfad ist schlimmer als eine
+# liegengebliebene Datei.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    echo "<FAIL> Der LoxBerry-Ordner liess sich nicht bestimmen (BASE='$BASE')."
+    echo "<INFO> Es wurde nichts geloescht. Bitte von Hand entfernen:"
+    echo "<INFO>   config/plugins/$PFOLDER.backup.json   (enthaelt das Wortzeichen)"
+    echo "<INFO>   data/plugins/$PFOLDER/"
+    exit 1
+fi
+
+WEG=0
 
 # ERST NENNEN, DANN LOESCHEN.
 #
@@ -24,9 +68,32 @@ if [ -n "$FREMD" ]; then
     echo "$FREMD" | sed 's/^/<INFO>    /'
     echo "<INFO> Sie liegen auf dem PC weiterhin vor - das Plugin hat sie nur gelesen."
 fi
-rm -rf "$BASE/data/plugins/$PFOLDER"
 
-echo "<OK> Fensterbilanz entfernt, Sicherungsdatei und Messwerte geloescht."
+# Die Zweitschrift mit dem Wortzeichen. Vor dem Loeschen ueberschreiben:
+# ein "rm" gibt den Platz frei, loescht den Inhalt aber nicht.
+SICH="$BASE/config/plugins/$PFOLDER.backup.json"
+if [ -f "$SICH" ]; then
+    : > "$SICH"
+    rm -f "$SICH" && WEG=$((WEG+1))
+fi
+
+# Die Rettungsdateien aus preupgrade.sh, falls ein Update abgebrochen ist.
+for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json; do
+    [ -f "$R" ] && rm -f "$R" && WEG=$((WEG+1))
+done
+
+if [ -d "$BASE/data/plugins/$PFOLDER" ]; then
+    rm -rf "$BASE/data/plugins/$PFOLDER" && WEG=$((WEG+1))
+fi
+
+# Die Meldung haengt am Ergebnis, nicht am guten Willen.
+if [ -f "$SICH" ] || [ -d "$BASE/data/plugins/$PFOLDER" ]; then
+    echo "<FAIL> Es liess sich nicht alles entfernen. Bitte nachsehen:"
+    [ -f "$SICH" ] && echo "<FAIL>    $SICH"
+    [ -d "$BASE/data/plugins/$PFOLDER" ] && echo "<FAIL>    $BASE/data/plugins/$PFOLDER"
+    exit 1
+fi
+echo "<OK> Fensterbilanz entfernt: Sicherungsdatei, Messwerte und Datenordner geloescht ($WEG Posten)."
 echo "<INFO> Die virtuellen Ein- und Ausgaenge in der Loxone-Projektdatei"
 echo "<INFO> bleiben bestehen und muessen dort von Hand entfernt werden."
 exit 0

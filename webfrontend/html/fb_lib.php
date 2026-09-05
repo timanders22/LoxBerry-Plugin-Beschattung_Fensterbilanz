@@ -65,6 +65,14 @@ function fb_x($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 
  * bestehende Zeilen behalten dabei ihre Nummer, denn gezaehlt wird nach der
  * ZEILE und nicht nach den belegten Zeilen. */
 define('FB_FENSTER', 30);
+/* Wie weit darf ein Zeitstempel in der Zukunft liegen, ehe er als falsch
+ * gilt? Ein paar Sekunden Vorlauf sind normal (zwei Uhren, ein Netz), mehr
+ * als fuenf Minuten sind es nicht. Dieselbe Schranke gilt fuer Messwerte
+ * (fb_messwert) und seit 0.12.7 auch fuer den eigenen Stand. */
+if (!defined('FB_UHRSPRUNG')) { define('FB_UHRSPRUNG', 300); }
+/* Punkte der Strahlungsreihe. Muss die groesste einstellbare
+ * Glaettungsdauer bei minuetlicher Meldung tragen (3600 s). */
+if (!defined('FB_REIHE_MAX')) { define('FB_REIHE_MAX', 60); }
 
 /**
  * Die Pfade. $neu = true wirft den gemerkten Stand weg.
@@ -94,9 +102,17 @@ function fb_paths($neu = false)
         'datadir'   => $basis . '/data/plugins/' . $dir,
         'stand'     => $basis . '/data/plugins/' . $dir . '/stand.json',
         'messwerte' => $basis . '/data/plugins/' . $dir . '/messwerte.json',
-        /* Diese drei ueberleben ein Update mit Absicht (postupgrade.sh
-         * loescht sie NICHT): in ihnen steckt alles, was ueber Tage und
-         * Wochen zusammengetragen wurde und sich nicht nachrechnen laesst. */
+        /* Diese drei und messwerte.json werden ueber ein Update GERETTET:
+         * in ihnen steckt alles, was ueber Tage und Wochen zusammengetragen
+         * wurde und sich nicht nachrechnen laesst.
+         *
+         * Bis 0.12.6 stand hier "sie ueberleben ein Update mit Absicht
+         * (postupgrade.sh loescht sie NICHT)". Der zweite Halbsatz war
+         * wahr, der erste nicht: purge_installation raeumt
+         * data/plugins/<ordner>/ bei JEDEM Upgrade ab, und zwar bevor
+         * postinstall und postupgrade ueberhaupt laufen. Seit 0.12.7 legt
+         * preupgrade.sh sie neben den Ordner und postinstall.sh holt sie
+         * zurueck - erst dadurch stimmt der Satz. */
         'bilanz'    => $basis . '/data/plugins/' . $dir . '/bilanz.json',
         'lernen'    => $basis . '/data/plugins/' . $dir . '/lernen.json',
         'pv'        => $basis . '/data/plugins/' . $dir . '/pv.json',
@@ -643,6 +659,49 @@ function fb_config_richten($cfg)
     if ($cfg['schwelle_aus'] >= $cfg['schwelle_ein']) {
         $cfg['schwelle_aus'] = max(0, $cfg['schwelle_ein'] - 1);
     }
+
+    /* DIE LISTE WIRD GEKAPPT - die Schleife oben SETZT nur die Indizes
+     * 0 bis FB_FENSTER-1, sie entfernt nichts.
+     *
+     * Bis 0.12.6 blieben Eintraege ab Index 30 unberuehrt liegen: ohne
+     * gesaeubertes Kuerzel, ohne geklemmten Azimut, ohne geklemmte
+     * Neigung. fb_rechnen(), fb_fenster() und fb_bilanz_fortschreiben()
+     * laufen aber ueber die GANZE Liste. Gemessen an einer Sicherung mit
+     * 40 Zeilen: Zeile 35 behielt das Kuerzel "A;OK=1" und wurde
+     * mitgerechnet - daraus wurden die Feldnamen "A;OK=1URTEIL" und so
+     * fort, also Semikolon und Gleichheitszeichen mitten in der
+     * Statuszeile, an der Loxone seine Suchtexte ansetzt. Hereingekommen
+     * ist die Zeile ueber das Zurueckspielen einer Sicherung; das
+     * Formular hat sie nie zugelassen. */
+    $cfg['fenster'] = array_slice($cfg['fenster'], 0, FB_FENSTER);
+
+    /* KUERZEL SIND EINDEUTIG - und zwar auf JEDEM Weg.
+     *
+     * Der Speicher-Handler beanstandet ein doppeltes Kuerzel seit jeher
+     * (FEHLER.KUERZEL_DOPPELT). Die Rueckspielung tat es nicht, und die
+     * Wirkung war still: fb_felderwerte() und fb_mqtt_nachrichten()
+     * schreiben je Kuerzel EINEN Satz Felder, das zweite Fenster
+     * ueberschreibt also das erste. Gemessen an zwei Fenstern mit dem
+     * Kuerzel WOZI - Sued 1406 W mit Urteil -100, Nord 435 W mit Urteil 0:
+     * an den Miniserver ging 435 und 0. Das Fenster, das Beschattung
+     * verlangte, war unsichtbar, und keine Zeile hat es gesagt.
+     *
+     * Geleert wird das ZWEITE Vorkommen, nicht das erste: die obere Zeile
+     * ist die aeltere, und ein Fenster ohne Kuerzel ist ohnehin nicht
+     * aktiv (fb_fenster() ueberspringt es). Gemeldet wird es dort, wo ein
+     * Mensch hinsieht - im Reiter Test und beim Speichern. */
+    $gesehen = array();
+    foreach ($cfg['fenster'] as $i => $f) {
+        $k = isset($f['kuerzel']) ? (string) $f['kuerzel'] : '';
+        if ($k === '') { continue; }
+        $gross = strtoupper($k);
+        if (isset($gesehen[$gross])) {
+            $cfg['fenster'][$i]['kuerzel'] = '';
+            $cfg['fenster'][$i]['aktiv'] = 0;
+        } else {
+            $gesehen[$gross] = $i;
+        }
+    }
     return $cfg;
 }
 
@@ -815,6 +874,18 @@ function fb_token()
     if (trim((string) $cfg['aktionstoken']) === '') {
         $cfg['aktionstoken'] = fb_token_erzeugen();
         fb_config_speichern($cfg);
+        /* EIN NEUES WORTZEICHEN WIRD GEMELDET.
+         *
+         * Bis 0.12.6 geschah das stumm. Beim ersten Aufruf einer frischen
+         * Anlage ist das richtig - aber derselbe Weg wird auch begangen,
+         * wenn eine zurueckgespielte Sicherung ein leeres Wortzeichen
+         * mitbringt. Dann wechselt es, und JEDE im Miniserver eingetragene
+         * Adresse wird stumm ungueltig; gesucht wird der Fehler danach in
+         * Loxone. Eine Zeile kostet nichts und beantwortet die Frage. */
+        fb_log('Es wurde ein neues Wortzeichen erzeugt. Die Adressen im '
+             . 'Reiter "Einbindung in Loxone" haben sich damit geaendert - '
+             . 'wer sie im Miniserver eingetragen hat, muss sie dort '
+             . 'nachziehen.');
     }
     fb_config_freigeben($fp);
     return (string) $cfg['aktionstoken'];
@@ -965,17 +1036,25 @@ function fb_messwert_setzen($name, $wert, $cfg = null, $ts = null)
     $zeit = $ts === null ? time() : (int) $ts;
     $neu = array('v' => (float) $roh, 't' => $zeit);
     /* Fuer die Strahlung wird eine kurze Reihe mitgefuehrt - sie ist die
-     * Grundlage der Glaettung. Zwanzig Punkte reichen: bei einem
+     * Grundlage der Glaettung.
+     *
+     * BIS 0.12.6 WAREN ES ZWANZIG PUNKTE, mit der Begruendung "bei einem
      * Meldeabstand von einer Minute sind das zwanzig Minuten, und laenger
-     * glaettet niemand. Aeltere fallen heraus, die Datei waechst also
-     * nicht. */
+     * glaettet niemand". Die Konfiguration erlaubt aber ausdruecklich bis
+     * zu einer Stunde (fb_config_richten: glaettung 0..3600), und
+     * fb_messwerte_glaetten() filtert nur nach Zeit, nicht nach Anzahl -
+     * wer 1800 einstellte, bekam stillschweigend 20 Minuten. Sechzig
+     * Punkte decken den einstellbaren Bereich bei minuetlicher Meldung ab;
+     * aeltere fallen heraus, die Datei waechst also nicht. */
     if ($name === 'strahlung') {
         $reihe = array();
         if (isset($m[$name]['reihe']) && is_array($m[$name]['reihe'])) {
             $reihe = $m[$name]['reihe'];
         }
         $reihe[] = array($zeit, (float) $roh);
-        if (count($reihe) > 20) { $reihe = array_slice($reihe, -20); }
+        if (count($reihe) > FB_REIHE_MAX) {
+            $reihe = array_slice($reihe, -FB_REIHE_MAX);
+        }
         $neu['reihe'] = $reihe;
     }
     $m[$name] = $neu;
@@ -1037,10 +1116,24 @@ function fb_messwert($m, $name, $hoechstalter, $jetzt)
 
 function fb_stand() { return fb_json_lesen(fb_paths()['stand']); }
 
+/**
+ * Alter des gerechneten Standes in Sekunden, -1 wenn es keinen gibt.
+ *
+ * EIN STEMPEL AUS DER ZUKUNFT GILT ALS "NOCH NIE GERECHNET".
+ *
+ * Bis 0.12.6 stand hier max(0, ...). Ein Stand mit einem Stempel in der
+ * Zukunft war damit "null Sekunden alt" - unbegrenzt lange. Fuer
+ * MESSWERTE ist dieselbe Gefahr seit jeher behandelt (fb_messwert(),
+ * Schranke -300); fuer den eigenen Zustand fehlte sie. Der praktische
+ * Fall ist kein Angriff, sondern eine Uhr, die zurueckgestellt wird.
+ */
 function fb_alter()
 {
     $s = fb_stand();
-    return isset($s['ts']) && (int) $s['ts'] > 0 ? max(0, time() - (int) $s['ts']) : -1;
+    if (!isset($s['ts']) || (int) $s['ts'] <= 0) { return -1; }
+    $alter = time() - (int) $s['ts'];
+    if ($alter < -FB_UHRSPRUNG) { return -1; }
+    return max(0, $alter);
 }
 
 function fb_log($text)
@@ -1361,7 +1454,8 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
          * geht durch. */
         $dach_anteil = fb_dach_anteil($sonne['hoehe_geo'], $sonne['azimut'],
                                       $f['azimut'], $f['dach_tiefe'],
-                                      $f['dach_hoehe'], $f['fenster_hoehe']);
+                                      $f['dach_hoehe'], $f['fenster_hoehe'],
+                                      $f['neigung']);
         $e['dach'] = (int) round($dach_anteil * 100.0);
         $strahlen = fb_fensterstrahlung($dni, $diffus, $global, $cos_theta, $f['neigung'],
                                         $cfg['albedo'] / 100.0, $cfg['iam_b0'] / 100.0,
@@ -1749,9 +1843,64 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     $vorher = fb_stand();
     $jetzt = time();
 
-    if (!$erzwingen && isset($vorher['ts'])
-        && ($jetzt - (int) $vorher['ts']) < (int) $cfg['rechentakt']) {
+    /* EIN STAND AUS DER ZUKUNFT DARF DEN LAUF NICHT ANHALTEN.
+     *
+     * Bis 0.12.6 wurde die Differenz roh verglichen. Steht in stand.json
+     * ein Stempel, der in der Zukunft liegt - eine Uhr, die
+     * zurueckgestellt wird, genuegt dafuer -, ist ($jetzt - ts) negativ
+     * und damit DAUERHAFT kleiner als der Rechentakt. Gemessen an einem
+     * nachgestellten LoxBerry: drei Laeufe hintereinander, null gerechnet,
+     * und zwar ohne eine Zeile im Protokoll; nur der Knopf im Reiter Test
+     * ($erzwingen = true) kam noch durch. Der Cron ruft mit
+     * $erzwingen = false und haette nie wieder gerechnet.
+     *
+     * Fuer MESSWERTE ist dieselbe Gefahr seit jeher behandelt
+     * (fb_messwert, Schranke FB_UHRSPRUNG) - hier fehlte sie. Jetzt gilt
+     * dieselbe Schranke, und der Fall wird EINMAL gemeldet: ein Plugin,
+     * das seinen eigenen Zustand verwirft, sagt es. */
+    $abstand = isset($vorher['ts']) ? ($jetzt - (int) $vorher['ts']) : null;
+    if ($abstand !== null && $abstand < -FB_UHRSPRUNG) {
+        fb_log_wenn_neu('uhrsprung', sprintf(
+            'Der gespeicherte Stand traegt einen Zeitstempel aus der Zukunft '
+            . '(%s, also %d Sekunden voraus). Er wird verworfen und neu '
+            . 'gerechnet. Wenn das wiederkehrt, geht die Uhr des LoxBerry '
+            . 'falsch - dann stimmt auch der Tageswechsel der Bilanz nicht.',
+            date('Y-m-d H:i:s', (int) $vorher['ts']), -$abstand));
+        $vorher = array();
+        $abstand = null;
+    }
+    if (!$erzwingen && $abstand !== null
+        && $abstand < (int) $cfg['rechentakt']) {
         return array(false, $vorher);
+    }
+
+    /* EINE SPERRE UM DEN GANZEN LAUF.
+     *
+     * Der Cron und ein melden-Aufruf koennen sich ueberholen: beide lesen
+     * bilanz.json, beide rechnen dieselbe Spanne an, der zweite Schreiber
+     * gewinnt - die Wattstunden einer Spanne gehen verloren, und es gehen
+     * zwei MQTT-Salven mit verschiedenem Inhalt hinaus. Die
+     * Rechentaktbremse oben ist ein Lesen-und-Vergleichen, also nicht
+     * unteilbar.
+     *
+     * Nicht blockierend: wer die Sperre nicht bekommt, kehrt genauso um wie
+     * bei der Rechentaktbremse. Ein wartender Cron-Lauf waere schlechter -
+     * er staute sich hinter einem haengenden Endpunktaufruf.
+     *
+     * EIGENE Sperrdatei, nicht die der Konfiguration: flock() auf zwei
+     * Griffen derselben Datei im selben Prozess blockiert sich selbst, und
+     * fb_config_speichern() greift innerhalb dieses Laufs auf config.lock. */
+    $sperre = null;
+    if (is_dir($p['datadir']) || @mkdir($p['datadir'], 0775, true) || is_dir($p['datadir'])) {
+        $sperre = @fopen($p['datadir'] . '/lauf.lock', 'c+');
+    }
+    if ($sperre !== false && $sperre !== null) {
+        if (!@flock($sperre, LOCK_EX | LOCK_NB)) {
+            fclose($sperre);
+            return array(false, $vorher);
+        }
+    } else {
+        $sperre = null;
     }
 
     $messwerte = fb_messwerte();
@@ -1842,6 +1991,7 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     }
 
     fb_mqtt_senden($cfg, $stand);
+    if ($sperre !== null) { @flock($sperre, LOCK_UN); fclose($sperre); }
     return array(true, $stand);
 }
 
@@ -2130,6 +2280,14 @@ function fb_felder($cfg = null)
          * ansehen soll man sie von Anfang an, benutzen erst dann, wenn man
          * sie kennt. */
         'WH'         => array('Wh',     0,   99999, 'FB_FELD.WH'),
+        /* GLAS - die Leistung, die gerade durch die Scheibe kommt.
+         *
+         * Sie ging bis 0.12.6 ueber MQTT hinaus (<kuerzel>/glas), fehlte
+         * aber im HTTP-Weg. Zwei Wege desselben Plugins trugen damit
+         * verschiedene Groessen: wer nur die Statuszeile benutzt, bekam die
+         * W/m2 am Glas nie, obwohl das Plugin sie rechnet und in der
+         * Tabelle anzeigt. Die Obergrenze ist dieselbe wie bei STRAHLUNG. */
+        'GLAS'       => array('W/m2',   0,   1600, 'FB_FELD.GLAS'),
     );
     if ((int) $cfg['vorschau'] > 0) {
         $f['URTEIL30']     = array('',  -100, 100, 'FB_FELD.URTEIL30');
@@ -2176,7 +2334,12 @@ function fb_summenfelder($cfg = null)
         'SONNE_H'    => array('Grad', -90,  90,         'FB_FELD.SONNE_H'),
         'SONNE_AZ'   => array('Grad',  0,   360,        'FB_FELD.SONNE_AZ'),
         'SAISON'     => array('',     -100, 100,        'FB_FELD.SAISON'),
-        'STRAHLUNG'  => array('W/m2', -1,   1400,       'FB_FELD.STRAHLUNG'),
+        /* 1600 wie die Annahmegrenze in fb_messgroessen(). Bis 0.12.6
+         * standen hier 1400, waehrend der Endpunkt bis 1600 annahm - und
+         * Loxone kappt still auf MaxVal. Zwei Grenzen fuer dieselbe
+         * Groesse sind zwei Wahrheiten; die weitere gewinnt, weil ein
+         * gekappter Wert wie ein gemessener aussieht. */
+        'STRAHLUNG'  => array('W/m2', -1,   1600,       'FB_FELD.STRAHLUNG'),
         'TS'         => array('',      0,   4102444800, 'FB_FELD.TS'),
         'WH_TAG'     => array('Wh',    0,   999999,     'FB_FELD.WH_TAG'),
     );
@@ -2323,6 +2486,24 @@ function fb_endpunkt()
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
     return 'http://' . $host . '/plugins/' . $p['plugin'] . '/index.php';
+}
+
+/**
+ * Der gemeinsame Anfang jeder Melde-Adresse.
+ *
+ * EINE Quelle fuer beide Seiten. Bis 0.12.6 stand dieselbe Adresse zweimal
+ * woertlich im Code: einmal in der Tabelle des Reiters "Einbindung in
+ * Loxone" und einmal in fb_vorlage_out(). Sie stimmten ueberein - aber wer
+ * einen Parameternamen aendert, macht damit stumm eine der beiden falsch,
+ * und keine Pruefzeile haelt sie gegeneinander.
+ *
+ * Ohne Maskierung. Wer sie in HTML ausgibt, schickt sie durch fb_e();
+ * wer sie in eine XML-Vorlage schreibt, durch fb_x().
+ */
+function fb_melde_basis()
+{
+    return '/plugins/' . fb_paths()['plugin'] . '/index.php?token=' . fb_token()
+         . '&aktion=melden&wert=';
 }
 
 /** Der Titel eines virtuellen Eingangs - je Fenster, nicht als Platzhalter. */
@@ -2480,8 +2661,7 @@ function fb_vorlage()
  */
 function fb_vorlage_out()
 {
-    $basis = '/plugins/' . fb_paths()['plugin'] . '/index.php?token=' . fb_token()
-           . '&aktion=melden&wert=';
+    $basis = fb_melde_basis();
     $cmds = array();
     foreach (fb_messgroessen() as $name => $info) {
         $cmds[] = array(
@@ -2546,8 +2726,15 @@ function fb_vorlage_out()
 function fb_zeile($stand, $hoechstalter = null)
 {
     $f = isset($stand['felder']) && is_array($stand['felder']) ? $stand['felder'] : null;
-    $alter = isset($stand['ts']) && (int) $stand['ts'] > 0
-        ? max(0, time() - (int) $stand['ts']) : -1;
+    /* Ein Stempel aus der Zukunft gilt als "noch nie gerechnet" - dieselbe
+     * Schranke wie bei den Messwerten und in fb_alter(). Bis 0.12.6 klemmte
+     * hier max(0, ...) und machte aus einem Stand von 2036 einen, der null
+     * Sekunden alt ist: die Altersschranke unten griff dann nie. */
+    $alter = -1;
+    if (isset($stand['ts']) && (int) $stand['ts'] > 0) {
+        $roh = time() - (int) $stand['ts'];
+        $alter = ($roh < -FB_UHRSPRUNG) ? -1 : max(0, $roh);
+    }
     $herz = $alter < 0 ? -1 : (int) floor($alter / 60);
     if ($f === null) {
         /* Die leere Zeile wird aus DERSELBEN Feldliste gebaut wie die
@@ -2659,8 +2846,9 @@ function fb_felder_kongruent()
  * Glaettung, Tagesbilanz, Lernkurve, Gegenprobe, Bericht
  *
  * Alles in diesem Abschnitt ist mit 0.10.0 dazugekommen. Die drei
- * Datendateien bilanz.json, lernen.json und pv.json ueberleben ein Update
- * mit Absicht: in ihnen steckt, was ueber Tage und Wochen zusammengetragen
+ * Datendateien bilanz.json, lernen.json und pv.json werden ueber ein
+ * Update gerettet (preupgrade.sh legt sie daneben, postinstall.sh holt sie
+ * zurueck): in ihnen steckt, was ueber Tage und Wochen zusammengetragen
  * wurde und sich nicht nachrechnen laesst.
  * ================================================================== */
 
@@ -2684,15 +2872,36 @@ function fb_messwerte_glaetten($cfg, $messwerte, $jetzt)
         || !is_array($messwerte['strahlung']['reihe'])) {
         return $messwerte;
     }
+    /* DER JUENGSTE PUNKT IST IMMER DABEI - und bis 0.12.6 war er es nicht.
+     *
+     * Der Docblock darueber sagt es seit der ersten Fassung zu. Der Code
+     * uebersprang aber jeden Punkt, der aelter war als das Fenster - auch
+     * den juengsten. Gemessen: Fenster 300 s, Meldeabstand 600 s ->
+     * $anzahl blieb 0, die Funktion gab die Messwerte unveraendert
+     * zurueck, und zwar OHNE den Schluessel 'geglaettet'. Der Anwender
+     * hatte die Glaettung eingeschaltet, sie griff nie, und nichts sagte
+     * es ihm. Genau der Zustand, den der Docblock als behoben beschrieb.
+     *
+     * 'geglaettet' wird jetzt IMMER gesetzt - 1 heisst "nur der juengste
+     * Punkt, also nicht wirklich geglaettet". Ein fehlender Schluessel
+     * waere wieder eine stille Antwort. */
     $summe = 0.0; $anzahl = 0;
+    $juengster = null;
     foreach ($messwerte['strahlung']['reihe'] as $punkt) {
         if (!is_array($punkt) || count($punkt) < 2) { continue; }
-        if (($jetzt - (int) $punkt[0]) > $fenster) { continue; }
         if ((int) $punkt[0] > $jetzt) { continue; }     // Stempel aus der Zukunft
+        if ($juengster === null || (int) $punkt[0] > (int) $juengster[0]) {
+            $juengster = $punkt;
+        }
+        if (($jetzt - (int) $punkt[0]) > $fenster) { continue; }
         $summe += (float) $punkt[1];
         $anzahl++;
     }
-    if ($anzahl === 0) { return $messwerte; }
+    if ($anzahl === 0) {
+        if ($juengster === null) { return $messwerte; }
+        $summe = (float) $juengster[1];
+        $anzahl = 1;
+    }
     $messwerte['strahlung']['v'] = $summe / $anzahl;
     $messwerte['strahlung']['geglaettet'] = $anzahl;
     return $messwerte;
@@ -3456,11 +3665,19 @@ function fb_projekt_ordner()
     /* MEHRERE WURZELN, weil die Datei auf verschiedenen Wegen hereinkommt
      * und jeder Weg woanders endet:
      *
-     *   data/plugins/fensterbilanz  - der Ort, auf den die Anleitung zeigt
+     *   data/plugins/fensterbilanz  - der Datenordner des Plugins. Er wird
+     *                                 bei JEDEM Update abgeraeumt; deshalb
+     *                                 zeigt die Anleitung NICHT mehr
+     *                                 dorthin, und fb_ablageordner() geht
+     *                                 ihm ausdruecklich aus dem Weg.
      *   data/                       - was ueber die Windows-Freigabe kommt
-     *   /home/loxberry              - wo "scp datei loxberry@host:" landet
-     *   /tmp und LoxBerrys tmp      - was Werkzeuge dort ablegen
-     *   /media                      - USB-Stick
+     *   /tmp                        - was Werkzeuge dort ablegen
+     *   /media, /mnt                - USB-Stick, eingehaengte Freigabe
+     *
+     * Diese Liste und die Zeile mit $o unten sind DIESELBE Aussage. Bis
+     * 0.12.6 stand hier noch /home/loxberry, das der Code laengst nicht
+     * mehr durchsuchte - ein Kommentar, der einen aelteren Stand
+     * beschreibt als der Code zwanzig Zeilen weiter.
      *
      * Der LoxBerry-Dateimanager scheidet als Weg oft aus: er haengt an
      * denselben PHP-Grenzen wie jede andere Absendung. Gemessen: eine
@@ -3468,16 +3685,19 @@ function fb_projekt_ordner()
      * Skript, das dort etwas erwartet, tut daraufhin schlicht nichts. */
     /* KEIN BENUTZERVERZEICHNIS.
      *
-     * Der erste Entwurf hatte /home/loxberry hingeschrieben - auf der
-     * Anlage, fuer die dieses Plugin gebaut ist, gibt es das Verzeichnis
-     * gar nicht, und dasselbe galt fuer /opt/loxberry/tmp. Zwei von sechs
-     * Wurzeln waren Zierde; aufgefallen ist es erst, als die Seite je
-     * Ordner ausgab, was sie dort vorfindet.
+     * Der erste Entwurf hatte das Heimatverzeichnis des Benutzers
+     * loxberry ausgeschrieben - auf der Anlage, fuer die dieses Plugin
+     * gebaut ist, gibt es dieses Verzeichnis gar nicht, und fuer den
+     * Zwischenspeicher unter der LoxBerry-Wurzel galt dasselbe. Zwei von
+     * sechs Wurzeln waren Zierde; aufgefallen ist es erst, als die Seite
+     * je Ordner ausgab, was sie dort vorfindet. (Die Pfade stehen hier
+     * absichtlich nicht mehr woertlich - auch ein Kommentar traegt keine
+     * harten Systempfade.)
      *
      * Der zweite Entwurf hat das Heimatverzeichnis gemessen statt geraten -
-     * und war damit noch schlechter dran: auf einem LoxBerry kann das
-     * /opt/loxberry sein, also der ganze Baum. Zwei Ebenen tief durch alles
-     * zu laufen kostet Zeit, und zwar bei JEDEM Aufruf der
+     * und war damit noch schlechter dran: auf einem LoxBerry kann es die
+     * Installationswurzel selbst sein, also der ganze Baum. Zwei Ebenen
+     * tief durch alles zu laufen kostet Zeit, und zwar bei JEDEM Aufruf der
      * Einstellungsseite. Gemessen im Pruefstand: die Vollprobe lief in die
      * Zeitschranke.
      *
@@ -3986,6 +4206,15 @@ function fb_sicherung_lesen($roh)
     $bekannt = array_keys($neu);
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        /* Der lesbare Kopf wird uebersprungen, nicht beanstandet.
+         *
+         * Seit 0.12.7 schreibt der Sichern-Knopf _hinweis, _plugin und
+         * _stand an den Anfang der Datei, damit sie von sich aus sagt, von
+         * welchem Plugin und von wann sie ist und dass sie ein Geheimnis
+         * traegt. Ohne diesen Uebersprung waere die eigene Sicherung beim
+         * Zurueckspielen "fremd" - und weil eine halb gueltige Datei GAR
+         * NICHTS aendert, waere sie damit unbrauchbar. */
+        if ($k !== '' && $k[0] === '_') { continue; }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(fb_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));

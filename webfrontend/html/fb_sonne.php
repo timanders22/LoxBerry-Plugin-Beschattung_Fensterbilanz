@@ -377,11 +377,28 @@ function fb_glasdurchlass($cos_theta, $b0 = 0.10)
  *
  * Rueckgabe: 0.0 (gar nicht verschattet) bis 1.0 (ganz im Schatten).
  */
-function fb_dach_anteil($hoehe, $az_sonne, $az_fenster, $tiefe, $ueber, $fenster)
+function fb_dach_anteil($hoehe, $az_sonne, $az_fenster, $tiefe, $ueber, $fenster,
+                        $neigung = 90)
 {
     $tiefe = (float) $tiefe;
     $fenster = max(1.0, (float) $fenster);
     if ($tiefe <= 0.0) { return 0.0; }
+    /* NUR AN SENKRECHTEN FENSTERN.
+     *
+     * Die Rechnung unten - Schatten = Auskragung mal Tangens des
+     * Profilwinkels, verglichen mit der Fensterhoehe - gilt fuer eine
+     * SENKRECHTE Wand. Bis 0.12.6 bekam diese Funktion die Neigung gar
+     * nicht uebergeben und rechnete deshalb auch fuer ein Dachfenster mit
+     * 30 Grad Neigung eine Zahl, als staende es senkrecht; bei Neigung 0
+     * (waagerechtes Dachfenster, in der Hilfe ausdruecklich als zulaessig
+     * genannt) ist sie ueberhaupt nicht definiert und lieferte trotzdem
+     * ein Ergebnis.
+     *
+     * Bis die geneigte Geometrie an einem echten Fenster nachgemessen ist,
+     * antwortet die Funktion dort mit 0 - also "der Ueberstand verschattet
+     * nichts". Das ist die sichere Richtung: es wird eher zu viel
+     * Beschattung verlangt als zu wenig. Die Grenze steht in der Hilfe. */
+    if ((float) $neigung < 80.0) { return 0.0; }
     $hoehe = (float) $hoehe;
     /* Steht die Sonne unter dem Horizont, gibt es ohnehin keine direkte
      * Strahlung - und ein Schatten von nichts ist keiner. */
@@ -682,19 +699,7 @@ function fb_horizont_hoehe($punkte, $azimut)
     if ($a < 0) { $a += 360.0; }
     if ($n === 1) { return (float) $punkte[0][1]; }
 
-    /* AUSSERHALB DES BELEGTEN BEREICHS WIRD UEBER DIE NAHT HINWEG GERECHNET.
-     *
-     * Hier stand zuerst "vor dem ersten gilt der erste, hinter dem letzten
-     * gilt der letzte". Der Kopf dieser Funktion versprach aber "der jeweils
-     * naechste Punkt" - und das war bei "80:22, 110:14, 160:6" fuer Azimut
-     * 350 Grad nicht der Fall: gemeldet wurde 6 Grad (der Suedwestpunkt, 170
-     * Grad entfernt) statt 22 (der Ostpunkt, 90 Grad entfernt). Der Text
-     * beschrieb also etwas anderes als der Code tat.
-     *
-     * Ein Azimut ist ein Kreis, kein Strich. Zwischen dem letzten und dem
-     * ersten Punkt wird deshalb genauso interpoliert wie zwischen zwei
-     * benachbarten - nur ueber 360 Grad hinweg. Damit stimmt die Zusage im
-     * Kopf, und der Horizont springt an keiner Stelle mehr. */
+    /* ZWISCHEN zwei Stuetzpunkten wird interpoliert. */
     for ($i = 1; $i < $n; $i++) {
         if ($a <= $punkte[$i][0] && $a >= $punkte[$i - 1][0]) {
             $a0 = $punkte[$i - 1][0]; $h0 = $punkte[$i - 1][1];
@@ -703,12 +708,38 @@ function fb_horizont_hoehe($punkte, $azimut)
             return (float) $h0 + ($h1 - $h0) * ($a - $a0) / ($a1 - $a0);
         }
     }
-    /* Zwischen dem letzten und dem ersten Punkt, ueber die Naht bei 360. */
-    $a0 = $punkte[$n - 1][0]; $h0 = $punkte[$n - 1][1];
-    $a1 = $punkte[0][0] + 360.0; $h1 = $punkte[0][1];
-    $x = ($a < $punkte[0][0]) ? $a + 360.0 : $a;
-    if ($a1 == $a0) { return (float) $h1; }
-    return (float) $h0 + ($h1 - $h0) * ($x - $a0) / ($a1 - $a0);
+
+    /* AUSSERHALB DES BELEGTEN BEREICHS GILT DER NAECHSTE PUNKT - so, wie
+     * der Kopf dieser Funktion, beide Hilfedateien und der Text in der
+     * Oberflaeche es zusagen.
+     *
+     * Bis 0.12.6 wurde hier ueber die Naht INTERPOLIERT, mit der
+     * Begruendung, ein Azimut sei ein Kreis. Das ist richtig - nur ist
+     * eine Interpolation nicht "der naechste Punkt", und der Kommentar
+     * behauptete zudem eine Wirkung, die er nicht hatte. Gemessen an
+     * "80:22, 110:14, 160:6":
+     *
+     *     Azimut 350  ->  geliefert 16,86   naechster Punkt 80:22
+     *     Azimut 270  ->  geliefert 12,29   naechster Punkt 160:6
+     *     Azimut 300  ->  geliefert 14,00   naechster Punkt 80:22
+     *
+     * Bei 270 Grad - Westsonne am Abend - stand damit ein Hindernis von
+     * 12,3 Grad im Weg, obwohl der Anwender ueber Westen NICHTS
+     * eingetragen hatte. Ein Westfenster galt als verschattet, der
+     * Direktanteil wurde auf 0 gesetzt, und es wurde keine Beschattung
+     * verlangt, waehrend die Sonne voll ins Zimmer schien. Das ist ein
+     * erfundener Wert, und zwar in der gefaehrlichen Richtung.
+     *
+     * Genommen wird jetzt der Punkt, der auf dem Kreis naeher liegt.
+     * Zwischen den beiden Randpunkten springt der Horizont dadurch einmal
+     * - genau in der Mitte der Luecke, die der Anwender nicht beschrieben
+     * hat. Ein Sprung in einem unbeschriebenen Sektor ist ehrlicher als
+     * eine glatte Kurve, die etwas behauptet. */
+    $a0 = (float) $punkte[$n - 1][0];      // letzter belegter Punkt
+    $a1 = (float) $punkte[0][0];           // erster belegter Punkt
+    $d0 = $a - $a0; if ($d0 < 0) { $d0 += 360.0; }   // Weg vorwaerts bis $a
+    $d1 = $a1 - $a; if ($d1 < 0) { $d1 += 360.0; }   // Weg vorwaerts ab $a
+    return (float) ($d0 <= $d1 ? $punkte[$n - 1][1] : $punkte[0][1]);
 }
 
 /**

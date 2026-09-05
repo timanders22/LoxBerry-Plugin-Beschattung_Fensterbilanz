@@ -552,11 +552,28 @@ if ($fb_post && isset($_POST['luecken_schliessen'])) {
 $fb_rechner = null;
 if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_eintragen']))) {
     $fb_tab = 'tab-settings';
-    $fb_rz = function ($name, $vorgabe = 0.0) {
+    /* ABWEISEN UND MELDEN, nicht stillschweigend zurechtbiegen.
+     *
+     * Bis 0.12.6 gab dieser Leser bei jeder unbrauchbaren Eingabe den
+     * Vorgabewert zurueck, ohne ein Wort - als einzige Stelle dieser
+     * Datei; alle anderen Zahlenfelder laufen durch $fb_zahl(), das
+     * beanstandet. Ein Tippfehler in "Fensterhoehe" ergab damit
+     * kommentarlos 1,5 m, und der eingetragene Horizont war falsch. */
+    $fb_rz_maengel = array();
+    $fb_rz = function ($name, $vorgabe, $von, $bis, $titel) use (&$fb_rz_maengel) {
         if (!isset($_POST[$name]) || !is_string($_POST[$name])) { return $vorgabe; }
         $roh = trim(str_replace(',', '.', $_POST[$name]));
-        if ($roh === '' || !is_numeric($roh)) { return $vorgabe; }
-        return (float) $roh;
+        if ($roh === '') { return $vorgabe; }
+        if (!is_numeric($roh)) {
+            $fb_rz_maengel[] = sprintf(fb_t('FEHLER.KEINE_ZAHL'), $titel, $roh);
+            return null;
+        }
+        $wert = (float) $roh;
+        if ($wert < $von || $wert > $bis) {
+            $fb_rz_maengel[] = sprintf(fb_t('FEHLER.AUSSERHALB'), $titel, $roh, $von, $bis);
+            return null;
+        }
+        return $wert;
     };
     $fb_zeile_r = isset($_POST['h_zeile']) && is_string($_POST['h_zeile'])
                   ? (int) $_POST['h_zeile'] : -1;
@@ -566,9 +583,22 @@ if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_ein
     if ($fb_az_r < 0 || $fb_cfg_r['fenster'][$fb_zeile_r]['kuerzel'] === '') {
         $fb_fehler[] = fb_t('EINST.R_KEIN_FENSTER');
     } else {
-        list($fb_r_text, $fb_r_meld, $fb_r_werte) = fb_horizont_rechnen(
-            $fb_rz('h_hoehe'), $fb_rz('h_fenster', 1.5), $fb_rz('h_vor'),
-            $fb_rz('h_seit'), $fb_rz('h_breite'), $fb_az_r);
+        /* Grenzen wie an den uebrigen Zahlenfeldern: Hoehen und Abstaende
+         * in Metern, und was ausserhalb liegt, wird GENANNT. */
+        $fb_r_hoehe   = $fb_rz('h_hoehe',   0.0, 0.0, 200.0, fb_klartext('EINST.R_F_HOEHE'));
+        $fb_r_fenster = $fb_rz('h_fenster', 1.5, 0.0, 100.0, fb_klartext('EINST.R_F_FENSTER'));
+        $fb_r_vor     = $fb_rz('h_vor',     0.0, 0.0, 1000.0, fb_klartext('EINST.R_F_VOR'));
+        $fb_r_seit    = $fb_rz('h_seit',    0.0, -1000.0, 1000.0, fb_klartext('EINST.R_F_SEIT'));
+        $fb_r_breite  = $fb_rz('h_breite',  0.0, 0.0, 1000.0, fb_klartext('EINST.R_F_BREITE'));
+        if ($fb_rz_maengel) {
+            /* ALLE Beanstandungen, und gerechnet wird gar nicht. */
+            foreach ($fb_rz_maengel as $fb_mm) { $fb_fehler[] = $fb_mm; }
+            $fb_r_text = ''; $fb_r_meld = array(); $fb_r_werte = array();
+        } else {
+            list($fb_r_text, $fb_r_meld, $fb_r_werte) = fb_horizont_rechnen(
+                $fb_r_hoehe, $fb_r_fenster, $fb_r_vor,
+                $fb_r_seit, $fb_r_breite, $fb_az_r);
+        }
         foreach ($fb_r_meld as $fb_mm) {
             if ($fb_mm === 'ABSTAND')    { $fb_fehler[] = fb_t('EINST.R_ABSTAND'); }
             if ($fb_mm === 'ZU_NIEDRIG') { $fb_meldungen[] = fb_t('EINST.R_ZU_NIEDRIG'); }
@@ -908,7 +938,16 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
         ? trim($_POST['mqtt_topic']) : '';
     $fb_thema = trim(strtolower($fb_thema_roh), '/');
     if ($fb_thema === '') {
-        $fb_cfg['mqtt_topic'] = 'fenster';
+        /* EIN LEERES FELD LOESCHT NICHTS.
+         *
+         * Bis 0.12.6 setzte ein leeres Feld das Thema still auf "fenster"
+         * zurueck - und die Seite meldete "Die Einstellungen wurden
+         * gespeichert". Wer sein Thema "haus/fenster" versehentlich
+         * leerte, verschob damit SAEMTLICHE MQTT-Themen; im Miniserver kam
+         * danach an keinem virtuellen Eingang mehr etwas an, und die
+         * Oberflaeche hatte Erfolg gemeldet. Dieselbe Eingabeart wurde
+         * zwei Zeilen weiter unten sehr wohl beanstandet. */
+        $fb_fehler[] = fb_t('FEHLER.THEMA_LEER');
     } elseif (!preg_match('#^[a-z0-9_\-/]+$#D', $fb_thema)) {
         // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
         $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA'), $fb_thema);
@@ -962,29 +1001,30 @@ if ($fb_post && isset($_POST['test'])) {
     $fb_tab = 'tab-test';
 }
 
-/* ================= Werte fuer die Anzeige ================= */
-$fb_cfg = fb_config();
-$fb_stand = fb_stand();
-$fb_liste = fb_fenster();
-$fb_mqtt = fb_mqtt_zustand();
-$fb_messwerte = fb_messwerte();
-$fb_logzeilen = fb_log_ende($fb_p['log'], 400);
-$fb_grund_nr = fb_grund_nr();
-$fb_vorschlag = fb_json_lesen($fb_p['datadir'] . '/vorschlag.json');
-$fb_ohne_standort = (abs((float) $fb_cfg['breite']) < 0.001
-                     && abs((float) $fb_cfg['laenge']) < 0.001);
-
-$fb_rahmen = class_exists('LBWeb', false);
-
-
 /* ---------------- Einstellungen sichern ----------------
  *
  * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
  * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das.
+ *
+ * Der Datei wird ein lesbarer Kopf vorangestellt: von welchem Plugin, von
+ * wann, von welcher Fassung - und der Satz, dass sie ein Geheimnis
+ * enthaelt. Bis 0.12.6 stand das nur in der Oberflaeche, nicht in der
+ * Datei, die der Anwender weiterreicht. Die Schluessel beginnen mit einem
+ * Unterstrich, und fb_sicherung_lesen() ueberspringt genau diese - sonst
+ * waere die eigene Sicherung beim Zurueckspielen "fremd". */
 if ($fb_post && isset($_POST['fb_sichern'])) {
-    $fb_js = json_encode(fb_config(),
+    $fb_aus = array_merge(array(
+        '_hinweis' => fb_klartext('EINST.SICH_KOPF'),
+        '_plugin'  => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
+        /* KEINE Fassungsnummer. Sie stuende hier als zweite Quelle neben
+         * plugin.cfg, release.cfg, prerelease.cfg und der README - und
+         * Werkzeuge/fassung_setzen.py kennt genau diese vier. Eine funfte
+         * Stelle waere eine, die beim naechsten Release stehenbleibt. */
+        '_stand'   => date('Y-m-d H:i:s'),
+    ), fb_config());
+    $fb_js = json_encode($fb_aus,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($fb_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -998,11 +1038,26 @@ if ($fb_post && isset($_POST['fb_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
+ * DIESER HANDLER STAND BIS 0.12.6 HINTER DEM BLOCK, DER DIE ANZEIGEWERTE
+ * HOLT. Das war an drei Stellen falsch, alle drei ueber HTTP gemessen:
+ *
+ *   1. Die Seite zeigte danach den ALTEN Stand. In der Datei stand
+ *      albedo=66 und das Fenster der Anlage B, im Formular albedo=20 und
+ *      das Fenster der Anlage A - darueber die Meldung "Einstellungen
+ *      zurueckgespielt". Auf einem frischen zweiten LoxBerry heisst das:
+ *      25 wiederhergestellte Fenster, und die Tabelle ist leer.
+ *   2. Das Formularmerkmal blieb das alte. Es haengt per HMAC am
+ *      Aktionstoken, und genau das hat sich gerade geaendert; der naechste
+ *      Klick wurde als fremdes Formular abgewiesen - gemessen.
+ *   3. Es wurde nicht neu gerechnet. Bis zum naechsten Cron-Lauf stand in
+ *      stand.json das Urteil der alten Fensterliste.
+ *
  * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
  * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
  * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
  * nicht erst gelesen. */
 if ($fb_post && isset($_POST['fb_zurueck'])) {
+    $fb_tab = 'tab-settings';
     if (!isset($_FILES['fb_sicherung']) || !is_array($_FILES['fb_sicherung'])
         || !isset($_FILES['fb_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['fb_sicherung']['tmp_name'])) {
@@ -1016,13 +1071,43 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
             $fb_fehler[] = fb_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $fb_mangel);
-        } elseif (fb_config_speichern($fb_neu)) {
-            $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
         } else {
-            $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
+            /* Unter der Sperre, und durch fb_config_richten() - wie an den
+             * fuenf anderen schreibenden Handlern dieser Datei. Bis 0.12.6
+             * war dieser hier der einzige ohne beides, und dabei ersetzt er
+             * als einziger die GANZE Konfiguration. */
+            $fb_sp = fb_config_sperre();
+            $fb_ok_s = fb_config_speichern(fb_config_richten($fb_neu));
+            if ($fb_sp !== null) { fb_config_freigeben($fb_sp); }
+            if ($fb_ok_s) {
+                $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
+                /* Das Merkmal haengt am Aktionstoken und wechselt mit ihm -
+                 * wortgleich zum Handler token_neu. */
+                $fb_merkmal = fb_formtoken();
+                /* Und der Dienst wird nachgezogen: sonst stuende bis zum
+                 * naechsten Cron-Lauf das Urteil der alten Fensterliste da. */
+                fb_lauf(true);
+                $fb_meldungen[] = fb_t('EINST.SICH_GERECHNET');
+            } else {
+                $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
+            }
         }
     }
 }
+
+/* ================= Werte fuer die Anzeige ================= */
+$fb_cfg = fb_config();
+$fb_stand = fb_stand();
+$fb_liste = fb_fenster();
+$fb_mqtt = fb_mqtt_zustand();
+$fb_messwerte = fb_messwerte();
+$fb_logzeilen = fb_log_ende($fb_p['log'], 400);
+$fb_grund_nr = fb_grund_nr();
+$fb_vorschlag = fb_json_lesen($fb_p['datadir'] . '/vorschlag.json');
+$fb_ohne_standort = (abs((float) $fb_cfg['breite']) < 0.001
+                     && abs((float) $fb_cfg['laenge']) < 0.001);
+
+$fb_rahmen = class_exists('LBWeb', false);
 
 
 if ($fb_rahmen) {
@@ -2019,9 +2104,15 @@ function fbOrdnerSetzen(sel) {
 <?php } ?>
 
 
-<h2><?= fb_t('EINST.H_SICHERUNG') ?></h2>
+<h2><?= fb_e(fb_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= fb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= fb_t('EINST.SICH_WARNUNG') ?></div>
+<!-- Legende: keine Knopfreihe ohne sie. Der orange Knopf ersetzt die
+     GANZE Konfiguration - zwei Farben ohne Erklaerung sind hier zu wenig. -->
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-lesen"></i> <?= fb_e(fb_t('LEGENDE.LESEN')) ?></span>
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_e(fb_t('LEGENDE.SICH_ZURUECK')) ?></span>
+</div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -2030,13 +2121,13 @@ function fbOrdnerSetzen(sel) {
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fb_sichern" value="1"><?= fb_t('EINST.K_SICHERN') ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="fb_sichern" value="1"><?= fb_e(fb_t('EINST.K_SICHERN')) ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
     <input data-role="none" type="file" name="fb_sicherung" accept=".json">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="fb_zurueck" value="1"><?= fb_t('EINST.K_ZURUECK') ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="fb_zurueck" value="1"><?= fb_e(fb_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>
 </div>
@@ -2130,8 +2221,8 @@ function fbOrdnerSetzen(sel) {
 <tr><th><?= fb_e(fb_t('LOX.SP_TITEL')) ?></th><th><?= fb_e(fb_t('LOX.SP_BEFEHL')) ?></th>
     <th><?= fb_e(fb_t('LOX.SP_BEDEUTUNG')) ?></th><th><?= fb_e(fb_t('LOX.SP_EINGETROFFEN')) ?></th></tr>
 <?php
-$fb_basis = '/plugins/' . fb_e($fb_p['plugin']) . '/index.php?token=' . fb_e(fb_token())
-          . '&amp;aktion=melden&amp;wert=';
+/* DIESELBE Quelle wie die erzeugte Vorlage - siehe fb_melde_basis(). */
+$fb_basis = fb_e(fb_melde_basis());
 foreach (fb_messgroessen() as $fb_name => $fb_info) { ?>
 <tr><td><span class="sm-mono">FB_SET_<?= fb_e(strtoupper($fb_name)) ?></span></td>
     <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_name) ?>&amp;v=&lt;v.0&gt;</span></td>
@@ -2159,7 +2250,26 @@ foreach (array_keys($fb_raeume) as $fb_raum) {
                  max(0, time() - (int) $fb_messwerte[$fb_schluessel]['t']),
                  (string) $fb_messwerte[$fb_schluessel]['v']));
         } else { echo '<b class="sm-aus">' . fb_e(fb_t('LOX.NIE_EINGETROFFEN')) . '</b>'; } ?></td></tr>
-<?php } } ?>
+<?php } }
+/* DIE STELLUNGSRUECKMELDUNG - unter derselben Bedingung wie in
+ * fb_vorlage_out(). Bis 0.12.6 stand sie nur in der erzeugten Vorlage;
+ * die Tabelle daneben liess sie aus, obwohl beide dieselbe Anleitung
+ * sind. */
+if (!empty($fb_cfg['stellung_ein'])) {
+    foreach ($fb_liste as $fb_f) {
+        if ($fb_f['kuerzel'] === '') { continue; }
+        $fb_schluessel = 'stellung.' . strtolower($fb_f['kuerzel']); ?>
+<tr><td><span class="sm-mono">FB_SET_STELLUNG_<?= fb_e(strtoupper($fb_f['kuerzel'])) ?></span></td>
+    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_schluessel) ?>&amp;v=&lt;v.0&gt;</span></td>
+    <td><?= fb_e(fb_t('FB_MESS.STELLUNG')) ?>: <?= fb_e($fb_f['kuerzel']) ?>
+        (<?= fb_e(fb_t('LOX.OPTIONAL')) ?>)</td>
+    <td><?php if (isset($fb_messwerte[$fb_schluessel]['t'])) {
+            echo fb_e(sprintf(fb_t('LOX.VOR_SEKUNDEN'),
+                 max(0, time() - (int) $fb_messwerte[$fb_schluessel]['t']),
+                 (string) $fb_messwerte[$fb_schluessel]['v']));
+        } else { echo '<b class="sm-aus">' . fb_e(fb_t('LOX.NIE_EINGETROFFEN')) . '</b>'; } ?></td></tr>
+<?php }
+} ?>
 </table>
 </div>
 <?php if (!$fb_raeume) { ?>
@@ -2183,6 +2293,12 @@ foreach (array_keys($fb_raeume) as $fb_raum) {
 <tr><th><?= fb_e(fb_t('LOX.SP_ZWECK')) ?></th><th><?= fb_e(fb_t('LOX.SP_ADRESSE')) ?></th></tr>
 <tr><td><?= fb_e(fb_t('LOX.Z_STATUS')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=status') ?></span></td></tr>
 <tr><td><?= fb_e(fb_t('LOX.Z_JSON')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=json') ?></span></td></tr>
+<?php /* Ein vorhandenes Kuerzel statt eines Platzhalters: die Adresse
+     soll abschreibbar sein, nicht erklaerungsbeduerftig. */
+$fb_bsp = '';
+foreach ($fb_liste as $fb_f) { if ($fb_f['kuerzel'] !== '') { $fb_bsp = $fb_f['kuerzel']; break; } }
+if ($fb_bsp === '') { $fb_bsp = fb_klartext('LOX.Z_FENSTER_BSP'); } ?>
+<tr><td><?= fb_e(fb_t('LOX.Z_FENSTER')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=fenster&k=' . $fb_bsp) ?></span></td></tr>
 <tr><td><?= fb_e(fb_t('LOX.Z_SELFTEST')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&selftest=1') ?></span></td></tr>
 </table>
 </div>

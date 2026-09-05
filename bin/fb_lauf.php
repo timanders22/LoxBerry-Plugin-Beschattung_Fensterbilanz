@@ -581,12 +581,34 @@ $ort = array(48.2, 11.6);
             && count($u_liste) === 0,
             json_encode($p_liste));
 
-    /* --- 8j. Der Horizont wird ueber die Naht bei 360 Grad interpoliert. */
+    /* --- 8j. AUSSERHALB DER STUETZPUNKTE GILT DER NAECHSTE PUNKT.
+     *
+     * Bis 0.12.6 stand hier die umgekehrte Erwartung ("liegt zwischen den
+     * Nachbarpunkten"), also der Beleg fuer eine Interpolation ueber die
+     * Naht. Der Kopf von fb_horizont_hoehe(), beide Hilfedateien und der
+     * Text in der Oberflaeche sagen aber "der jeweils naechste Punkt" zu -
+     * und eine Interpolation ist das nicht. Gemessen an dieser Eingabe:
+     * bei Azimut 270 kam 12,29 Grad heraus, obwohl ueber Westen NICHTS
+     * eingetragen ist; ein Westfenster galt dadurch bei tiefer Abendsonne
+     * als verschattet und bekam keine Beschattung.
+     *
+     * Drei Zeilen statt einer: die Naht hat zwei Seiten und eine Mitte. */
     list($p_naht, ) = fb_horizont_lesen('80:22, 110:14, 160:6');
-    $pruefe('Horizont bei Azimut 350 liegt zwischen den Nachbarpunkten',
-            fb_horizont_hoehe($p_naht, 350) > 6.0
-            && fb_horizont_hoehe($p_naht, 350) < 22.0,
-            sprintf('%.2f', fb_horizont_hoehe($p_naht, 350)));
+    $pruefe('Ausserhalb gilt der naechste Punkt - vor dem ersten',
+            abs(fb_horizont_hoehe($p_naht, 350) - 22.0) < 1e-9,
+            sprintf('%.2f statt 22 (80 Grad ist 90 entfernt, 160 Grad 170)',
+                    fb_horizont_hoehe($p_naht, 350)));
+    $pruefe('Ausserhalb gilt der naechste Punkt - hinter dem letzten',
+            abs(fb_horizont_hoehe($p_naht, 200) - 6.0) < 1e-9,
+            sprintf('%.2f statt 6', fb_horizont_hoehe($p_naht, 200)));
+    /* Und es wird NICHT interpoliert: eine Interpolation laege bei 270
+     * Grad zwischen 6 und 22, also weder auf dem einen noch auf dem
+     * anderen Stuetzpunkt. */
+    $pruefe('Ausserhalb wird NICHT ueber die Naht interpoliert',
+            abs(fb_horizont_hoehe($p_naht, 270) - 6.0) < 1e-9
+            || abs(fb_horizont_hoehe($p_naht, 270) - 22.0) < 1e-9,
+            sprintf('%.2f - das ist ein Zwischenwert und damit ein '
+                    . 'erfundenes Hindernis', fb_horizont_hoehe($p_naht, 270)));
     /* Und ZWISCHEN zwei Stuetzpunkten wird gerade interpoliert. Von Hand:
      * zwischen 80:22 und 110:14 liegt Azimut 95 genau in der Mitte, also
      * bei 18 Grad. Ohne diese Zeile blieb ein Rueckbau der Interpolation
@@ -1504,11 +1526,33 @@ $ort = array(48.2, 11.6);
     $pruefe('Vorlage wohlgeformt trotz Anfuehrungszeichen und Umlaut', $ok,
             $ok ? '' : 'simplexml_load_string() hat abgelehnt');
 
+    /* DIE SCHLUSSZEILE STEHT IN DER HAUSFORM, UND SIE STEHT ZULETZT.
+     *
+     * Bis 0.12.6 schrieb der Selbsttest "Selbsttest bestanden: 191
+     * Pruefungen." und im Fehlerfall "N von M Pruefungen sind
+     * durchgefallen:". Werkzeuge/freigabe_pruefen.py erkennt aber nur
+     *     N Faelle geprueft, M Fehlschlaege
+     * oder Zeilen, die mit [OK]/[FEHL]/[INFO] beginnen. Das Freigabetor
+     * meldete deshalb "[FEHL] Selbsttest - keine auswertbare Ausgabe",
+     * obwohl der Selbsttest durchlief. Im Fehlerfall haette es dasselbe
+     * gemeldet: die richtige Farbe aus dem falschen Grund, und ohne die
+     * Zahl der Fehlschlaege.
+     *
+     * Vor der Umstellung gemessen: die alte Zeile wird NIRGENDS
+     * ausgewertet. Die beiden Verbraucher lesen den RUECKGABEWERT -
+     * postinstall.sh:69 zeigt die letzte Zeile nur an, fb_test.php
+     * urteilt ueber $rc === 0. Deshalb bewegt sich diese Seite.
+     *
+     * Die Zusammenfassung steht jetzt auch im Fehlerfall ZULETZT: beide
+     * Verbraucher zeigen die letzte Zeile, und das war dort bisher die
+     * zuletzt durchgefallene Pruefung statt einer Summe. */
     if ($fehler) {
-        echo count($fehler) . ' von ' . $geprueft . " Pruefungen sind durchgefallen:\n";
         foreach ($fehler as $f) { echo '  - ' . $f . "\n"; }
+        echo 'Selbsttest: ' . $geprueft . ' Faelle geprueft, '
+           . count($fehler) . " Fehlschlaege.\n";
         return 1;
     }
-    echo 'Selbsttest bestanden: ' . $geprueft . " Pruefungen.\n";
+    echo 'Selbsttest bestanden: ' . $geprueft
+       . " Faelle geprueft, 0 Fehlschlaege.\n";
     return 0;
 }
