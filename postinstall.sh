@@ -71,6 +71,50 @@ if [ -f "$BK" ]; then
     fi
 fi
 
+# ---------- Die .user.ini von Hand anlegen ----------
+#
+# WARUM HIER UND NICHT AUS DEM ARCHIV: der Installer kopiert Punktdateien
+# nicht mit. Gemessen am 16.09.2026 mit geraetestand_vergleichen.py gegen
+# den Tag v0.12.8 - die Datei lag im Archiv und fehlte am Geraet, als
+# einziger Unterschied ueberhaupt. Sie ist damit seit jeher nie angekommen,
+# und der Reiter Einstellungen behauptete trotzdem, das Plugin lege sie ab.
+#
+# WOFUER: sie hebt upload_max_filesize und post_max_size fuer GENAU das
+# Verzeichnis der Oberflaeche an. Eine .Loxone-Projektdatei ist 3 bis 4 MB
+# gross, PHP nimmt ab Werk 2 MB - ohne diese Datei scheitert der Weg ueber
+# den Browser.
+#
+# WANN SIE WIRKT: bei CGI, FastCGI und PHP-FPM. Laeuft PHP als
+# Apache-Modul, wird sie stillschweigend uebergangen; auf dem Geraet dieses
+# Hauses ist genau das der Fall (mod_php, php7.4.load, gemessen 16.09.2026).
+# Schaden kann sie dort nicht - eine unbeachtete .user.ini ist folgenlos -,
+# und der Reiter Test sagt in einer Zeile, welcher der drei Faelle vorliegt:
+# liegt und wirkt, liegt und wird uebergangen, liegt nicht.
+PHTMLAUTH="$BASE/webfrontend/htmlauth/plugins/$PFOLDER"
+if [ -d "$PHTMLAUTH" ]; then
+    if cat > "$PHTMLAUTH/.user.ini" <<'USERINI'
+; Fensterbilanz - Grenzen fuer DIESES Verzeichnis.
+; Angelegt von postinstall.sh: der Installer kopiert Punktdateien nicht mit.
+; post_max_size gilt fuer die GANZE Absendung und muss deshalb ueber
+; upload_max_filesize liegen.
+; NACHWIRKUNG: PHP merkt sich diese Datei bis zu user_ini.cache_ttl Sekunden
+; (Vorgabe 300) - nach dem Installieren kann es also fuenf Minuten dauern.
+upload_max_filesize = 16M
+post_max_size = 20M
+USERINI
+    then
+        chmod 644 "$PHTMLAUTH/.user.ini" 2>/dev/null
+        echo "<OK> .user.ini angelegt (hebt die Uploadgrenze auf 16 MB an,"
+        echo "<OK> sofern dieser Webserver sie liest - der Reiter Test sagt es)."
+    else
+        echo "<INFO> Die .user.ini liess sich nicht anlegen. Das Plugin laeuft"
+        echo "<INFO> trotzdem; der Weg ueber den Browser bleibt dann bei der"
+        echo "<INFO> Grenze des Servers, der Weg ueber den Ablageordner nicht."
+    fi
+else
+    echo "<INFO> $PHTMLAUTH gibt es nicht - die .user.ini entfaellt."
+fi
+
 # ---------- Die Messreihen aus preupgrade.sh zurueckholen ----------
 #
 # purge_installation loescht data/plugins/<ordner>/ bei JEDEM Upgrade

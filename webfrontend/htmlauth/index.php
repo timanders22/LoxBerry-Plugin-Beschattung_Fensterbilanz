@@ -2179,11 +2179,21 @@ function fbOrdnerSetzen(sel) {
 <h3><?= fb_e(fb_t('MQTT.H_THEMEN')) ?></h3>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= fb_e(fb_t('MQTT.SP_THEMA')) ?></th><th><?= fb_e(fb_t('MQTT.SP_BEDEUTUNG')) ?></th></tr>
-<?php foreach (fb_mqtt_themen() as $fb_k => $fb_schl) { ?>
+<tr><th><?= fb_e(fb_t('MQTT.SP_THEMA')) ?></th>
+    <th><?= fb_e(fb_t('MQTT.SP_BEDEUTUNG')) ?></th>
+    <th><?= fb_e(fb_t('MQTT.SP_RETAIN')) ?></th></tr>
+<?php foreach (fb_mqtt_themen() as $fb_k => $fb_schl) {
+    /* Dieselbe Funktion, die auch sendet - eine zweite Tabelle hier waere
+     * eine zweite Wahrheit, und sie liefe beim naechsten neuen Thema
+     * auseinander. Der Platzhalter <kuerzel> traegt keinen Schraegstrich
+     * weniger als ein echtes Thema, fb_mqtt_retained() entscheidet also
+     * auch fuer ihn richtig. */
+    $fb_ret = fb_mqtt_retained($fb_k); ?>
 <tr><td><span class="sm-mono"><?= fb_e($fb_cfg['mqtt_topic'] . '/' . $fb_k) ?></span></td>
-    <td><?= fb_e(fb_t($fb_schl)) ?></td></tr>
+    <td><?= fb_e(fb_t($fb_schl)) ?></td>
+    <td><?= fb_e(fb_t($fb_ret ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
+<tr><td colspan="3" class="sm-hilfe"><?= fb_t('MQTT.RETAIN_ERKLAERUNG') ?></td></tr>
 </table>
 </div>
 <p class="sm-hilfe"><?= fb_t('MQTT.KUERZEL_HILFE') ?></p>

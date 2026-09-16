@@ -1169,6 +1169,18 @@ $ort = array(48.2, 11.6);
      * Also wird nachgesehen, ob in der Liste wirklich das steht, was die
      * Namensregeln sagen. Auch das hat die Eichung gefunden - die
      * Ruecknahme "Kuerzel anders bilden" blieb gruen. */
+    /* KEIN ECHTER NAME AUS DER ANLAGE.
+     *
+     * Hier stand bis 0.12.8 der Vorname eines Bewohners - er ging damit in
+     * fuenf veroeffentlichte Fassungen hinaus. Das Freigabetor hat ihn
+     * nicht gefunden, weil er in der Wortliste des Anonymitaetswaechters
+     * fehlte; ein Waechter findet nur, was seine Liste kennt.
+     *
+     * Der Titel ist fuer die Pruefung austauschbar - verglichen wird die
+     * Liste gegen fb_kuerzel_vorschlag() und fb_raum_vorschlag(), nicht
+     * gegen eine feste Zeichenkette. Gleiche Gestalt ist trotzdem noetig:
+     * mehrere Woerter, ein Umlaut und ein Raumname, der lang genug ist,
+     * damit die Abschneidung des Raumschluessels geprueft wird. */
     $titel_v = 'Rollläden OG Schlafzimmer Suedwest Fenster';
     list($l_v) = fb_projekt_liste_bauen(array(array($titel_v, 194, 85)));
     $pruefe('Das Kuerzel in der Liste kommt aus fb_kuerzel_vorschlag()',

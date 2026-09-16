@@ -453,6 +453,51 @@ function fb_probe_formulare()
  * ES GAB SIE BIS 0.12.6 NICHT. Die Sicherungsknoepfe kamen in 0.12.3 und
  * 0.12.4 hinzu, und nichts im Plugin hat je gemeldet, ob sie tragen.
  */
+/**
+ * Ist jedes gesendete Thema eingeordnet - retained oder fluechtig?
+ *
+ * Die Zeile misst NICHT, was auf der Leitung liegt (dafuer gibt es den
+ * Pruefstand probe_retain.php mit einem eigenen UDP-Horcher). Sie misst das,
+ * was hier ueberhaupt messbar ist: dass die Tabelle vollstaendig ist und die
+ * drei Regeln des Hausstandards einhaelt. Ein Thema, das niemand eingeordnet
+ * hat, geht fluechtig hinaus - das ist die sichere Richtung, aber es soll
+ * auffallen.
+ */
+function fb_probe_retain()
+{
+    if (!function_exists('fb_mqtt_retained')) {
+        return array(null, fb_klartext('TEST.A_RETAIN_KEINE'));
+    }
+    $themen = array_keys(fb_mqtt_themen());
+    if (!$themen) { return array(null, fb_klartext('TEST.A_RETAIN_KEINE')); }
+    /* Das Lebenszeichen und die Messwerte mit Zeitbezug - ausgeschrieben,
+     * damit die Zeile eine EIGENE Erwartung hat und nicht bloss die
+     * Tabelle gegen sich selbst haelt. */
+    $nie = array('herz', 'ts', 'strahlung', 'sonne_hoehe', 'sonne_azimut',
+                 '<kuerzel>/watt', '<kuerzel>/glas');
+    $schlecht = array();
+    $ret = 0;
+    foreach ($themen as $t) {
+        $r = fb_mqtt_retained($t);
+        if ($r) { $ret++; }
+        if ($r && in_array($t, $nie, true)) {
+            $schlecht[] = $t;
+        }
+    }
+    /* Und die Gegenrichtung: die Zustaende MUESSEN zurueckbehalten sein. */
+    foreach (array('ok', '<kuerzel>/urteil', '<kuerzel>/beschatten') as $t) {
+        if (in_array($t, $themen, true) && !fb_mqtt_retained($t)) {
+            $schlecht[] = $t;
+        }
+    }
+    if ($schlecht) {
+        return array(false, sprintf(fb_klartext('TEST.A_RETAIN_NEIN'),
+                                    count($schlecht), implode(', ', $schlecht)));
+    }
+    return array(true, sprintf(fb_klartext('TEST.A_RETAIN_JA'),
+                               $ret, count($themen)));
+}
+
 function fb_probe_sicherung()
 {
     if (!function_exists('fb_sicherung_lesen')) {
@@ -617,6 +662,9 @@ function fb_test_selbstpruefung()
 
     list($ok, $txt) = fb_probe_sicherung();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_SICHERUNG'), $ok, $txt);
+
+    list($ok, $txt) = fb_probe_retain();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_RETAIN'), $ok, $txt);
 
     list($ok, $txt) = fb_probe_upload();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_UPLOAD'), $ok, $txt);

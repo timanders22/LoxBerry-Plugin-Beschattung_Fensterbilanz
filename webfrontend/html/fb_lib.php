@@ -73,6 +73,10 @@ if (!defined('FB_UHRSPRUNG')) { define('FB_UHRSPRUNG', 300); }
 /* Punkte der Strahlungsreihe. Muss die groesste einstellbare
  * Glaettungsdauer bei minuetlicher Meldung tragen (3600 s). */
 if (!defined('FB_REIHE_MAX')) { define('FB_REIHE_MAX', 60); }
+/* Abstand zwischen zwei UDP-Datagrammen an das Gateway, in Mikrosekunden.
+ * Regeln/07 hat ihn mit 90 Datagrammen geeicht: ohne Pause kamen 0, 0 und 6
+ * von 90 an, mit 5 ms alle 90, mit 50 ms nur 40. */
+if (!defined('FB_MQTT_ABSTAND')) { define('FB_MQTT_ABSTAND', 5000); }
 
 /**
  * Die Pfade. $neu = true wirft den gemerkten Stand weg.
@@ -2064,6 +2068,91 @@ function fb_mqtt_wert_saeubern($v)
  * Listen sind zwei Wahrheiten; genau daran ist das Ferien-Plugin einmal
  * vorbeigelaufen, weil beide Listen zufaellig gleich lang waren.
  */
+/**
+ * Geht dieses Thema ZURUECKBEHALTEN hinaus?
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, Messwerte
+ * mit Zeitbezug nicht, das Lebenszeichen nie. Am 06.09.2026 am laufenden
+ * Gateway gemessen, dass "retain <thema> <wert>" denselben UDP-Weg nimmt wie
+ * "publish" (mqttgateway.pl, sub udpin, Zeilen 224-228 und 353-357).
+ *
+ * BIS 0.12.8 GING ALLES FLUECHTIG HINAUS. Am 16.09.2026 am Geraet gemessen:
+ * `mosquitto_sub -t 'fenster/#' --retained-only` lieferte 0 Themen, waehrend
+ * derselbe Broker 2456 zurueckbehaltene Themen anderer Linien fuehrte. Nach
+ * einem Neustart des Miniservers oder des Gateways stand damit bis zum
+ * naechsten Cron-Lauf - bis zu fuenf Minuten - kein einziger Wert da.
+ *
+ * DIE ENTSCHEIDUNG FAELLT JE THEMENSTAMM, nicht je Aufruf. Wer sie am
+ * Aufruf trifft, macht entweder das Lebenszeichen retained (falsch) oder die
+ * Zustaende fluechtig (auch falsch) - so geschehen bei ACTiKamera vor 1.9.19.
+ *
+ * Die Einordnung im Einzelnen, weil sie sich nicht von selbst versteht:
+ *
+ *   ok, fenster_anzahl, *_anzahl, nicht_gefahren, saison
+ *       Zustaende. Sie gelten, bis sie sich aendern.
+ *   <kuerzel>/urteil, /beschatten, /grund, /urteil30, /beschatten30,
+ *   /blendung, /daemmen, /gefahren, /begruendung
+ *       Das Urteil je Fenster ist der Zustand, um den es diesem Plugin
+ *       geht. Genau diese Werte muessen nach einem Neustart sofort
+ *       dastehen - sonst faehrt kein Rollladen, bis der Cron das naechste
+ *       Mal rechnet.
+ *   wh_tag, <kuerzel>/wh
+ *       Ein Zaehlerstand ist der Stand, nicht die Messung (Regeln/07,
+ *       BLE-Scanner 1.3.12). Ohne Retain faengt die Tagesanzeige in Loxone
+ *       nach jedem Neustart bei null an, obwohl das Plugin weiterzaehlt.
+ *   bericht, pv_abweichung
+ *       Entstehen hoechstens einmal am Tag und sind damit Zustaende. Der
+ *       Bericht ist den groessten Teil des Tages leer - das faengt die
+ *       Sendefunktion ab (leerer Wert geht immer fluechtig hinaus, sonst
+ *       loeschte er das zurueckbehaltene Thema).
+ *
+ *   strahlung, sonne_hoehe, sonne_azimut, <kuerzel>/watt, <kuerzel>/glas
+ *       Messwerte mit Zeitbezug. Zurueckbehalten saehe eine Stunde alte
+ *       Einstrahlung aus wie die von jetzt.
+ *   herz, ts
+ *       Das Lebenszeichen, und zwar beide Haelften. "herz" ist eine Dauer,
+ *       "ts" sagt nur "ich lief gerade" - ein Lebenszeichen-Zeitstempel
+ *       geht nie retained hinaus, sonst stuende im Broker eine Zeit ohne
+ *       den Zaehler, der sie widerlegen koennte. (Ein INHALTLICHER
+ *       Zeitstempel duerfte es; dieser ist keiner.)
+ *
+ * Ein Thema ohne Eintrag geht fluechtig hinaus - was hier niemand
+ * eingeordnet hat, soll nicht auf Dauer im Broker stehenbleiben.
+ */
+function fb_mqtt_retained($schluessel)
+{
+    static $fluechtig = array(
+        'herz' => 1, 'ts' => 1,
+        'strahlung' => 1, 'sonne_hoehe' => 1, 'sonne_azimut' => 1,
+    );
+    static $fluechtig_je_fenster = array('watt' => 1, 'glas' => 1);
+    static $retained = array(
+        'ok' => 1, 'fenster_anzahl' => 1, 'beschatten_anzahl' => 1,
+        'beschatten30_anzahl' => 1, 'blendung_anzahl' => 1,
+        'daemmen_anzahl' => 1, 'nicht_gefahren' => 1, 'saison' => 1,
+        'wh_tag' => 1, 'bericht' => 1, 'pv_abweichung' => 1,
+    );
+    static $retained_je_fenster = array(
+        'urteil' => 1, 'beschatten' => 1, 'grund' => 1, 'wh' => 1,
+        'begruendung' => 1, 'urteil30' => 1, 'beschatten30' => 1,
+        'blendung' => 1, 'daemmen' => 1, 'gefahren' => 1,
+    );
+    $s = (string) $schluessel;
+    /* Ein Fensterthema heisst <kuerzel>/<feld>. Entschieden wird ueber das
+     * FELD, nicht ueber das Kuerzel - sonst brauchte die Tabelle je Anlage
+     * einen eigenen Eintrag. */
+    $strich = strrpos($s, '/');
+    if ($strich !== false) {
+        $feld = substr($s, $strich + 1);
+        if (isset($retained_je_fenster[$feld])) { return true; }
+        if (isset($fluechtig_je_fenster[$feld])) { return false; }
+        return false;
+    }
+    if (isset($retained[$s]))  { return true; }
+    if (isset($fluechtig[$s])) { return false; }
+    return false;
+}
+
 function fb_mqtt_themen()
 {
     $t = array(
@@ -2225,15 +2314,48 @@ function fb_mqtt_senden($cfg, $stand)
     $praefix = (string) $cfg['mqtt_topic'];
     $nachrichten = fb_mqtt_nachrichten($cfg, $stand);
     $gesendet = 0;
+    $zurueckbehalten = 0;
+    $erste = true;
     foreach ($nachrichten as $k => $v) {
-        $msg = 'publish ' . fb_mqtt_thema($praefix . '/' . $k) . ' ' . fb_mqtt_wert_saeubern($v);
+        $wert = fb_mqtt_wert_saeubern($v);
+        /* EIN LEERER WERT GEHT NIE ZURUECKBEHALTEN HINAUS.
+         *
+         * Eine leere Nutzlast LOESCHT ein zurueckbehaltenes Thema im Broker
+         * (mqttgateway.pl, sub udpin: "Delete $udptopic from memory because
+         * of empty message"). Der Tagesbericht ist den groessten Teil des
+         * Tages leer - ohne diese Zeile loeschte er sich jedes Mal selbst
+         * und der Sinn des Retains waere dahin. */
+        $retain = fb_mqtt_retained($k) && $wert !== '';
+        $msg = ($retain ? 'retain ' : 'publish ')
+             . fb_mqtt_thema($praefix . '/' . $k) . ' ' . $wert;
+        /* EIN ABSTAND ZWISCHEN DEN DATAGRAMMEN.
+         *
+         * Der UDP-Eingang des Gateways verliert unter Last, und ein STOSS
+         * trifft ihn haerter als ein Strom: am 16.09.2026 an dieser Anlage
+         * gemessen kamen von 253 gesendeten Werten 221 an - 32 verloren
+         * (12,6 %). Regeln/07 eicht den Abstand mit 90 Datagrammen: ohne
+         * Pause kamen 0, 0 und 6 von 90 an, mit 5 ms alle 90.
+         *
+         * 5000 Mikrosekunden mal 253 Themen sind rund 1,3 Sekunden je Lauf.
+         * Das ist bei einem Fuenf-Minuten-Takt nicht der Rede wert, und der
+         * Lauf haelt dabei die eigene Sperre - ein zweiter Lauf wartet
+         * nicht, er kehrt um.
+         *
+         * Vor dem ERSTEN Datagramm wird nicht gewartet. */
+        if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
         if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']) !== false) {
             $gesendet++;
+            if ($retain) { $zurueckbehalten++; }
         }
     }
     socket_close($s);
+    /* "gesendet", nicht "uebermittelt": sendto() meldet auch fuer ein
+     * verworfenes Datagramm Erfolg (Regeln/07, am Geraet gemessen: 400
+     * gesendet, 396 verworfen, 0 Fehler). Diese Zahl sagt, was das Plugin
+     * versucht hat - nicht, was angekommen ist. */
     fb_log_wenn_neu('mqtt_zahl', $gesendet . ' von ' . count($nachrichten)
-        . ' Werten an das Gateway gesendet (Port ' . $z['udpport'] . ').');
+        . ' Werten an das Gateway gesendet (Port ' . $z['udpport'] . '), davon '
+        . $zurueckbehalten . ' zurueckbehalten.');
     return $gesendet;
 }
 
@@ -4104,8 +4226,13 @@ function fb_mqtt_text($cfg, $zweig, $text)
     if (!function_exists('socket_create')) { return false; }
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) { return false; }
-    $msg = 'publish ' . fb_mqtt_thema($cfg['mqtt_topic'] . '/' . $zweig) . ' '
-         . fb_mqtt_wert_saeubern($text);
+    /* Dieselbe Tabelle wie in fb_mqtt_senden() - zwei Entscheidungen
+     * waeren zwei Wahrheiten. Und auch hier: ein leerer Text geht nie
+     * zurueckbehalten hinaus, er loeschte sonst das Thema. */
+    $wert = fb_mqtt_wert_saeubern($text);
+    $retain = fb_mqtt_retained($zweig) && $wert !== '';
+    $msg = ($retain ? 'retain ' : 'publish ')
+         . fb_mqtt_thema($cfg['mqtt_topic'] . '/' . $zweig) . ' ' . $wert;
     $ok = @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']) !== false;
     socket_close($s);
     return $ok;
