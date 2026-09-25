@@ -29,30 +29,104 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-fensterbilanz}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    # Aufwaertssuche statt fester Stufenzahl: das Skript liegt je nach
-    # Aufrufweg verschieden tief.
-    D="$SELF"
-    while [ "$D" != "/" ] && [ -n "$D" ]; do
-        if [ -d "$D/config/plugins" ] && [ -d "$D/data/plugins" ]; then BASE="$D"; break; fi
-        D=$(dirname "$D")
+
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.12.9 suchte der Rueckfall aufwaerts das erste Verzeichnis mit
+# config/plugins und data/plugins - ohne config/system/general.json. Aus einem
+# Archiv in einem fremden Baum loeschte das Skript dort die Sicherung und den
+# Datenordner und meldete Erfolg (in WSL gemessen,
+# Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle W4, W5, U10) - genau der
+# Vorfall aus Regeln/06 (Raumklima 0.11.3, 05.09.2026). $5 und $LBHOMEDIR
+# gelten mit config/plugins UND data/plugins darunter. Die Funktion steht in
+# allen vier Hakenskripten wortgleich, Begruendung in preupgrade.sh.
+fb_wurzel_suchen() {
+    fb_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    fb_i=0
+    while [ -n "$fb_v" ] && [ "$fb_v" != "/" ] && [ "$fb_i" -lt 8 ]; do
+        if [ -d "$fb_v/config/plugins" ] && [ -d "$fb_v/data/plugins" ] \
+           && [ -f "$fb_v/config/system/general.json" ]; then
+            echo "$fb_v"
+            return 0
+        fi
+        fb_v=$(dirname "$fb_v")
+        fb_i=$((fb_i + 1))
     done
+    return 1
+}
+BASE="${ARGV5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(fb_wurzel_suchen) || BASE=""
+    fi
 fi
 
 # FAIL CLOSED: ohne einen erkennbaren LoxBerry wird nichts geloescht.
 # Ein "rm -rf" auf einen falsch geratenen Pfad ist schlimmer als eine
-# liegengebliebene Datei.
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
-    echo "<FAIL> Der LoxBerry-Ordner liess sich nicht bestimmen (BASE='$BASE')."
-    echo "<INFO> Es wurde nichts geloescht. Bitte von Hand entfernen:"
+# liegengebliebene Datei. Gewarnt, nicht vollzogen (Regeln/06).
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Der LoxBerry-Ordner liess sich nicht bestimmen: weder das fuenfte"
+    echo "<WARNING> Argument noch \$LBHOMEDIR noch der eigene Ablageort fuehrten auf"
+    echo "<WARNING> einen Ordner mit config/plugins, data/plugins und"
+    echo "<WARNING> config/system/general.json. Es wurde nichts geloescht."
+    echo "<INFO> Bitte von Hand entfernen:"
     echo "<INFO>   config/plugins/$PFOLDER.backup.json   (enthaelt das Wortzeichen)"
-    echo "<INFO>   data/plugins/$PFOLDER/"
+    echo "<INFO>   data/plugins/$PFOLDER/ und data/plugins/$PFOLDER.*"
     exit 1
 fi
 
 WEG=0
+
+# ---------- 0. Marke und Rettungsstempel ----------
+# Beide liegen NEBEN dem Datenordner (preupgrade.sh) und gehen mit ihm nicht
+# weg. Eine liegengebliebene Marke sperrte eine spaetere Neuinstallation bis
+# zu einer Stunde lang; ein Stempel gehoert zu Rettungen, die unten ohnehin
+# fallen (Fall U4).
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" "$BASE/data/plugins/$PFOLDER.rettung.zeit" 2>/dev/null
+
+# ---------- 1. Zurueckbehaltene MQTT-Themen leeren ----------
+#
+# Seit 0.12.9 gehen Zustaende retained hinaus (fb_mqtt_retained() in
+# webfrontend/html/fb_lib.php); bis 0.12.9 blieben sie nach dem Deinstallieren
+# im Broker stehen, und nach jedem Neustart von Broker oder Gateway bekam der
+# Miniserver Urteile eines Plugins, das es nicht mehr gibt (Fall U1). VOR dem
+# Loeschen: Konfiguration (Praefix, Fenster) und bin/ sind hier noch da; der
+# Installer loescht sie erst nach diesem Skript (Vorbild Weissware 0.9.34,
+# Schritt 1b). Welche Themen, wie beim Broker nachgelesen wird und warum
+# hoechstens dreimal: fb_mqtt_leeren().
+#
+# Als loxberry, nicht als root: gebraucht wird nur Lesezugriff auf die
+# Konfiguration und general.json. stdin geschlossen, damit su nie auf eine
+# Eingabe wartet.
+#
+# 'timeout -k 5 60': ohne -k schickt timeout nach 60 s nur SIGTERM - ein
+# Programm, das es nicht annimmt, hielte die Deinstallation an, bis es von
+# selbst endet, und die Sicherung mit dem Wortzeichen (unten) bliebe liegen
+# (Befund aus Sprachsteuerung 0.11.10, dort ueber acht Stunden; Weissware
+# 0.9.34, Faelle K1-K7). Jetzt: nach 60 s SIGTERM, nach weiteren 5 s SIGKILL,
+# und der Abbruch steht als WARNING da (Faelle U6-U9). Rueckgabe 0-2 meldet
+# fb_lauf.php selbst (fb_mqtt_leeren()).
+PBIN="$BASE/bin/plugins/$PFOLDER"
+FB_RC=0
+if command -v php >/dev/null 2>&1 && [ -f "$PBIN/fb_lauf.php" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout -k 5 60 php "$PBIN/fb_lauf.php" --mqtt-leeren)" < /dev/null 2>&1 || FB_RC=$?
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout -k 5 60 php "$PBIN/fb_lauf.php" --mqtt-leeren < /dev/null 2>&1 || FB_RC=$?
+    fi
+    case "$FB_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 60 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $FB_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen." ;;
+    esac
+else
+    echo "<INFO> php oder bin/plugins/$PFOLDER/fb_lauf.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 # ERST NENNEN, DANN LOESCHEN.
 #

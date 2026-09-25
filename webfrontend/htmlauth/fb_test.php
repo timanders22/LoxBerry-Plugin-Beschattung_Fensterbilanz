@@ -226,15 +226,23 @@ function fb_holen($adresse, $ctx)
     return $text;
 }
 
-/** Die Datei mit dem Rechenlauf - Archiv und Installation unterscheiden sich. */
+/**
+ * Die Datei mit dem Rechenlauf - Archiv und Installation unterscheiden sich.
+ *
+ * Welche Lage gilt, entscheidet seit 0.12.10 der eigene Ablageort (liegt
+ * diese Datei unter .../plugins/<ordner>, ist sie installiert), nicht eine
+ * Reihe von Versuchen: installiert hiess dirname(dirname(__DIR__)) bis 0.12.9
+ * webfrontend/htmlauth/bin/ - ein Ort ausserhalb des Plugins.
+ */
 function fb_lauf_datei()
 {
     $p = fb_paths();
-    foreach (array($p['bindir'] . '/fb_lauf.php',
-                   dirname(dirname(__DIR__)) . '/bin/fb_lauf.php') as $k) {
-        if (is_file($k)) { return $k; }
+    if (basename(dirname(__DIR__)) === 'plugins') {
+        $k = $p['home'] !== '' ? $p['bindir'] . '/fb_lauf.php' : '';
+    } else {
+        $k = dirname(dirname(__DIR__)) . '/bin/fb_lauf.php';
     }
-    return '';
+    return ($k !== '' && is_file($k)) ? $k : '';
 }
 
 /* ==================================================================
@@ -472,9 +480,16 @@ function fb_probe_retain()
     if (!$themen) { return array(null, fb_klartext('TEST.A_RETAIN_KEINE')); }
     /* Das Lebenszeichen und die Messwerte mit Zeitbezug - ausgeschrieben,
      * damit die Zeile eine EIGENE Erwartung hat und nicht bloss die
-     * Tabelle gegen sich selbst haelt. */
+     * Tabelle gegen sich selbst haelt. Seit 0.12.10 dazu ok (eine Aussage
+     * des Dienstes ueber sich selbst) und die Tageswerte saison, wh_tag,
+     * <kuerzel>/wh und die Urteile je Fenster samt ihrer Zaehlung, die
+     * allein durch die Uhr falsch werden (Regeln/07, Abschnitt 3). Bis
+     * 0.12.9 verlangte diese Zeile ok, urteil und beschatten zurueckbehalten. */
     $nie = array('herz', 'ts', 'strahlung', 'sonne_hoehe', 'sonne_azimut',
-                 '<kuerzel>/watt', '<kuerzel>/glas');
+                 '<kuerzel>/watt', '<kuerzel>/glas',
+                 'ok', 'saison', 'wh_tag', '<kuerzel>/wh',
+                 '<kuerzel>/urteil', '<kuerzel>/beschatten', '<kuerzel>/grund',
+                 '<kuerzel>/begruendung', 'beschatten_anzahl');
     $schlecht = array();
     $ret = 0;
     foreach ($themen as $t) {
@@ -484,8 +499,9 @@ function fb_probe_retain()
             $schlecht[] = $t;
         }
     }
-    /* Und die Gegenrichtung: die Zustaende MUESSEN zurueckbehalten sein. */
-    foreach (array('ok', '<kuerzel>/urteil', '<kuerzel>/beschatten') as $t) {
+    /* Und die Gegenrichtung: die Einstellung fenster_anzahl MUSS
+     * zurueckbehalten sein (fb_mqtt_tabelle(), "retained"). */
+    foreach (array('fenster_anzahl') as $t) {
         if (in_array($t, $themen, true) && !fb_mqtt_retained($t)) {
             $schlecht[] = $t;
         }
@@ -677,12 +693,20 @@ function fb_test_selbstpruefung()
 
     /* Der Cron ist die einzige Stelle, die von selbst rechnet, wenn keine
      * Messwerte hereinkommen. Fehlt er, faellt das erst auf, wenn jemand
-     * merkt, dass sich nichts mehr bewegt - und das kann Wochen dauern. */
+     * merkt, dass sich nichts mehr bewegt - und das kann Wochen dauern.
+     *
+     * Bis 0.12.9 stand hier $p['home'] . '/system/cron/...' auch bei LEERER
+     * Wurzel - aus einem Archiv also /system/cron/cron.05min/fensterbilanz
+     * ab der Laufwerkswurzel, und eine Datei dort meldete die Zeile als
+     * vorhanden (in WSL gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10,
+     * Fall T4). Jetzt entscheidet die eigene Lage wie in fb_lauf_datei(). */
     $cron = '';
-    foreach (array($p['home'] . '/system/cron/cron.05min/' . $p['plugin'],
-                   dirname(dirname(__DIR__)) . '/cron/cron.05min') as $k) {
-        if ($k !== '' && is_file($k)) { $cron = $k; break; }
+    if (basename(dirname(__DIR__)) === 'plugins') {
+        $k = $p['home'] !== '' ? $p['home'] . '/system/cron/cron.05min/' . $p['plugin'] : '';
+    } else {
+        $k = dirname(dirname(__DIR__)) . '/cron/cron.05min';
     }
+    if ($k !== '' && is_file($k)) { $cron = $k; }
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_CRON'), $cron !== '',
         $cron !== '' ? sprintf(fb_klartext('TEST.A_CRON_JA'), $cron)
                      : fb_klartext('TEST.A_CRON_NEIN'));

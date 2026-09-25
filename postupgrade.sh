@@ -34,10 +34,37 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-fensterbilanz}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+# Bis 0.12.9: BASE="${ARGV5:-$LBHOMEDIR}" und der feste Rueckfall $SELF/../..
+# Die Funktion steht in allen vier Hakenskripten wortgleich, Begruendung in
+# preupgrade.sh.
+fb_wurzel_suchen() {
+    fb_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    fb_i=0
+    while [ -n "$fb_v" ] && [ "$fb_v" != "/" ] && [ "$fb_i" -lt 8 ]; do
+        if [ -d "$fb_v/config/plugins" ] && [ -d "$fb_v/data/plugins" ] \
+           && [ -f "$fb_v/config/system/general.json" ]; then
+            echo "$fb_v"
+            return 0
+        fi
+        fb_v=$(dirname "$fb_v")
+        fb_i=$((fb_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(fb_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen -"
+    echo "<WARNING> es wurde nichts nachgesehen."
+    exit 1
 fi
 PDATA="$BASE/data/plugins/$PFOLDER"
 
@@ -62,8 +89,11 @@ else
     echo "<INFO> Reiter Test nachsehen."
 fi
 if [ "$UEBRIG" -gt 0 ]; then
-    echo "<FAIL> $UEBRIG Rettungsdatei(en) sind liegengeblieben:"
-    ls -1 "$BASE"/data/plugins/"$PFOLDER".rettung.*.json 2>/dev/null | sed 's/^/<FAIL>    /'
-    echo "<FAIL> Sie gehoeren nach $PDATA/ - postinstall.sh hat sie nicht geholt."
+    # Seit 0.12.10 laesst postinstall.sh eine Rettung mit Absicht liegen, wenn
+    # sie nicht aus dieser Aktualisierung stammt oder unlesbar ist - und sagt
+    # dort, warum. Bis 0.12.9 stand hier "postinstall.sh hat sie nicht geholt".
+    echo "<WARNING> $UEBRIG Rettungsdatei(en) liegen noch neben $PDATA/:"
+    ls -1 "$BASE"/data/plugins/"$PFOLDER".rettung.*.json 2>/dev/null | sed 's/^/<WARNING>    /'
+    echo "<WARNING> Warum, steht oben bei postinstall; die Deinstallation raeumt sie weg."
 fi
 exit 0

@@ -29,21 +29,26 @@
  * Findet keiner der Kandidaten etwas, wird auf die FEHLERAUSGABE
  * geschrieben, welche Datei wo gesucht wurde, und mit Rueckgabewert 1
  * beendet - nicht stillschweigend weitergelaufen.
+ *
+ * WELCHE LAGE GILT, ENTSCHEIDET SEIT 0.12.10 DER EIGENE ABLAGEORT: liegt
+ * diese Datei unter .../plugins/<ordner>, ist sie installiert, sonst liegt
+ * sie in einem ausgepackten Archiv - je genau ein Kandidat. Bis 0.12.9 wurden
+ * drei der Reihe nach probiert, der zweite VOR der eigenen Bibliothek: aus
+ * einem Archiv unter / war das /webfrontend/html/plugins/bin/fb_lib.php ab
+ * der Laufwerkswurzel, und was dort lag, lief als Bibliothek (in WSL
+ * gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10, Fall T3). Der erste
+ * nahm $LBHOMEDIR, gleich wo diese Datei lag. Bauart htmlauth/index.php aus
+ * ZendureSolarFlow 0.9.26.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
-$fb_home   = getenv('LBHOMEDIR');
-$fb_ordner = getenv('LBPPLUGINDIR');
-if (!$fb_ordner) { $fb_ordner = basename(__DIR__); }
-
-$fb_kandidaten = array();
-if ($fb_home) {
-    $fb_kandidaten[] = $fb_home . '/webfrontend/html/plugins/' . $fb_ordner . '/fb_lib.php';
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $fb_kandidaten = array(dirname(dirname(dirname(__DIR__)))
+                     . '/webfrontend/html/plugins/' . basename(__DIR__) . '/fb_lib.php');
+} else {
+    $fb_kandidaten = array(dirname(__DIR__) . '/webfrontend/html/fb_lib.php');
 }
-$fb_kandidaten[] = dirname(dirname(dirname(__DIR__)))
-                 . '/webfrontend/html/plugins/' . basename(__DIR__) . '/fb_lib.php';
-$fb_kandidaten[] = dirname(__DIR__) . '/webfrontend/html/fb_lib.php';
 
 $fb_lib = '';
 foreach ($fb_kandidaten as $fb_k) {
@@ -72,6 +77,25 @@ if (in_array('--selbsttest', $fb_argumente, true)) {
 
 if (in_array('--zeile', $fb_argumente, true)) {
     echo fb_zeile(fb_stand());
+    exit(0);
+}
+
+/* Die Deinstallation leert hierueber die zurueckbehaltenen MQTT-Themen der
+ * Linie (uninstall/uninstall, mit timeout -k 5 60). Rueckgabe 0-2 siehe
+ * fb_mqtt_leeren(); ohne Wurzel oder aus einem Archiv 1. */
+if (in_array('--mqtt-leeren', $fb_argumente, true)) {
+    fb_keine_wurzel_abbruch('fb_lauf.php --mqtt-leeren');
+    exit(fb_mqtt_leeren());
+}
+
+/* Ohne Wurzel oder aus einem Archiv heraus nichts rechnen, nichts senden,
+ * nichts schreiben (Faelle A1-A3, T5). --zeile oben liest nur, der Selbsttest
+ * schreibt nur Proben in einen eigenen Ordner unter sys_get_temp_dir() -
+ * beide bleiben erlaubt. */
+fb_keine_wurzel_abbruch('fb_lauf.php');
+
+if (fb_upgrade_laeuft()) {
+    echo "Eine Aktualisierung laeuft - es wird nicht gerechnet, bis postinstall.sh fertig ist.\n";
     exit(0);
 }
 

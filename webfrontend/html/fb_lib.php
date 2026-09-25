@@ -35,21 +35,49 @@
  * verdunkelt das Haus, sobald ein Kabel wackelt.
  */
 
-/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen. */
-if (!function_exists('lb_wurzel_ermitteln')) {
-    function lb_wurzel_ermitteln()
-    {
-        $d = __DIR__;
-        for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
-                return $d;
-            }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
-            $d = $eltern;
+/**
+ * Den LoxBerry-Wurzelordner suchen, ohne einen Systempfad hinzuschreiben.
+ *
+ * Aufwaerts, bis ein Verzeichnis nachweislich eine LoxBerry-Wurzel IST: es
+ * traegt config/plugins, data/plugins UND config/system/general.json
+ * (Regeln/06). Bis 0.12.9 genuegten config/plugins und webfrontend - beides
+ * hinterlaesst jeder Pruefstand, und ein Archiv in einem solchen Baum nahm
+ * ihn als Wurzel (in WSL gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10,
+ * Fall W6). Bauart bw_wurzel_suchen() aus Beschattungswaechter 0.9.21.
+ *
+ * Mit Praefix und ohne function_exists(): unter dem alten, allgemeinen Namen
+ * lb_wurzel_ermitteln() haette die gleichnamige Funktion eines anderen
+ * Plugins gegolten, samt deren Regel.
+ */
+function fb_wurzel_suchen()
+{
+    $v = __DIR__;
+    for ($i = 0; $i < 8 && $v !== '' && $v !== dirname($v); $i++) {
+        if (is_dir($v . '/config/plugins') && is_dir($v . '/data/plugins')
+            && is_file($v . '/config/system/general.json')) {
+            return $v;
         }
-        return '';
+        $v = dirname($v);
     }
+    return '';
+}
+
+/**
+ * Die Wurzel: erst LBHOMEDIR, dann die Suche - und danach nichts mehr.
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter;
+ * general.json wird dort nicht verlangt, damit die Attrappen der Pruefkette
+ * (Werkzeuge/lb) weiter tragen. Bis 0.12.9 genuegte is_dir() - ein LBHOMEDIR
+ * auf einen beliebigen Ordner war Wurzel (Fall W7). Rueckgabe '' heisst
+ * "keine Wurzel". Bauart bw_lbhome() aus Beschattungswaechter 0.9.21.
+ */
+function fb_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if (is_string($h) && $h !== '' && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return fb_wurzel_suchen();
 }
 
 require_once __DIR__ . '/fb_sonne.php';
@@ -84,21 +112,51 @@ if (!defined('FB_MQTT_ABSTAND')) { define('FB_MQTT_ABSTAND', 5000); }
  * Das Geruest in REGELN_2 holt die Pfade nach dem Einbinden des SDK ein
  * zweites Mal, weil loxberry_system.php die Umgebung veraendern kann. Ohne
  * den Schalter waere dieser zweite Aufruf wirkungslos.
+ *
+ * ARCHIVMODUS. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort
+ * installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch
+ * verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt
+ * ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Deinstallation und die
+ * Pruefwerkzeuge mit ihrer Attrappe). Sonst ist das ein ausgepacktes Archiv
+ * oder ein Pruefordner, und alles bleibt in dessen eigenem Ordner; 'home' ist
+ * dann leer und 'archiv' nennt die gefundene Wurzel. Bis 0.12.9 nahm ein
+ * Archiv $LBHOMEDIR (am Geraet steht es in /etc/environment) und den festen
+ * Namen: fb_lauf.php --jetzt aus dem Archiv schrieb stand.json der Anlage und
+ * sendete an deren Gateway, der Endpunkt nahm deren Wortzeichen an (in WSL
+ * gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle A1-A6).
+ * Bauart bw_paths() aus Beschattungswaechter 0.9.21.
  */
 function fb_paths($neu = false)
 {
     static $p = null;
     if ($p !== null && !$neu) { return $p; }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) { $home = lb_wurzel_ermitteln(); }
-    $dir = getenv('LBPPLUGINDIR');
-    if (!$dir) { $dir = basename(dirname(__FILE__)); }
-    if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html' || $dir === 'plugins') {
+    /* Von LBPPLUGINDIR zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten auch dort nicht. */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'htmlauth', 'plugins', 'bin'), true));
+    $dir = $lbp_gilt ? $lbp : basename(dirname(__FILE__));
+    if ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html' || $dir === 'htmlauth'
+        || $dir === 'plugins' || $dir === 'bin') {
         $dir = 'fensterbilanz';
+    }
+    $home = fb_lbhome();
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
     }
     $basis = $home !== '' ? $home : dirname(dirname(__DIR__));
     $p = array(
         'home'      => $home,
+        /* Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+         * liegt (Archivmodus) - fuer die Meldung; sonst leer. */
+        'archiv'    => $home === '' ? $gefunden : '',
+        /* Die Marke "Aktualisierung laeuft" liegt NEBEN dem Datenordner:
+         * purge_installation raeumt den Ordner beim Upgrade ab. */
+        'marke'     => $home !== '' ? $home . '/data/plugins/' . $dir . '.upgrade_laeuft' : '',
         'plugin'    => $dir,
         'configdir' => $basis . '/config/plugins/' . $dir,
         'config'    => $basis . '/config/plugins/' . $dir . '/fensterbilanz.json',
@@ -126,6 +184,67 @@ function fb_paths($neu = false)
         'bindir'    => $basis . '/bin/plugins/' . $dir,
     );
     return $p;
+}
+
+/**
+ * Fuer bin/fb_lauf.php: ohne Wurzel oder aus einem Archiv heraus nichts tun,
+ * eine Meldung auf stderr, Rueckgabewert 1 - VOR allem, was rechnet, sendet
+ * oder schreibt. Bauart bw_keine_wurzel_abbruch() aus Beschattungswaechter
+ * 0.9.21 (dort aus Spotpreis-Tibber 0.9.19).
+ */
+function fb_keine_wurzel_abbruch($programm)
+{
+    $p = fb_paths();
+    if ($p['home'] !== '') {
+        return;
+    }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
+/**
+ * Laeuft gerade eine Aktualisierung?
+ *
+ * Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
+ * Minute (Regeln/06, am Geraet gemessen). purge_installation hat
+ * data/plugins/<ordner>/ dann schon geleert, und der Fuenf-Minuten-Takt wie
+ * jeder Messwert aus Loxone ueber den Endpunkt schrieben eine frische
+ * bilanz.json bzw. messwerte.json hinein - postinstall.sh hielt das Ziel
+ * danach fuer belegt, holte die Rettung nicht zurueck und loeschte sie: die
+ * Tagesbilanz war weg (in WSL gemessen, Pruefung-Beschattung_Fensterbilanz-
+ * 0.12.10, Faelle Z2-Z5). preupgrade.sh legt deshalb als Erstes die Marke
+ * data/plugins/<ordner>.upgrade_laeuft mit der Unixzeit an; postinstall.sh
+ * entfernt sie, uninstall/uninstall raeumt sie weg.
+ *
+ * Sie gilt, wenn ihr Inhalt eine Zahl ist und hoechstens 3600 s zurueck bzw.
+ * 300 s voraus liegt (eine nachgestellte Uhr; Bauart Sprachsteuerung 0.11.9,
+ * Govee 0.9.20). Aelter, weiter voraus oder keine Zahl: sie gilt nicht - eine
+ * abgebrochene Installation darf das Plugin nicht fuer immer stilllegen. Der
+ * Inhalt wird nur mit preg_match geprueft und nie ausgewertet. Ohne lesbare
+ * Uhr gilt eine liegende Marke (der Schutz faellt geschlossen aus).
+ */
+function fb_upgrade_laeuft()
+{
+    $p = fb_paths();
+    if ($p['marke'] === '' || !is_file($p['marke'])) { return false; }
+    $jetzt = time();
+    if (!is_int($jetzt) || $jetzt <= 0) { return true; }
+    $seit = trim((string) @file_get_contents($p['marke']));
+    if (!preg_match('/^[0-9]{1,12}$/', $seit)) { return false; }
+    $alter = $jetzt - (int) $seit;
+    return $alter >= -300 && $alter < 3600;
 }
 
 /* ==================================================================
@@ -525,6 +644,18 @@ function fb_json_schreiben($pfad, $daten, $rechte = null)
 }
 
 /**
+ * Traegt ein Konfigurationsstand INHALT? Inhalt heisst hier: ein lesbares
+ * Objekt mit einem Wortzeichen - ohne das Wortzeichen ist eine Konfiguration
+ * fuer den Miniserver wertlos, und es laesst sich nicht nachrechnen.
+ * Dieselbe Regel wie preupgrade.sh und postinstall.sh (fb_inhalt ... token).
+ */
+function fb_hat_inhalt($d)
+{
+    return is_array($d) && isset($d['aktionstoken']) && is_string($d['aktionstoken'])
+        && trim($d['aktionstoken']) !== '';
+}
+
+/**
  * Die Konfiguration lesen.
  *
  * $erzeugen = false bedeutet: NUR lesen. Kein mkdir, kein Zurueckschreiben,
@@ -545,6 +676,31 @@ function fb_config($erzeugen = true)
         }
         $zustand = 'fehlt';
         $roh = array();
+    }
+
+    /* NACH INHALT, NICHT NACH LESBARKEIT. Eine lesbare Konfiguration ohne
+     * Wortzeichen - postinstall.sh legt '{}' an, wenn die Rueckholung
+     * scheitert - galt bis 0.12.9 als heil: die Zweitschrift MIT Wortzeichen
+     * wurde nie gefragt, fb_token() wuerfelte ein neues, und
+     * fb_config_speichern() ueberschrieb damit auch die Zweitschrift (in WSL
+     * gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10, Fall Z20).
+     * Traegt die Zweitschrift ein Wortzeichen und die Konfiguration keines,
+     * gilt die Zweitschrift; der verdraengte Stand bleibt als .kaputt (0600)
+     * liegen. Bauart sp_zweitschrift_ziehen() aus Sprachsteuerung 0.11.7. */
+    if ($zustand === 'ok' && !fb_hat_inhalt($roh)) {
+        list($sicher, $zs) = fb_json_lesen_geprueft($p['sicherung']);
+        if ($zs === 'ok' && fb_hat_inhalt($sicher)) {
+            if ($erzeugen) {
+                $weg = $p['config'] . '.kaputt';
+                if (@copy($p['config'], $weg)) { @chmod($weg, 0600); }
+                if (fb_json_schreiben($p['config'], $sicher, 0600)) {
+                    fb_log('Die Konfiguration trug kein Wortzeichen, die Zweitschrift traegt eines - '
+                         . 'sie ist zurueckgespielt. Der verdraengte Stand liegt als '
+                         . basename($weg) . ' daneben.');
+                }
+            }
+            $roh = $sicher;
+        }
     }
 
     if ($zustand === 'fehlt') {
@@ -1843,6 +1999,16 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
      * jetzt ohne Ausnahme: der Endpunkt schreibt in data/ und log/, nie in
      * config/. */
     $p = fb_paths();
+    /* Waehrend einer Aktualisierung nichts rechnen und nichts schreiben -
+     * weder aus dem Takt noch aus dem Endpunkt noch aus der Oberflaeche;
+     * siehe fb_upgrade_laeuft(). Vor fb_config(): auch die Konfiguration
+     * bleibt, wie sie ist. fb_log() und nicht fb_log_wenn_neu(): dessen
+     * Merker liegt im Datenordner und legte ihn in der Luecke wieder an. */
+    if (fb_upgrade_laeuft()) {
+        fb_log('Eine Aktualisierung laeuft (Marke ' . basename($p['marke'])
+             . ') - dieser Lauf setzt aus.');
+        return array(false, fb_stand());
+    }
     $cfg = fb_config($erzeugen);
     $vorher = fb_stand();
     $jetzt = time();
@@ -2088,23 +2254,29 @@ function fb_mqtt_wert_saeubern($v)
  *
  * Die Einordnung im Einzelnen, weil sie sich nicht von selbst versteht:
  *
- *   ok, fenster_anzahl, *_anzahl, nicht_gefahren, saison
- *       Zustaende. Sie gelten, bis sie sich aendern.
- *   <kuerzel>/urteil, /beschatten, /grund, /urteil30, /beschatten30,
- *   /blendung, /daemmen, /gefahren, /begruendung
- *       Das Urteil je Fenster ist der Zustand, um den es diesem Plugin
- *       geht. Genau diese Werte muessen nach einem Neustart sofort
- *       dastehen - sonst faehrt kein Rollladen, bis der Cron das naechste
- *       Mal rechnet.
- *   wh_tag, <kuerzel>/wh
- *       Ein Zaehlerstand ist der Stand, nicht die Messung (Regeln/07,
- *       BLE-Scanner 1.3.12). Ohne Retain faengt die Tagesanzeige in Loxone
- *       nach jedem Neustart bei null an, obwohl das Plugin weiterzaehlt.
- *   bericht, pv_abweichung
- *       Entstehen hoechstens einmal am Tag und sind damit Zustaende. Der
- *       Bericht ist den groessten Teil des Tages leer - das faengt die
- *       Sendefunktion ab (leerer Wert geht immer fluechtig hinaus, sonst
- *       loeschte er das zurueckbehaltene Thema).
+ * RETAINED BLEIBEN SEIT 0.12.10 NUR ZWEI, beide mit derselben Frage
+ * geprueft ("wird der Wert allein durch die Uhr falsch?"):
+ *   fenster_anzahl
+ *       Die Zahl der eingerichteten Fenster - eine Einstellung. Sie aendert
+ *       sich nur, wenn jemand die Konfiguration aendert.
+ *   bericht
+ *       Der Text nennt sein eigenes Datum ("Tagesbericht 2026-09-24: ...")
+ *       und beschreibt einen abgeschlossenen Tag; er bleibt wahr, wie ein
+ *       absoluter Zeitstempel eines Ereignisses (Regeln/07, Funkwacht
+ *       "letzte"). Leer geht er fluechtig hinaus (sonst loeschte er das
+ *       zurueckbehaltene Thema).
+ *
+ *   <kuerzel>/urteil, /beschatten, /grund, /begruendung, /urteil30,
+ *   /beschatten30, /blendung, /daemmen, /gefahren, dazu beschatten_anzahl,
+ *   beschatten30_anzahl, blendung_anzahl, daemmen_anzahl, nicht_gefahren
+ *       FLUECHTIG seit 0.12.10, bis 0.12.9 retained. Das Urteil folgt aus
+ *       Sonnenstand und Einstrahlung und wird allein durch die Uhr falsch -
+ *       nach Sonnenuntergang stuende zurueckbehalten "beschatten" im Broker
+ *       (Regeln/07, Abschnitt 3, Anwendung vom 24.09.2026; entschieden fuer
+ *       diese Linie am 25.09.2026). Die Zaehlungen sind Summen daraus.
+ *   pv_abweichung
+ *       FLUECHTIG seit 0.12.10: "die letzten fuenf Tage gegen die Wochen
+ *       davor" - der Bezug wandert mit der Uhr.
  *
  *   strahlung, sonne_hoehe, sonne_azimut, <kuerzel>/watt, <kuerzel>/glas
  *       Messwerte mit Zeitbezug. Zurueckbehalten saehe eine Stunde alte
@@ -2115,42 +2287,453 @@ function fb_mqtt_wert_saeubern($v)
  *       geht nie retained hinaus, sonst stuende im Broker eine Zeit ohne
  *       den Zaehler, der sie widerlegen koennte. (Ein INHALTLICHER
  *       Zeitstempel duerfte es; dieser ist keiner.)
+ *   ok, saison, wh_tag, <kuerzel>/wh
+ *       FLUECHTIG seit 0.12.10, bis 0.12.9 retained (Regeln/07, Abschnitt 3,
+ *       Entscheidungen vom 18., 19. und 24.09.2026). ok sagt, was der Lauf
+ *       ueber seine EIGENEN Eingaenge feststellt (alle Messwerte lesbar,
+ *       mindestens ein Fenster) - eine Aussage des Dienstes ueber sich
+ *       selbst; stirbt der Lauf, stuende zurueckbehalten fuer immer "in
+ *       Ordnung" im Broker. saison (Waermebedarf des Tages aus der
+ *       Tagesprognose), wh_tag und <kuerzel>/wh (Wattstunden des Tages)
+ *       werden allein durch die Uhr falsch: nach Mitternacht zeigte ein
+ *       zurueckbehaltener Wert den Vortag als heute. Die Altwerte raeumt
+ *       fb_mqtt_senden() ab (fb_mqtt_altlast()), die Deinstallation leert
+ *       sie mit (fb_mqtt_leeren()).
  *
  * Ein Thema ohne Eintrag geht fluechtig hinaus - was hier niemand
  * eingeordnet hat, soll nicht auf Dauer im Broker stehenbleiben.
+ *
+ * Die Tabelle steht in fb_mqtt_tabelle(): die Deinstallation braucht
+ * dieselben Namen, und zwei Listen waeren zwei Wahrheiten.
  */
 function fb_mqtt_retained($schluessel)
 {
-    static $fluechtig = array(
-        'herz' => 1, 'ts' => 1,
-        'strahlung' => 1, 'sonne_hoehe' => 1, 'sonne_azimut' => 1,
-    );
-    static $fluechtig_je_fenster = array('watt' => 1, 'glas' => 1);
-    static $retained = array(
-        'ok' => 1, 'fenster_anzahl' => 1, 'beschatten_anzahl' => 1,
-        'beschatten30_anzahl' => 1, 'blendung_anzahl' => 1,
-        'daemmen_anzahl' => 1, 'nicht_gefahren' => 1, 'saison' => 1,
-        'wh_tag' => 1, 'bericht' => 1, 'pv_abweichung' => 1,
-    );
-    static $retained_je_fenster = array(
-        'urteil' => 1, 'beschatten' => 1, 'grund' => 1, 'wh' => 1,
-        'begruendung' => 1, 'urteil30' => 1, 'beschatten30' => 1,
-        'blendung' => 1, 'daemmen' => 1, 'gefahren' => 1,
-    );
+    static $t = null;
+    if ($t === null) {
+        $t = array();
+        foreach (fb_mqtt_tabelle() as $name => $liste) { $t[$name] = array_flip($liste); }
+    }
     $s = (string) $schluessel;
     /* Ein Fensterthema heisst <kuerzel>/<feld>. Entschieden wird ueber das
      * FELD, nicht ueber das Kuerzel - sonst brauchte die Tabelle je Anlage
      * einen eigenen Eintrag. */
     $strich = strrpos($s, '/');
     if ($strich !== false) {
-        $feld = substr($s, $strich + 1);
-        if (isset($retained_je_fenster[$feld])) { return true; }
-        if (isset($fluechtig_je_fenster[$feld])) { return false; }
-        return false;
+        return isset($t['retained_je_fenster'][substr($s, $strich + 1)]);
     }
-    if (isset($retained[$s]))  { return true; }
-    if (isset($fluechtig[$s])) { return false; }
-    return false;
+    return isset($t['retained'][$s]);
+}
+
+/**
+ * Die Einordnung aller Themen, an EINER Stelle (siehe fb_mqtt_retained()).
+ *
+ * 'altlast' und 'altlast_je_fenster' sind die Themen, die 0.12.9 - die erste
+ * Fassung mit Retain; bis 0.12.8 ging alles fluechtig hinaus - zurueckbehalten
+ * gesendet hat und die seit 0.12.10 fluechtig gehen. Ihr Altwert bleibt im
+ * Broker stehen, bis ihn jemand mit leerer retain-Nutzlast loescht.
+ */
+function fb_mqtt_tabelle()
+{
+    return array(
+        'fluechtig'           => array('herz', 'ts', 'strahlung', 'sonne_hoehe', 'sonne_azimut',
+                                       'ok', 'saison', 'wh_tag',
+                                       'beschatten_anzahl', 'beschatten30_anzahl', 'blendung_anzahl',
+                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung'),
+        'fluechtig_je_fenster' => array('watt', 'glas', 'wh',
+                                       'urteil', 'beschatten', 'grund', 'begruendung', 'urteil30',
+                                       'beschatten30', 'blendung', 'daemmen', 'gefahren'),
+        'retained'            => array('fenster_anzahl', 'bericht'),
+        'retained_je_fenster' => array(),
+        'altlast'             => array('ok', 'wh_tag', 'saison',
+                                       'beschatten_anzahl', 'beschatten30_anzahl', 'blendung_anzahl',
+                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung'),
+        'altlast_je_fenster'  => array('wh', 'urteil', 'beschatten', 'grund', 'begruendung', 'urteil30',
+                                       'beschatten30', 'blendung', 'daemmen', 'gefahren'),
+    );
+}
+
+/**
+ * Die Altthemen dieser Anlage (ohne Praefix): die festen und je Fenster mit
+ * Kuerzel dessen 'wh' - genau die Namen, unter denen fb_mqtt_nachrichten()
+ * in DIESEM Lauf einen gueltigen Wert schickt. Ein Fenster, das es nicht mehr
+ * gibt, steht hier nicht: eine leere Nachricht ohne Wert dahinter kaeme am
+ * Miniserver als leerer Wert an (Regeln/07); solche Reste leert die
+ * Deinstallation (fb_mqtt_leeren()).
+ */
+function fb_mqtt_altlast_liste($cfg)
+{
+    $tab = fb_mqtt_tabelle();
+    $l = $tab['altlast'];
+    $fenster = (isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array();
+    foreach ($fenster as $f) {
+        $k = (is_array($f) && isset($f['kuerzel'])) ? (string) $f['kuerzel'] : '';
+        if ($k === '') { continue; }
+        foreach ($tab['altlast_je_fenster'] as $feld) { $l[] = $k . '/' . $feld; }
+    }
+    return array_values(array_unique($l));
+}
+
+/** Passt ein Thema auf einen Abonnementfilter? Genau oder mit '+' fuer eine Ebene. */
+function fb_mqtt_filter_passt($filter, $thema)
+{
+    if ($filter === $thema) { return true; }
+    if (strpos($filter, '+') === false) { return false; }
+    $f = explode('/', $filter);
+    $t = explode('/', $thema);
+    if (count($f) !== count($t)) { return false; }
+    foreach ($f as $i => $teil) {
+        if ($teil !== '+' && $teil !== $t[$i]) { return false; }
+    }
+    return true;
+}
+
+/**
+ * Den Broker fragen, welche Themen er zurueckbehaelt - in EINER Verbindung,
+ * ein SUBSCRIBE mit allen Filtern ($filter: volle Themen, auch mit '+').
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok' heisst: der Broker hat die Anmeldung (CONNACK 0) und JEDEN Filter
+ * (SUBACK-Rueckgabe unter 0x80) bestaetigt; was dann nicht unter 'belegt'
+ * steht, ist leer. 'unbekannt': er war nicht zu fragen (keine Wurzel, keine
+ * general.json, keine Verbindung, Anmeldung abgewiesen, Filter abgelehnt,
+ * keine Antwort) - das heisst nie "nichts belegt" und traegt nie einen Merker
+ * (Muster 11 der Nachlese; Faelle R14, R16).
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet sendto() auch fuer ein verworfenes Datagramm Erfolg
+ * (Regeln/07, "Ein Absender merkt nichts davon", Nachtrag vom 19.09.2026).
+ * Belegt ist ein Abraeumen erst, wenn der Broker selbst sagt, dass nichts mehr
+ * dasteht - am EMPFANGENEN Paket mit Retain-Merkmal und nicht leerer Nutzlast.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT, ohne
+ * fremde Bibliothek; Bauart bw_mqtt_behalten_liste() aus Beschattungswaechter
+ * 0.9.21. Die Anmeldung nimmt Brokeruser/Brokerpass aus der general.json
+ * (Regeln/07, Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in
+ * einem Protokoll und nie auf einer Kommandozeile.
+ */
+function fb_mqtt_behalten_liste(array $filter)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($filter as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $nur_genau = true;
+    foreach (array_keys($soll) as $f) {
+        if (strpos($f, '+') !== false) { $nur_genau = false; }
+    }
+    $p = fb_paths();
+    if ($p['home'] === '') { return $aus; }
+    $gen = fb_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($k) use ($m) {
+        return (isset($m[$k]) && is_scalar($m[$k])) ? (string) $m[$k] : '';
+    };
+    $host = trim($hol('Brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser');
+    $kennwort = $hol('Brokerpass');
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('fbrueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        /* CONNACK: Art 2, zweites Byte ist der Rueckgabecode; nur 0 ist eine
+         * Anmeldung. 5 (nicht berechtigt) heisst "nicht zu fragen". */
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $abgelehnt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Je Filter ein Rueckgabebyte hinter der Paketkennung;
+                       0x80 heisst abgelehnt. */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { $abgelehnt = true; }
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
+                    if (($pk[0] & 1) && $wert !== '') {
+                        foreach (array_keys($soll) as $f) {
+                            if (fb_mqtt_filter_passt($f, $t)) { $aus['belegt'][$t] = true; break; }
+                        }
+                        if ($nur_genau && count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt && !$abgelehnt) {
+                $aus['lage'] = 'ok';
+            } else {
+                $aus['belegt'] = array();
+            }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in diesem Lauf noch abgeraeumt werden?
+ *
+ * Rueckgabe array('lage' => 'erledigt'|'belegt'|'unbekannt',
+ *                 'themen' => array(<thema ohne praefix>, ...)).
+ *
+ * Je Lauf, bis der Merker liegt: den Broker nach allen Altthemen fragen;
+ * keines belegt -> Merker schreiben, nichts abraeumen ('erledigt'); einige
+ * belegt -> genau diese ('belegt'), kein Merker, der naechste Lauf fragt
+ * wieder; nicht zu fragen -> alle ('unbekannt'), KEIN Merker - dann raeumt
+ * jeder Lauf ab, unmittelbar vor dem gueltigen Wert. Der Merker entsteht NUR
+ * aus der Antwort des Brokers, nie aus dem Senden (Regeln/07 Nachtrag
+ * 19.09.2026; Faelle R10, R13).
+ *
+ * Der Merker traegt "leer-bestaetigt <praefix>: <Themenliste>": ein anderes
+ * Praefix oder eine andere Fensterliste gilt nicht (Fall R18). Er liegt im
+ * Datenordner; purge_installation raeumt ihn bei jedem Update mit ab, dann
+ * wird einmal nachgefragt. Bauart bw_mqtt_altlast() aus Beschattungswaechter
+ * 0.9.21.
+ */
+function fb_mqtt_altlast($praefix, array $liste)
+{
+    $praefix = (string) $praefix;
+    $p = fb_paths();
+    $merker = $p['datadir'] . '/retain_altlast_bestaetigt';
+    $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
+    if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
+        return array('lage' => 'erledigt', 'themen' => array());
+    }
+    $voll = array();
+    $zurueck = array();
+    foreach ($liste as $t) {
+        $v = fb_mqtt_thema($praefix . '/' . $t);
+        $voll[] = $v;
+        $zurueck[$v] = $t;
+    }
+    $f = fb_mqtt_behalten_liste($voll);
+    if ($f['lage'] === 'ok' && !$f['belegt']) {
+        if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+        if (@file_put_contents($merker, $kennung . "\n") !== false) {
+            fb_log('MQTT: unter ' . $praefix . '/ steht keiner der frueher zurueckbehaltenen Werte '
+                 . 'mehr im Broker (' . implode(', ', $liste) . '; vom Broker bestaetigt).');
+        }
+        return array('lage' => 'erledigt', 'themen' => array());
+    }
+    if ($f['lage'] === 'ok') {
+        $t = array();
+        foreach (array_keys($f['belegt']) as $v) {
+            if (isset($zurueck[$v])) { $t[] = $zurueck[$v]; }
+        }
+        fb_log_wenn_neu('altlast', 'MQTT: im Broker stehen noch zurueckbehaltene Altwerte unter '
+            . $praefix . '/ (' . implode(', ', $t) . ') - sie gehen mit leerer Nutzlast unmittelbar '
+            . 'vor dem gueltigen Wert hinaus; der naechste Lauf fragt wieder nach.');
+        return array('lage' => 'belegt', 'themen' => $t);
+    }
+    fb_log_wenn_neu('altlast', 'MQTT: der Broker liess sich nicht befragen (Brokerhost, '
+        . 'Brokerport und Zugangsdaten in general.json) - die frueher zurueckbehaltenen Werte unter '
+        . $praefix . '/ gehen deshalb in jedem Lauf mit leerer Nutzlast unmittelbar vor dem '
+        . 'gueltigen Wert hinaus. Siehe README.');
+    return array('lage' => 'unbekannt', 'themen' => $liste);
+}
+
+/**
+ * Die Themen, die die Deinstallation leert: jedes, das eine veroeffentlichte
+ * Fassung je retained gesendet hat (0.12.9 und spaeter) - die festen und je
+ * Fenster der Konfiguration, dazu als Filter '+/<feld>' die Fenster, die es
+ * nicht mehr gibt (umbenannt oder geloescht). Was nie retained ging (herz,
+ * ts, strahlung ...), bleibt unberuehrt.
+ *
+ * Rueckgabe array(genau, muster), beide ohne Praefix.
+ */
+function fb_mqtt_leer_themen($cfg)
+{
+    $tab = fb_mqtt_tabelle();
+    $genau = array_merge($tab['retained'], $tab['altlast']);
+    $je = array_values(array_unique(array_merge($tab['retained_je_fenster'], $tab['altlast_je_fenster'])));
+    $fenster = (isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array();
+    foreach ($fenster as $f) {
+        $k = (is_array($f) && isset($f['kuerzel'])) ? (string) $f['kuerzel'] : '';
+        if ($k === '') { continue; }
+        foreach ($je as $feld) { $genau[] = $k . '/' . $feld; }
+    }
+    $muster = array();
+    foreach ($je as $feld) { $muster[] = '+/' . $feld; }
+    return array(array_values(array_unique($genau)), $muster);
+}
+
+/**
+ * Die zurueckbehaltenen Themen leeren - fuer uninstall/uninstall
+ * (fb_lauf.php --mqtt-leeren). Schreibt kein Protokoll und legt nichts an.
+ *
+ * Geloescht wird ueber den UDP-Eingang des Gateways, "retain <thema> " mit
+ * leerer Nutzlast. VOR der ersten Runde und nach jeder wird der Broker
+ * gefragt (fb_mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+ * hoechstens $runden Runden. Ist der Broker nicht zu fragen, gehen die Themen
+ * der eingerichteten Fenster in jeder Runde hinaus, und die Ausgabe sagt, dass
+ * nicht nachgelesen wurde - der Eingang verwirft unter Last Datagramme
+ * (Regeln/07), ein blosses Senden ist kein Beleg. Bis 0.12.9 raeumte die
+ * Deinstallation den Broker gar nicht ab (Fall U1). Bauart bw_mqtt_leeren()
+ * aus Beschattungswaechter 0.9.21.
+ *
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
+ * der Eingang war nicht erreichbar, 2 nicht moeglich.
+ */
+function fb_mqtt_leeren($runden = 3, $pause_us = 1000000)
+{
+    $cfg = fb_config(false);
+    $w = (string) $cfg['mqtt_topic'];
+    $z = fb_mqtt_zustand();
+    if ($z['udpport'] < 1 || $z['udpport'] > 65535) {
+        echo '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
+           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.' . "\n";
+        return 2;
+    }
+    list($genau, $muster) = fb_mqtt_leer_themen($cfg);
+    $g = array();
+    foreach ($genau as $t) { $g[] = fb_mqtt_thema($w . '/' . $t); }
+    $m = array();
+    foreach ($muster as $t) { $m[] = $w . '/' . $t; }     // '+' nicht durch fb_mqtt_thema()
+    $f = fb_mqtt_behalten_liste(array_merge($g, $m));
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $g;
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: unter ' . $w . '/ steht keines der Themen dieses '
+           . 'Plugins zurueckbehalten - nichts zu leeren.' . "\n";
+        return 0;
+    }
+    $eno = 0;
+    $etxt = '';
+    $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $eno, $etxt, 2);
+    if (!$fp) {
+        echo '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
+           . (int) $z['udpport'] . ') - zurueckbehaltene Themen unter ' . $w
+           . '/ wurden nicht geleert.' . "\n";
+        return 1;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    $gelaufen = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) $pause_us); }
+        $gelaufen = $r;
+        $erste = true;
+        foreach ($offen as $t) {
+            if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
+            // Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+            // Form, die das Gateway als Loeschung liest (Regeln/07,
+            // Nachtrag 19.09.2026).
+            if (@fwrite($fp, 'retain ' . $t . ' ') !== false) { $datagramme++; }
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = fb_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($fp);
+    echo '<INFO> MQTT: ' . $zu_leeren . ' Themen unter ' . $w . '/ mit leerer Nutzlast an den '
+       . 'UDP-Eingang ' . (int) $z['udpport'] . ' des Gateways gesendet (' . $gelaufen
+       . ' Runde(n), ' . $datagramme . ' Datagramme).' . "\n";
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines davon steht mehr zurueckbehalten.' . "\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
+        return 1;
+    }
+    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+       . 'verwirft unter Last Datagramme, und Fenster, die es nicht mehr gibt, sind ohne '
+       . 'Rueckfrage nicht zu finden; was stehen bleibt, laesst sich mit '
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
+    return 0;
 }
 
 function fb_mqtt_themen()
@@ -2306,17 +2889,48 @@ function fb_mqtt_senden($cfg, $stand)
             . 'das MQTT-Gateway nicht ueber UDP ansprechen. Der HTTP-Weg ist nicht betroffen.');
         return 0;
     }
+    $praefix = (string) $cfg['mqtt_topic'];
+    $nachrichten = fb_mqtt_nachrichten($cfg, $stand);
+    /* DIE ALTWERTE AUS 0.12.9 ABRAEUMEN.
+     *
+     * Die Themen aus fb_mqtt_tabelle()['altlast*'] gehen seit 0.12.10
+     * fluechtig hinaus (fb_mqtt_retained()). Eine Umstellung loescht nichts: der alte
+     * Wert stuende im Broker weiter und kaeme nach jedem Neustart von Broker
+     * oder Gateway wieder. Was der Broker noch haelt (oder alles, wenn er
+     * nicht zu fragen war), bekommt eine leere retain-Nutzlast UNMITTELBAR
+     * vor seinem gueltigen Wert - als Nachbardatagramm, damit Loxone keinen
+     * leeren Wert stehen sieht (Fall R9). Nur Themen, die in diesem Lauf
+     * einen Wert haben - und nur nach ihnen wird der Broker gefragt: ein
+     * Altwert eines abgeschalteten Zweigs (etwa blendung) bekaeme hier keinen
+     * Wert dahinter, stuende also nach jeder Rueckfrage wieder da, und der
+     * Merker entstuende nie. Solche Reste leert die Deinstallation. */
+    $weg = array();
+    $liste = array();
+    foreach (fb_mqtt_altlast_liste($cfg) as $t) {
+        if (isset($nachrichten[$t])) { $liste[] = $t; }
+    }
+    $alt = fb_mqtt_altlast($praefix, $liste);
+    foreach ($alt['themen'] as $t) { $weg[$t] = true; }
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
         fb_log_wenn_neu('mqtt', 'UDP-Socket liess sich nicht anlegen.');
         return 0;
     }
-    $praefix = (string) $cfg['mqtt_topic'];
-    $nachrichten = fb_mqtt_nachrichten($cfg, $stand);
     $gesendet = 0;
     $zurueckbehalten = 0;
+    $geraeumt = 0;
     $erste = true;
     foreach ($nachrichten as $k => $v) {
+        if (isset($weg[$k])) {
+            /* Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau
+             * die Form, die das Gateway als Loeschung liest (Regeln/07,
+             * Nachtrag 19.09.2026: mqttgateway.pl:281, :311-315, :357). */
+            $leer = 'retain ' . fb_mqtt_thema($praefix . '/' . $k) . ' ';
+            if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
+            if (@socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $z['udpport']) !== false) {
+                $geraeumt++;
+            }
+        }
         $wert = fb_mqtt_wert_saeubern($v);
         /* EIN LEERER WERT GEHT NIE ZURUECKBEHALTEN HINAUS.
          *
@@ -2355,7 +2969,8 @@ function fb_mqtt_senden($cfg, $stand)
      * versucht hat - nicht, was angekommen ist. */
     fb_log_wenn_neu('mqtt_zahl', $gesendet . ' von ' . count($nachrichten)
         . ' Werten an das Gateway gesendet (Port ' . $z['udpport'] . '), davon '
-        . $zurueckbehalten . ' zurueckbehalten.');
+        . $zurueckbehalten . ' zurueckbehalten'
+        . ($geraeumt > 0 ? ', dazu ' . $geraeumt . ' Altwert(e) mit leerer Nutzlast' : '') . '.');
     return $gesendet;
 }
 
@@ -3515,12 +4130,15 @@ function fb_abwerk($schluessel)
 function fb_langdir_wurzel()
 {
     $p = fb_paths();
+    /* Wie fb_langdir(): installiert der eigene Vorlagenordner, sonst der des
+     * eigenen Archivs. dirname(__DIR__) . '/templates' ist seit 0.12.10 weg -
+     * installiert hiess das webfrontend/html/plugins/templates, also der
+     * Ordner eines Plugins namens "templates". */
     $k = array();
     if ($p['home'] !== '') {
         $k[] = $p['home'] . '/templates/plugins/' . $p['plugin'];
     }
     $k[] = dirname(dirname(__DIR__)) . '/templates';
-    $k[] = dirname(__DIR__) . '/templates';
     foreach ($k as $d) {
         if (is_dir($d)) { return $d; }
     }
@@ -3736,16 +4354,20 @@ function fb_user_ini()
     /* Die Datei gehoert neben die Oberflaeche, nicht neben diese
      * Bibliothek: .user.ini wirkt auf das Verzeichnis des AUSGEFUEHRTEN
      * Skripts, und abgesendet wird an htmlauth/index.php. Im installierten
-     * Zustand liegen html/ und htmlauth/ in getrennten Baeumen, deshalb die
-     * Kandidatenliste statt eines festen Pfades. */
-    $kandidaten = array(
-        dirname(__DIR__) . '/htmlauth/.user.ini',
-        dirname(dirname(__DIR__)) . '/webfrontend/htmlauth/.user.ini',
-    );
+     * Zustand liegen html/ und htmlauth/ in getrennten Baeumen.
+     *
+     * Welche Lage gilt, entscheidet seit 0.12.10 der eigene Ablageort (liegt
+     * diese Datei unter .../plugins/<ordner>, ist sie installiert). Bis 0.12.9
+     * stand dirname(__DIR__) . '/htmlauth/.user.ini' als ERSTER Kandidat -
+     * installiert ist das webfrontend/html/plugins/htmlauth/, der Ordner
+     * eines Plugins namens "htmlauth". */
     $p = fb_paths();
-    if ($p['home'] !== '') {
-        $kandidaten[] = $p['home'] . '/webfrontend/htmlauth/plugins/'
-                      . $p['plugin'] . '/.user.ini';
+    if (basename(dirname(__DIR__)) === 'plugins') {
+        $kandidaten = $p['home'] !== ''
+            ? array($p['home'] . '/webfrontend/htmlauth/plugins/' . $p['plugin'] . '/.user.ini')
+            : array();
+    } else {
+        $kandidaten = array(dirname(__DIR__) . '/htmlauth/.user.ini');
     }
     $pfad = '';
     foreach ($kandidaten as $k) {
@@ -4268,13 +4890,19 @@ function fb_langdir()
     static $gefunden = null;
     if ($gefunden !== null) { return $gefunden; }
     $p = fb_paths();
+    /* Zwei Orte, beide aus der eigenen Lage: installiert der Vorlagenordner
+     * dieses Plugins, sonst der des eigenen Archivs. Bis 0.12.9 standen hier
+     * dazu der feste Name fensterbilanz (eine Zweitinstallation las die Texte
+     * der ersten) und dirname(dirname(dirname(__DIR__))) - aus einem Archiv
+     * direkt unter / war das /templates/lang ab der Laufwerkswurzel, und was
+     * dort lag, beschriftete die Oberflaeche (in WSL gemessen,
+     * Pruefung-Beschattung_Fensterbilanz-0.12.10, Fall T1; Bauart zd_t() aus
+     * ZendureSolarFlow 0.9.26). */
     $k = array();
     if ($p['home'] !== '') {
         $k[] = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
-        $k[] = $p['home'] . '/templates/plugins/fensterbilanz/lang';
     }
     $k[] = dirname(dirname(__DIR__)) . '/templates/lang';
-    $k[] = dirname(dirname(dirname(__DIR__))) . '/templates/lang';
     foreach ($k as $d) {
         if (is_file($d . '/language_de.ini') || is_file($d . '/language_en.ini')) {
             $gefunden = $d;

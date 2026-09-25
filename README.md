@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.9
+Version 0.12.10
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -142,6 +142,10 @@ Ist die Vorausschau, die Blendung, die Nachtdämmung, die Stellungsrückmeldung,
 die PV-Gegenprobe oder der Tagesbericht eingeschaltet, kommen die zugehörigen
 Themen hinzu — welche genau, zeigt der Reiter *MQTT*, und der Reiter *Test*
 hält die Liste gegen das, was tatsächlich gesendet wird.
+
+Zurückbehalten (retained) gehen seit 0.12.10 nur `fenster_anzahl` (eine
+Einstellung) und `bericht` (der Text nennt sein Datum). Alles andere geht
+flüchtig hinaus, auch die Urteile je Fenster (siehe unten).
 
 **Über HTTP**, tokengeschützt, mit denselben Werten:
 
@@ -339,6 +343,55 @@ Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
 beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
 Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
 länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
+
+## Fassung 0.12.10 — Retain, Aktualisierung, Deinstallation
+
+**MQTT.** `ok` sagt, was das Plugin über seine eigenen Eingänge feststellt;
+zurückbehalten stünde es nach dem Ende des Plugins für immer als „in Ordnung"
+im Broker. Die Urteile je Fenster (`urteil`, `beschatten`, `grund`,
+`begruendung`, `urteil30`, `beschatten30`, `blendung`, `daemmen`,
+`gefahren`), ihre Zählungen (`*_anzahl` außer `fenster_anzahl`,
+`nicht_gefahren`), `saison`, `wh_tag`, `<kuerzel>/wh` und `pv_abweichung`
+werden allein durch die Uhr falsch — nach Sonnenuntergang stünde sonst
+„beschatten" im Broker. Sie alle gehen jetzt flüchtig hinaus; nach einem
+Neustart von Broker oder Gateway fehlen sie bis zum nächsten Rechenlauf
+(höchstens fünf Minuten). Retained bleiben `fenster_anzahl` und `bericht`
+(siehe oben). Den
+Altwert aus 0.12.9 räumt das Plugin mit einer leeren Nachricht unmittelbar
+vor dem gültigen Wert ab und fragt dafür den Broker (Brokerhost, -port,
+-benutzer und -kennwort aus der LoxBerry-Konfiguration), ob noch etwas
+dasteht; erst wenn er „nichts mehr" bestätigt, hört es damit auf (Merker
+`data/plugins/<ordner>/retain_altlast_bestaetigt`). **Grenze:** ist der Broker
+nicht zu fragen oder lehnt er die Anmeldung bzw. das Abonnement ab, räumt
+jeder Lauf ab — der Miniserver sieht dann bei diesen Werten je Lauf für
+einige Millisekunden einen leeren Wert vor dem gültigen. Altwerte eines
+abgeschalteten Zweigs (etwa `blendung`) räumt erst die Deinstallation ab.
+
+**Deinstallation.** Sie leert jetzt die zurückbehaltenen Themen des Plugins,
+auch die von Fenstern, die es nicht mehr gibt (gefunden über die Rückfrage
+beim Broker), höchstens drei Runden, und bricht nach 60 s bzw. 65 s hart ab,
+statt hängen zu bleiben.
+
+**Aktualisierung.** Zwischen dem Kopieren der neuen Dateien und dem
+Zurückholen der geretteten Messreihen liegt fast eine Minute. Ein Messwert
+aus Loxone oder der Fünf-Minuten-Takt legten in dieser Zeit eine frische
+Tagesbilanz an, und die gerettete ging verloren. Jetzt rechnet und schreibt
+das Plugin während einer Aktualisierung nichts (der Endpunkt antwortet mit
+`GRUND=AKTUALISIERUNG`); zurückgeholt wird, was aus dieser Aktualisierung
+stammt, auch über ein belegtes Ziel — eine Rettung aus einem abgebrochenen
+Update von früher bleibt mit einer Warnung liegen. Nach einem Update steht
+am Ende „Aktualisierung abgeschlossen" statt der Anleitung für die
+Erstinstallation, sofern Standort oder Fenster eingetragen sind.
+
+**Wurzel und Archiv.** Als LoxBerry gilt nur ein Ordner mit
+`config/system/general.json`; ohne ihn warnen die Installationsskripte und
+tun nichts. Aus einem ausgepackten Archiv heraus rechnet, sendet und
+schreibt das Plugin nichts in eine installierte Anlage, und es sucht keine
+Dateien mehr ab der Laufwerkswurzel. Eine Konfiguration ohne Wortzeichen wird
+aus der Zweitschrift geheilt, wenn diese eines trägt.
+
+Gemessen in WSL an Attrappen (UDP-Eingang und Broker), nicht am Gerät:
+`Pruefung-Beschattung_Fensterbilanz-0.12.10/`.
 
 ## Lizenz
 

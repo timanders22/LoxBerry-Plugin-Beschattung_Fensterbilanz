@@ -35,13 +35,23 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
  * ebenso braucht. Der Weg dorthin sieht im Archiv anders aus als
  * installiert - deshalb eine Kandidatenliste und keine Rechnung mit einer
  * festen Zahl von "..". Genau daran ist in diesem Haus ein Plugin mit einem
- * leeren HTTP 500 gescheitert, den ausser dem Miniserver niemand sah. */
+ * leeren HTTP 500 gescheitert, den ausser dem Miniserver niemand sah.
+ *
+ * Welche Lage gilt, entscheidet seit 0.12.10 der eigene Ablageort, nicht die
+ * Reihenfolge der Versuche: liegt diese Datei unter .../plugins/<ordner>, ist
+ * sie installiert, sonst liegt sie in einem ausgepackten Archiv. Bis 0.12.9
+ * wurden drei Kandidaten der Reihe nach probiert, der zweite VOR der eigenen
+ * Bibliothek - aus einem Archiv unter / war das
+ * /html/plugins/htmlauth/fb_lib.php ab der Laufwerkswurzel, und was dort lag,
+ * lief als Bibliothek (in WSL gemessen, Pruefung-Beschattung_Fensterbilanz-
+ * 0.12.10, Fall T2). Bauart ZendureSolarFlow 0.9.26. */
 $fb_gefunden = false;
-foreach (array(
-    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/fb_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/fb_lib.php',
-    dirname(__DIR__) . '/html/fb_lib.php',
-) as $fb_kandidat) {
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $fb_kandidaten = array(dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/fb_lib.php');
+} else {
+    $fb_kandidaten = array(dirname(__DIR__) . '/html/fb_lib.php');
+}
+foreach ($fb_kandidaten as $fb_kandidat) {
     if (is_file($fb_kandidat)) { require_once $fb_kandidat; $fb_gefunden = true; break; }
 }
 if (!$fb_gefunden) {

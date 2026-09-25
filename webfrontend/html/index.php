@@ -109,6 +109,21 @@ if (!in_array($fb_aktion, array('status', 'json', 'fenster', 'melden'), true)) {
 
 /* ---------------- Einen Messwert entgegennehmen ---------------- */
 if ($fb_aktion === 'melden') {
+    /* WAEHREND EINER AKTUALISIERUNG WIRD NICHTS ANGENOMMEN.
+     *
+     * In der Luecke zwischen purge_installation und postinstall.sh schrieb
+     * ein einziger Messwert messwerte.json neu und rechnete eine frische
+     * bilanz.json - postinstall.sh hielt das Ziel danach fuer belegt und
+     * verwarf die gerettete Tagesbilanz (in WSL gemessen,
+     * Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle Z2, Z3). 503 und
+     * nicht 200: der Wert ist NICHT angenommen - wie jede andere Abweisung
+     * hier ohne OK=1. Siehe fb_upgrade_laeuft(). */
+    if (fb_upgrade_laeuft()) {
+        http_response_code(503);
+        echo "FEHLER;OK=0;GRUND=AKTUALISIERUNG\n";
+        echo "Das Plugin wird gerade aktualisiert - der Wert wurde nicht angenommen.\n";
+        exit;
+    }
     $fb_name = (isset($_GET['wert']) && is_string($_GET['wert']))
         ? strtolower($_GET['wert']) : '';
     $fb_v    = (isset($_GET['v']) && is_string($_GET['v'])) ? $_GET['v'] : '';
