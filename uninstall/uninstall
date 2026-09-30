@@ -84,7 +84,8 @@ WEG=0
 # weg. Eine liegengebliebene Marke sperrte eine spaetere Neuinstallation bis
 # zu einer Stunde lang; ein Stempel gehoert zu Rettungen, die unten ohnehin
 # fallen (Fall U4).
-rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" "$BASE/data/plugins/$PFOLDER.rettung.zeit" 2>/dev/null
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" "$BASE/data/plugins/$PFOLDER.rettung.zeit" \
+      "$BASE/data/plugins/$PFOLDER.rettung.zeit.alt" "$BASE/data/plugins/$PFOLDER.zurueckgeholt" 2>/dev/null
 
 # ---------- 1. Zurueckbehaltene MQTT-Themen leeren ----------
 #
@@ -124,6 +125,30 @@ if command -v php >/dev/null 2>&1 && [ -f "$PBIN/fb_lauf.php" ]; then
         137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
         *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $FB_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen." ;;
     esac
+    # M4 (Durchgang 30.09.2026): auch das zuletzt verlassene Praefix, falls
+    # die Konfiguration eines vermerkt (mqtt_praefix_alt, beim Praefixwechsel
+    # gesetzt). Bis 0.12.10 blieben haus/fb/bericht und haus/fb/fenster_anzahl
+    # nach einem Wechsel auch ueber die Deinstallation stehen (gemessen,
+    # MQTT-Pruefer B4). Gelesen wird nur ein Wert, der ins Themenmuster passt.
+    FB_CF="$BASE/config/plugins/$PFOLDER/fensterbilanz.json"
+    ALT_PRAEFIX=$(php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        $p = (is_array($d) && isset($d["mqtt_praefix_alt"]) && is_string($d["mqtt_praefix_alt"])) ? $d["mqtt_praefix_alt"] : "";
+        echo preg_match("#^[a-z0-9_\-]+(?:/[a-z0-9_\-]+)*\z#", $p) ? $p : "";' -- "$FB_CF" 2>/dev/null)
+    if [ -n "$ALT_PRAEFIX" ]; then
+        echo "<INFO> MQTT: auch das frueher benutzte Praefix $ALT_PRAEFIX/ wird geleert."
+        FB_RC2=0
+        if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+            su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+                timeout -k 5 60 php "$PBIN/fb_lauf.php" --mqtt-leeren "--praefix=$ALT_PRAEFIX")" < /dev/null 2>&1 || FB_RC2=$?
+        else
+            env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+                timeout -k 5 60 php "$PBIN/fb_lauf.php" --mqtt-leeren "--praefix=$ALT_PRAEFIX" < /dev/null 2>&1 || FB_RC2=$?
+        fi
+        case "$FB_RC2" in
+            0|1|2) ;;
+            *) echo "<WARNING> MQTT: das Leeren unter $ALT_PRAEFIX/ endete mit Rueckgabe $FB_RC2 - dort kann noch etwas im Broker stehen." ;;
+        esac
+    fi
 else
     echo "<INFO> php oder bin/plugins/$PFOLDER/fb_lauf.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
@@ -156,14 +181,39 @@ for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json; do
     [ -f "$R" ] && rm -f "$R" && WEG=$((WEG+1))
 done
 
+# I5 (Durchgang 30.09.2026, Entscheidung Nr. 1): was preinstall.sh,
+# preupgrade.sh und postinstall.sh nach <name>.alt gelegt haben, und die
+# beiseitegelegte kaputte Konfiguration (I7). Bis 0.12.10 blieben sie liegen
+# (in WSL gemessen, Installer-Pruefer D1). Dateien, die ein Wortzeichen
+# tragen koennen, werden vor dem Loeschen ueberschrieben.
+for R in "$BASE/config/plugins/$PFOLDER.backup.json.alt" \
+         "$BASE/config/plugins/$PFOLDER.kaputt.json" \
+         "$BASE/config/plugins/$PFOLDER.kaputt.json.alt"; do
+    if [ -f "$R" ]; then
+        : > "$R"
+        rm -f "$R" && WEG=$((WEG+1))
+    fi
+done
+for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json.alt; do
+    [ -f "$R" ] && rm -f "$R" && WEG=$((WEG+1))
+done
+
 if [ -d "$BASE/data/plugins/$PFOLDER" ]; then
     rm -rf "$BASE/data/plugins/$PFOLDER" && WEG=$((WEG+1))
 fi
 
-# Die Meldung haengt am Ergebnis, nicht am guten Willen.
-if [ -f "$SICH" ] || [ -d "$BASE/data/plugins/$PFOLDER" ]; then
+# Die Meldung haengt am Ergebnis, nicht am guten Willen. I5: nachgezaehlt
+# wird auch alles, was neben den Ordnern liegt.
+REST=""
+for R in "$SICH" "$BASE/config/plugins/$PFOLDER.backup.json.alt" \
+         "$BASE/config/plugins/$PFOLDER.kaputt.json" "$BASE/config/plugins/$PFOLDER.kaputt.json.alt" \
+         "$BASE"/data/plugins/"$PFOLDER".rettung.* "$BASE/data/plugins/$PFOLDER.zurueckgeholt" \
+         "$BASE/data/plugins/$PFOLDER.upgrade_laeuft"; do
+    [ -e "$R" ] && REST="$REST $R"
+done
+if [ -n "$REST" ] || [ -d "$BASE/data/plugins/$PFOLDER" ]; then
     echo "<FAIL> Es liess sich nicht alles entfernen. Bitte nachsehen:"
-    [ -f "$SICH" ] && echo "<FAIL>    $SICH"
+    for R in $REST; do echo "<FAIL>    $R"; done
     [ -d "$BASE/data/plugins/$PFOLDER" ] && echo "<FAIL>    $BASE/data/plugins/$PFOLDER"
     exit 1
 fi

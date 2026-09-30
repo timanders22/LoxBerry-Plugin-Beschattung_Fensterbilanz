@@ -110,6 +110,32 @@ fb_inhalt() {   # $1 Datei, $2 Art: token | json | eingerichtet
     return "$fb_rc"
 }
 
+# ---------- I3: Rettungen aus einem FRUEHEREN Lauf ----------
+#
+# Seit 0.12.11 (Entscheidung Nr. 1 vom 29.09.2026): liegt die Marke VOR
+# diesem Lauf nicht, stammen liegende Rettungen und ihr Stempel aus einem
+# frueheren, nicht abgeschlossenen Vorgang. Sie gehen nach <name>.alt, bevor
+# neu gerettet wird - sonst spielte postinstall.sh einen alten Bestand ein,
+# sobald hier nichts Neues zu retten war (in WSL gemessen, Installer-Pruefer
+# U6: lernen.json ALTBESTAND). Liegt die Marke schon, ist dies der zweite
+# Versuch desselben Updates (Fall U7): dann bleiben die Rettungen, denn der
+# Datenordner, aus dem sie stammen, ist womoeglich schon abgeraeumt.
+if [ ! -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ]; then
+    ALT_R=""
+    FEST_R=""
+    for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json "$BASE/data/plugins/$PFOLDER.rettung.zeit"; do
+        [ -f "$R" ] || continue
+        rm -f "${R:?}.alt" 2>/dev/null
+        if mv -f "$R" "$R.alt" 2>/dev/null; then ALT_R="$ALT_R $R.alt"; else FEST_R="$FEST_R $R"; fi
+    done
+    if [ -n "$ALT_R" ] || [ -n "$FEST_R" ]; then
+        T="<WARNING> Rettungen aus einem frueheren, nicht abgeschlossenen Vorgang werden nicht eingespielt."
+        [ -n "$ALT_R" ] && T="$T Beiseitegelegt:$ALT_R (die Deinstallation raeumt sie ab)."
+        [ -n "$FEST_R" ] && T="$T Nicht zu verschieben, bitte von Hand entfernen:$FEST_R"
+        echo "$T"
+    fi
+fi
+
 # ---------- 0. Die Marke "Aktualisierung laeuft", als ERSTES ----------
 #
 # Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt fast eine
@@ -157,9 +183,28 @@ if [ "$CF_RC" = 0 ]; then
         echo "<FAIL> Ein Update wuerde jetzt Wortzeichen und Einstellungen verlieren."
         FEHLER=1
     fi
-elif [ -f "$CF" ]; then
+elif [ -f "$CF" ] && [ -f "$BK" ]; then
     echo "<INFO> Die Konfiguration traegt kein Wortzeichen - die vorhandene"
     echo "<INFO> Sicherung bleibt unangetastet."
+elif [ -f "$CF" ]; then
+    # I7 (Durchgang 30.09.2026): keine Sicherung da. Bis 0.12.10 stand hier
+    # "die vorhandene Sicherung bleibt unangetastet" - es gab keine, und nach
+    # dem Update fehlte das Wortzeichen, ohne dass es jemand sagte (in WSL
+    # gemessen, Installer-Pruefer U4b). Die beschaedigte Datei, aus der sich
+    # das Wortzeichen vielleicht noch lesen laesst, kommt NEBEN den Ordner
+    # (purge_installation raeumt ihn gleich ab); 0600, weil sie es tragen
+    # kann; chmod NACH cp -p. uninstall raeumt sie ab.
+    KAPUTT="$BASE/config/plugins/$PFOLDER.kaputt.json"
+    if cp -p "$CF" "$KAPUTT" 2>/dev/null; then
+        chmod 600 "$KAPUTT" 2>/dev/null
+        WO="Sie liegt als $KAPUTT neben dem Ordner."
+    else
+        WO="Sie liess sich nicht beiseitelegen."
+    fi
+    echo "<WARNING> Die Konfiguration ist unlesbar oder traegt kein Wortzeichen, und eine Sicherung gibt"
+    echo "<WARNING> es nicht. Nach dem Update fehlen Wortzeichen und Einstellungen: beim naechsten"
+    echo "<WARNING> Oeffnen entsteht ein neues Wortzeichen, und die im Miniserver eingetragenen Adressen"
+    echo "<WARNING> werden ungueltig. $WO"
 fi
 
 # ---------- 2. Was ueber Tage und Wochen entstanden ist ----------

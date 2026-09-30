@@ -45,7 +45,12 @@ header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
 
 $fb_cfg  = fb_config(false);          // NUR lesen - siehe Kopf
-$fb_soll = (string) $fb_cfg['aktionstoken'];
+/* C1 (Durchgang 30.09.2026): das gespeicherte Wortzeichen gilt nur als
+ * brauchbare Zeichenkette (fb_token_gueltig()). Bis 0.12.10 stand hier
+ * (string) - ein Wortzeichen als Liste wurde zu der Zeichenkette, die PHP aus
+ * Listen macht, und ?token=<diese Zeichenkette> bekam HTTP 200 (gemessen unter
+ * 7.4 und 8.5, Code-Pruefer Nr. 1). Ein unbrauchbares gilt wie keines: 403. */
+$fb_soll = fb_token_gueltig($fb_cfg['aktionstoken']) ? $fb_cfg['aktionstoken'] : '';
 /* is_string() VOR dem Cast, an JEDEM Parameter dieser Datei.
  *
  * Ein Feldparameter (?token[]=x) wird von (string) zu "array" - unter PHP 8
@@ -157,6 +162,24 @@ if ($fb_aktion === 'melden') {
 }
 
 $fb_stand = fb_stand();
+
+/* C5 (Durchgang 30.09.2026, Regeln/07 "Faellt die Quelle ganz aus"): ohne
+ * JEDEN Stand - es wurde noch nie gerechnet - antwortet der Endpunkt mit 503
+ * und dem Grund in der Zeile, nicht mit 200 und OK=0. Bis 0.12.10 sah eine
+ * nie gelaufene Anlage in Loxone aus wie "kein Beschattungsbedarf" (gemessen,
+ * Code-Pruefer Nr. 6). Ein VERALTETER Stand bleibt 200 mit OK=0 (fb_zeile()). */
+if (!isset($fb_stand['felder']) || !is_array($fb_stand['felder'])) {
+    http_response_code(503);
+    if ($fb_aktion === 'json') {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(array('ok' => 0, 'grund' => 'KEIN_STAND',
+            'text' => 'Es wurde noch nie gerechnet.')) . "\n";
+        exit;
+    }
+    echo "FEHLER;OK=0;GRUND=KEIN_STAND\n";
+    echo "Es wurde noch nie gerechnet - der erste Lauf kommt mit dem naechsten Takt oder dem naechsten Messwert.\n";
+    exit;
+}
 
 if ($fb_aktion === 'json') {
     header('Content-Type: application/json; charset=utf-8');

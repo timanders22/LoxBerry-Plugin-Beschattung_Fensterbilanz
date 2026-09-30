@@ -84,6 +84,9 @@ $fb_meldungen = array();
 $fb_fehler = array();
 $fb_testausgabe = '';
 $fb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+/* O1: war es ein POST? Bleibt wahr, auch wenn der Wachposten ihn abweist -
+ * auch die Abweisung endet mit einer Umleitung. */
+$fb_post_roh = $fb_post;
 
 /* ---------------- Wachposten gegen fremde Formulare ----------------
  * EINE Pruefung, VOR allen Handlern. Einen einzelnen Handler kann man beim
@@ -94,6 +97,14 @@ $fb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * geschrieben werden; der Endpunkt tut es ausdruecklich nicht. */
 fb_token();
 $fb_merkmal = fb_formtoken();
+/* C1 (Durchgang 30.09.2026): ein neu erzeugtes Wortzeichen wird auf der Seite
+ * gesagt, nicht nur protokolliert (Code-Pruefer Nr. 2). */
+$fb_hinweise = array();
+if (fb_token_gewuerfelt() === 'ersetzt') {
+    $fb_hinweise[] = fb_t('LOX.TOKEN_ERSETZT');
+} elseif (fb_token_gewuerfelt() === 'neu') {
+    $fb_hinweise[] = fb_t('LOX.TOKEN_ERZEUGT');
+}
 if ($fb_post) {
     /* is_string() VOR dem Cast: ein Feldparameter (fmt[]=x) wuerde von
      * (string) zu "array" - unter PHP 8 mit einer Warnung, die die Seite
@@ -215,19 +226,24 @@ $fb_roh = function ($name, $i) {
 $fb_zahl = function ($roh, $von, $bis, $bez, $nachkomma = 0) use (&$fb_fehler) {
     /* Eine Zahl PRUEFEN statt sie stillschweigend zurechtzubiegen. Ein
      * leeres Feld gibt null zurueck - dann bleibt der bisherige Wert
-     * stehen, und es gibt keine Beanstandung. */
-    $roh = str_replace(',', '.', trim((string) $roh));
+     * stehen, und es gibt keine Beanstandung.
+     *
+     * O5 (Durchgang 30.09.2026): auch nicht RUNDEN. Bis 0.12.10 wurde aus
+     * 20.6 still 21 und aus 1.234 still 1.23 (gemessen, Oberflaeche-Pruefer
+     * Nr. 5). Dieselbe Pruefung wie beim Zurueckspielen (fb_zahl_pruefen). */
+    $roh = is_string($roh) ? trim($roh) : '';
     if ($roh === '') { return null; }
-    if (!is_numeric($roh)) {
+    list($w, $grund) = fb_zahl_pruefen($roh, $von, $bis, $nachkomma);
+    if ($grund === 'zahl') {
         $fb_fehler[] = sprintf(fb_t('FEHLER.KEINE_ZAHL'), $bez, $roh);
-        return null;
-    }
-    $w = (float) $roh;
-    if ($w < $von || $w > $bis) {
+    } elseif ($grund === 'ganz') {
+        $fb_fehler[] = sprintf(fb_t('FEHLER.KEINE_GANZZAHL'), $bez, $roh);
+    } elseif ($grund === 'stellen') {
+        $fb_fehler[] = sprintf(fb_t('FEHLER.NACHKOMMA'), $bez, $roh, (int) $nachkomma);
+    } elseif ($grund === 'bereich') {
         $fb_fehler[] = sprintf(fb_t('FEHLER.AUSSERHALB'), $bez, $roh, $von, $bis);
-        return null;
     }
-    return $nachkomma > 0 ? round($w, $nachkomma) : (int) round($w);
+    return $w;
 };
 
 /* ---------------- Speichern: Standort und Modell ---------------- */
@@ -242,36 +258,11 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
     $fb_sperre = fb_config_sperre();
     $fb_cfg = fb_config();
     $fb_vorher = $fb_cfg;          // fuer den Vergleich, siehe unten
-    foreach (array(
-        'breite'         => array(-90, 90, 'EINST.L_BREITE', 5),
-        'laenge'         => array(-180, 180, 'EINST.L_LAENGE', 5),
-        'tagesgrenze'    => array(10, 35, 'EINST.L_TAGESGRENZE', 0),
-        'spreizung_tag'  => array(1, 20, 'EINST.L_SPREIZUNG_TAG', 0),
-        'spreizung_raum' => array(5, 100, 'EINST.L_SPREIZUNG_RAUM', 0),
-        'gewicht_raum'   => array(0, 100, 'EINST.L_GEWICHT_RAUM', 0),
-        'gewicht_tag'    => array(0, 100, 'EINST.L_GEWICHT_TAG', 0),
-        'schwelle_ein'   => array(1, 100, 'EINST.L_SCHWELLE_EIN', 0),
-        'schwelle_aus'   => array(0, 99, 'EINST.L_SCHWELLE_AUS', 0),
-        'e_ref'          => array(50, 1000, 'EINST.L_E_REF', 0),
-        'albedo'         => array(0, 90, 'EINST.L_ALBEDO', 0),
-        'iam_b0'         => array(0, 50, 'EINST.L_IAM', 0),
-        'hoechstalter'   => array(60, 86400, 'EINST.L_HOECHSTALTER', 0),
-        'rechentakt'     => array(10, 3600, 'EINST.L_RECHENTAKT', 0),
-        'vorschau'       => array(0, 10800, 'EINST.L_VORSCHAU', 0),
-        'glaettung'      => array(0, 3600, 'EINST.L_GLAETTUNG', 0),
-        'gewicht_bilanz' => array(0, 100, 'EINST.L_GEWICHT_BILANZ', 0),
-        'bilanz_voll_qm' => array(10, 2000, 'EINST.L_BILANZ_VOLL', 0),
-        'raumflaeche_vorgabe' => array(1, 1000, 'EINST.L_RAUMFLAECHE_VORGABE', 0),
-        'gewicht_morgen' => array(0, 100, 'EINST.L_GEWICHT_MORGEN', 0),
-        'vorabend_ab'    => array(0, 23, 'EINST.L_VORABEND_AB', 0),
-        'daemm_grenze'   => array(-30, 25, 'EINST.L_DAEMM_GRENZE', 0),
-        'stellung_zu'    => array(1, 100, 'EINST.L_STELLUNG_ZU', 0),
-        'stellung_frist' => array(60, 86400, 'EINST.L_STELLUNG_FRIST', 0),
-        'bericht_stunde' => array(0, 23, 'EINST.L_BERICHT_STUNDE', 0),
-        'pv_abweichung'  => array(5, 90, 'EINST.L_PV_ABWEICHUNG', 0),
-    ) as $fb_k => $fb_d) {
+    /* Die Tabelle steht seit 0.12.11 in fb_zahlfelder() - dieselbe, mit der
+     * das Zurueckspielen einer Sicherung prueft (C1). */
+    foreach (fb_zahlfelder() as $fb_k => $fb_d) {
         $w = $fb_zahl(isset($_POST[$fb_k]) ? $_POST[$fb_k] : '',
-                      $fb_d[0], $fb_d[1], fb_t($fb_d[2]), $fb_d[3]);
+                      $fb_d[0], $fb_d[1], fb_t($fb_d[3]), $fb_d[2]);
         if ($w !== null) { $fb_cfg[$fb_k] = $w; }
     }
     /* Die Haken. isset() genuegt hier, weil sie in DIESEM Formular stehen -
@@ -371,25 +362,39 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
         $f['daemmen']   = !empty($_POST['f_daemmen'][$fb_i]) ? 1 : 0;
 
         $bez = fb_t('EINST.FENSTER') . ' ' . ($fb_i + 1);
-        foreach (array(
-            'azimut'    => array('f_azimut', 0, 359, 'EINST.L_AZIMUT', 0),
-            'neigung'   => array('f_neigung', 0, 90, 'EINST.L_NEIGUNG', 0),
-            'flaeche'   => array('f_flaeche', 0.1, 30.0, 'EINST.L_FLAECHE', 2),
-            'gwert'     => array('f_gwert', 5, 95, 'EINST.L_GWERT', 0),
-            'traegheit' => array('f_traegheit', 0, 50, 'EINST.L_TRAEGHEIT', 0),
-            'dach_tiefe'    => array('f_dach_t', 0, 300, 'EINST.L_DACH_TIEFE', 0),
-            'dach_hoehe'    => array('f_dach_h', 0, 300, 'EINST.L_DACH_HOEHE', 0),
-            'fenster_hoehe' => array('f_fh', 20, 400, 'EINST.L_FENSTER_HOEHE', 0),
-            'blend_hoehe'  => array('f_blend_h', 0, 60, 'EINST.L_BLEND_HOEHE', 0),
-            'blend_winkel' => array('f_blend_w', 5, 89, 'EINST.L_BLEND_WINKEL', 0),
-        ) as $fb_f => $fb_d) {
-            $w = $fb_zahl($fb_feld($fb_d[0], $fb_i), $fb_d[1], $fb_d[2],
-                          $bez . ' / ' . fb_t($fb_d[3]), $fb_d[4]);
-            if ($w !== null) { $f[$fb_f] = $w; }
+        /* Grenzen aus fb_fenster_zahlfelder() - dieselben wie beim
+         * Zurueckspielen (C1); hier nur die Namen der Formularfelder. */
+        $fb_postname = array('azimut' => 'f_azimut', 'neigung' => 'f_neigung',
+            'flaeche' => 'f_flaeche', 'gwert' => 'f_gwert', 'traegheit' => 'f_traegheit',
+            'dach_tiefe' => 'f_dach_t', 'dach_hoehe' => 'f_dach_h', 'fenster_hoehe' => 'f_fh',
+            'blend_hoehe' => 'f_blend_h', 'blend_winkel' => 'f_blend_w');
+        foreach (fb_fenster_zahlfelder() as $fb_f => $fb_d) {
+            $fb_vor_n = count($fb_fehler);
+            $w = $fb_zahl($fb_feld($fb_postname[$fb_f], $fb_i), $fb_d[0], $fb_d[1],
+                          $bez . ' / ' . fb_t($fb_d[3]), $fb_d[2]);
+            if ($w !== null) {
+                $f[$fb_f] = $w;
+            } elseif (count($fb_fehler) > $fb_vor_n && isset($fb_cfg['fenster'][$fb_i][$fb_f])) {
+                /* O5: ABGEWIESEN heisst "der bisherige Wert bleibt stehen", wie
+                 * die Meldung sagt. Bis 0.12.10 trat in der Fenstertabelle
+                 * stattdessen die Vorgabe ein - bei einer gerundeten Eingabe
+                 * fiel das nicht auf, bei einer abgewiesenen waere es eine
+                 * stille Aenderung. */
+                $f[$fb_f] = $fb_cfg['fenster'][$fb_i][$fb_f];
+            }
         }
 
         $leer = ($f['kuerzel'] === '' && $f['name'] === '' && $roh_raum === '');
         if (!$leer) {
+            /* O5: entfernte Anfuehrungs- oder Steuerzeichen im NAMEN werden
+             * gemeldet wie beim Kuerzel. Bis 0.12.10 wurde aus Wohnzimmer
+             * "Sued" still Wohnzimmer Sued (gemessen, Oberflaeche-Pruefer
+             * Nr. 5). Gespeichert wird der gesaeuberte Name. */
+            $fb_name_roh = $fb_roh('f_name', $fb_i);
+            if ($fb_name_roh !== $f['name']) {
+                $fb_fehler[] = sprintf(fb_t('FEHLER.NAME_GEAENDERT'), $fb_i + 1,
+                                       $fb_name_roh, $f['name']);
+            }
             if ($f['kuerzel'] === '') {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.KUERZEL_FEHLT'), $fb_i + 1);
             } elseif ($f['kuerzel'] !== $roh_kuerzel) {
@@ -628,10 +633,36 @@ if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_ein
                  * Rechner, der die vorige Eingabe stillschweigend
                  * ueberschreibt, ist keine Hilfe, sondern eine Falle. */
                 $fb_ersetzen = !empty($_POST['h_ersetzen']) || $fb_alt_h === '';
+                /* C7 (Durchgang 30.09.2026): beim ANHAENGEN nur die Punkte,
+                 * die noch nicht im Horizont stehen. Bis 0.12.10 haengte jede
+                 * Wiederholung derselben Absendung dieselben Punkte noch einmal
+                 * an (gemessen, Code-Pruefer Nr. 9, Oberflaeche-Pruefer Nr. 3). */
+                $fb_anhang = $fb_r_text;
+                if (!$fb_ersetzen) {
+                    list($fb_alt_pkt, ) = fb_horizont_lesen($fb_alt_h);
+                    $fb_da = array();
+                    foreach ($fb_alt_pkt as $fb_ap) {
+                        $fb_da[sprintf('%.2f:%.2f', $fb_ap[0], $fb_ap[1])] = true;
+                    }
+                    $fb_neu_teile = array();
+                    foreach (explode(',', $fb_r_text) as $fb_teil) {
+                        $fb_teil = trim($fb_teil);
+                        list($fb_tp, ) = fb_horizont_lesen($fb_teil);
+                        if (count($fb_tp) === 1
+                            && isset($fb_da[sprintf('%.2f:%.2f', $fb_tp[0][0], $fb_tp[0][1])])) {
+                            continue;
+                        }
+                        $fb_neu_teile[] = $fb_teil;
+                    }
+                    $fb_anhang = implode(', ', $fb_neu_teile);
+                }
                 $fb_cfg_e['fenster'][$fb_zeile_r]['horizont'] = $fb_ersetzen
-                    ? $fb_r_text : ($fb_alt_h . ', ' . $fb_r_text);
+                    ? $fb_r_text : ($fb_anhang === '' ? $fb_alt_h : ($fb_alt_h . ', ' . $fb_anhang));
                 $fb_neu_r = fb_config_richten($fb_cfg_e);
-                if (fb_config_speichern($fb_neu_r)) {
+                if (!$fb_ersetzen && $fb_anhang === '') {
+                    $fb_meldungen[] = sprintf(fb_t('EINST.R_SCHON_DA'), $fb_zeile_r + 1,
+                        $fb_rechner['kuerzel']);
+                } elseif (fb_config_speichern($fb_neu_r)) {
                     fb_config_freigeben($fb_sperre); $fb_sperre = null;
                     $fb_meldungen[] = sprintf(
                         fb_t($fb_ersetzen ? 'EINST.R_GESETZT' : 'EINST.R_ANGEHAENGT'),
@@ -678,6 +709,10 @@ if ($fb_post && isset($_POST['speichern_raeume'])) {
         $fb_w = $fb_zahl($fb_qq, 0.1, 1000.0,
                          fb_t('EINST.L_RAUMFLAECHE') . ' ' . $fb_rr, 1);
         if ($fb_w !== null) { $fb_raeume_neu[$fb_rr] = $fb_w; }
+        elseif (isset($fb_cfg['raumflaechen'][$fb_rr])) {
+            /* O5: abgewiesen - die bisherige Flaeche bleibt, wie die Meldung sagt. */
+            $fb_raeume_neu[$fb_rr] = $fb_cfg['raumflaechen'][$fb_rr];
+        }
     }
     $fb_cfg['raumflaechen'] = $fb_raeume_neu;
     $fb_neu_cfg = fb_config_richten($fb_cfg);
@@ -940,13 +975,21 @@ if ($fb_post && isset($_POST['wasware'])) {
 if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_sperre = fb_config_sperre();      // Begruendung beim Modell-Handler
     $fb_cfg = fb_config();
+    /* M4: Praefix und Schalter VOR dem Speichern - fuer das Abraeumen. */
+    $fb_mqtt_vorher = $fb_cfg;
     $fb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
     /* Gegen den ROHEN Wert pruefen, nicht gegen den gesaeuberten. Sonst
      * wird "haus fenster" beanstandet und "haus\"fenster" stillschweigend
-     * zu "hausfenster" - dieselbe Eingabeart, zweierlei Verhalten. */
+     * zu "hausfenster" - dieselbe Eingabeart, zweierlei Verhalten.
+     *
+     * O5/M9 (Durchgang 30.09.2026): das Thema wird nicht mehr umgeschrieben.
+     * Bis 0.12.10 wurde aus "Haus/Fenster" still "haus/fenster" und aus
+     * "/haus/fenster/" still "haus/fenster" (gemessen, Oberflaeche-Pruefer
+     * Nr. 5), und "haus//fb" ging durch (MQTT-Pruefer B9). Jetzt: abweisen
+     * und sagen, warum. */
     $fb_thema_roh = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']))
         ? trim($_POST['mqtt_topic']) : '';
-    $fb_thema = trim(strtolower($fb_thema_roh), '/');
+    $fb_thema = $fb_thema_roh;
     if ($fb_thema === '') {
         /* EIN LEERES FELD LOESCHT NICHTS.
          *
@@ -958,24 +1001,45 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
          * Oberflaeche hatte Erfolg gemeldet. Dieselbe Eingabeart wurde
          * zwei Zeilen weiter unten sehr wohl beanstandet. */
         $fb_fehler[] = fb_t('FEHLER.THEMA_LEER');
+    } elseif (preg_match('/[A-Z]/', $fb_thema)) {
+        $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA_GROSS'), $fb_thema);
     } elseif (!preg_match('#^[a-z0-9_\-/]+$#D', $fb_thema)) {
         // Ein Thema mit + oder # ist ein Filtermuster und als Ziel unbrauchbar.
         $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA'), $fb_thema);
+    } elseif (!fb_thema_gueltig($fb_thema)) {
+        $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA_FORM'), $fb_thema);
     } else {
         $fb_cfg['mqtt_topic'] = $fb_thema;
     }
+    $fb_p_alt = (string) $fb_mqtt_vorher['mqtt_topic'];
+    if ($fb_cfg['mqtt_topic'] !== $fb_p_alt) { $fb_cfg['mqtt_praefix_alt'] = $fb_p_alt; }
     /* Auch hier wird gespeichert, was in Ordnung ist: ein unzulaessiges
      * Thema hat vorher den Haken "MQTT einschalten" mitgerissen, den der
      * Bediener im selben Formular gesetzt hatte - gemessen. Das Thema
      * bleibt in diesem Fall auf seinem alten Wert stehen. */
-    if (fb_config_speichern($fb_cfg)) {
+    $fb_ok_m = fb_config_speichern($fb_cfg);
+    fb_config_freigeben($fb_sperre);
+    if ($fb_ok_m) {
         if (!$fb_fehler) { $fb_meldungen[] = fb_t('ALLG.GESPEICHERT'); }
         else { $fb_meldungen[] = fb_t('ALLG.TEILWEISE'); }
         fb_log('MQTT-Einstellungen gespeichert.');
+        /* M8: die Abodatei auf das Praefix nachfuehren. */
+        fb_abo_datei($fb_cfg['mqtt_topic'], true);
+        /* M4 (Durchgang 30.09.2026): beim Praefixwechsel und beim Abschalten
+         * die zurueckbehaltenen Themen unter dem BISHERIGEN Praefix abraeumen
+         * und beim Broker nachlesen. Bis 0.12.10 blieben sie stehen, auch
+         * ueber die Deinstallation (gemessen, MQTT-Pruefer B4). Ausserhalb
+         * der Sperre: es kann einige Sekunden dauern. */
+        if (!empty($fb_mqtt_vorher['mqtt_ein'])) {
+            if ($fb_cfg['mqtt_topic'] !== $fb_p_alt) {
+                $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_mqtt_vorher, 'Praefixwechsel');
+            } elseif (empty($fb_cfg['mqtt_ein'])) {
+                $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_mqtt_vorher, 'MQTT abgeschaltet');
+            }
+        }
     } else {
         $fb_fehler[] = fb_t('FEHLER.SPEICHERN');
     }
-    fb_config_freigeben($fb_sperre);
     $fb_tab = 'tab-mqtt';
 }
 
@@ -984,24 +1048,47 @@ if ($fb_post && isset($_POST['token_neu'])) {
     $fb_sperre = fb_config_sperre();      // Begruendung beim Modell-Handler
     $fb_cfg = fb_config();
     $fb_cfg['aktionstoken'] = fb_token_erzeugen();
-    fb_config_speichern($fb_cfg);
+    /* O4 (Durchgang 30.09.2026): die Meldung haengt am Rueckgabewert. Bis
+     * 0.12.10 stand "Ein neues Wortzeichen wurde erzeugt" auch dann da, wenn
+     * die Datei schreibgeschuetzt war und sich nichts aenderte (gemessen,
+     * Oberflaeche-Pruefer Nr. 4). */
+    $fb_ok_t = fb_config_speichern($fb_cfg);
     fb_config_freigeben($fb_sperre);
     $fb_merkmal = fb_formtoken();   // das Merkmal haengt daran und wechselt mit
-    $fb_meldungen[] = fb_t('LOX.TOKEN_NEU_OK');
-    fb_log('Neues Wortzeichen erzeugt.');
+    if ($fb_ok_t) {
+        $fb_meldungen[] = fb_t('LOX.TOKEN_NEU_OK');
+        fb_log('Neues Wortzeichen erzeugt.');
+    } else {
+        $fb_fehler[] = fb_t('LOX.TOKEN_NEU_FEHLER');
+        fb_log('Ein neues Wortzeichen liess sich nicht schreiben - das bisherige gilt weiter.');
+    }
     $fb_tab = 'tab-loxone';
 }
 
 /* ---------------- Protokoll leeren ---------------- */
 if ($fb_post && isset($_POST['log_leeren'])) {
-    @file_put_contents($fb_p['log'], '');
-    /* Den Merker der Wiederholungsbremse mit wegraeumen. Sonst schweigt die
-     * naechste Ursachenmeldung, weil sie "schon einmal dagestanden hat" -
-     * in einer Datei, die es nicht mehr gibt. */
-    @unlink($fb_p['datadir'] . '/letzte_meldung.json');
-    fb_log('Protokoll geleert.');
-    $fb_meldungen[] = fb_t('LOG.GELEERT');
     $fb_tab = 'tab-log';
+    if (empty($_POST['log_bestaetigt'])) {
+        /* O17 (Durchgang 30.09.2026): ein loeschender Knopf braucht einen
+         * Bestaetigungshaken (Regeln/04); ohne ihn geschieht nichts. */
+        $fb_fehler[] = fb_t('LOG.NICHT_BESTAETIGT');
+    } else {
+        /* O4: "geleert" nur, wenn die Datei danach leer ist. Bis 0.12.10
+         * stand die Meldung auch ueber einer schreibgeschuetzten Datei mit
+         * unveraenderten 215 Byte (gemessen, Oberflaeche-Pruefer Nr. 4). */
+        $fb_leer_ok = (@file_put_contents($fb_p['log'], '') !== false);
+        clearstatcache(true, $fb_p['log']);
+        if ($fb_leer_ok && is_file($fb_p['log']) && filesize($fb_p['log']) === 0) {
+            /* Den Merker der Wiederholungsbremse mit wegraeumen. Sonst
+             * schweigt die naechste Ursachenmeldung, weil sie "schon einmal
+             * dagestanden hat" - in einer Datei, die es nicht mehr gibt. */
+            @unlink($fb_p['datadir'] . '/letzte_meldung.json');
+            fb_log('Protokoll geleert.');
+            $fb_meldungen[] = fb_t('LOG.GELEERT');
+        } else {
+            $fb_fehler[] = sprintf(fb_t('LOG.NICHT_GELEERT'), $fb_p['log']);
+        }
+    }
 }
 
 /* ---------------- Test ---------------- */
@@ -1075,7 +1162,7 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
     } elseif ((int) $_FILES['fb_sicherung']['size'] > 262144) {
         $fb_fehler[] = fb_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($fb_neu, $fb_mangel, $fb_n) = fb_sicherung_lesen(
+        list($fb_neu, $fb_mangel, $fb_n, $fb_s_info) = fb_sicherung_lesen(
             (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']));
         if ($fb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
@@ -1087,21 +1174,68 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
              * war dieser hier der einzige ohne beides, und dabei ersetzt er
              * als einziger die GANZE Konfiguration. */
             $fb_sp = fb_config_sperre();
+            /* C1: "kein Wortzeichen gesichert" - das geltende bleibt, unter
+             * der Sperre gelesen. Bis 0.12.10 wurde im selben Aufruf still
+             * ein neues gewuerfelt (gemessen, Code-Pruefer Nr. 2). */
+            if (!empty($fb_s_info['token_leer'])) {
+                $fb_neu['aktionstoken'] = fb_config()['aktionstoken'];
+            }
             $fb_ok_s = fb_config_speichern(fb_config_richten($fb_neu));
             if ($fb_sp !== null) { fb_config_freigeben($fb_sp); }
             if ($fb_ok_s) {
                 $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
+                if (!empty($fb_s_info['token_leer'])) {
+                    $fb_meldungen[] = fb_t('EINST.SICH_TOKEN_BEHALTEN');
+                }
+                if (!empty($fb_s_info['uebergangen'])) {
+                    $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERGANGEN'),
+                        implode(', ', $fb_s_info['uebergangen']));
+                }
                 /* Das Merkmal haengt am Aktionstoken und wechselt mit ihm -
                  * wortgleich zum Handler token_neu. */
                 $fb_merkmal = fb_formtoken();
                 /* Und der Dienst wird nachgezogen: sonst stuende bis zum
-                 * naechsten Cron-Lauf das Urteil der alten Fensterliste da. */
-                fb_lauf(true);
-                $fb_meldungen[] = fb_t('EINST.SICH_GERECHNET');
+                 * naechsten Cron-Lauf das Urteil der alten Fensterliste da.
+                 * C6: gemeldet wird, was geschah (Code-Pruefer Nr. 8). */
+                list($fb_g_s, , $fb_warum_s) = fb_lauf(true);
+                $fb_meldungen[] = $fb_g_s ? fb_t('EINST.SICH_GERECHNET')
+                    : fb_t('ALLG.NICHT_GERECHNET') . ' ' . fb_lauf_grund_text($fb_warum_s);
             } else {
                 $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
             }
         }
+    }
+}
+
+/* ---------------- O1: nach jedem POST umleiten ----------------
+ * Regeln/04 (Klasse 4): jeder POST-Handler endet mit 303, das Ergebnis reist
+ * als Einmalmeldung (fb_einmal_schreiben()). Die Downloads (Vorlagen,
+ * Auslese-Skript, Sicherung) liefern vorher selbst und enden mit exit. Laesst
+ * sich die Einmalmeldung nicht schreiben, wird wie bis 0.12.10 gleich
+ * angezeigt - lieber ein F5-Risiko als eine verschluckte Meldung. */
+$fb_formwerte = array();
+foreach (array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite', 'h_ersetzen') as $fb_fk) {
+    if ($fb_rechner !== null && isset($_POST[$fb_fk]) && is_string($_POST[$fb_fk])) {
+        $fb_formwerte[$fb_fk] = $_POST[$fb_fk];
+    }
+}
+if ($fb_post_roh) {
+    if (fb_einmal_schreiben(array('meldungen' => $fb_meldungen, 'fehler' => $fb_fehler,
+            'hinweise' => $fb_hinweise, 'ergaenzt' => $fb_ergaenzt, 'ausgabe' => $fb_testausgabe,
+            'rechner' => $fb_rechner, 'formular' => $fb_formwerte))) {
+        header('Location: index.php?form=' . rawurlencode(substr($fb_tab, 4)), true, 303);
+        exit;
+    }
+} else {
+    $fb_einmal = fb_einmal_lesen();
+    if ($fb_einmal !== null) {
+        $fb_meldungen = $fb_einmal['meldungen'];
+        $fb_fehler = $fb_einmal['fehler'];
+        $fb_hinweise = array_merge($fb_einmal['hinweise'], $fb_hinweise);
+        $fb_ergaenzt = array_merge($fb_einmal['ergaenzt'], $fb_ergaenzt);
+        $fb_testausgabe = $fb_einmal['ausgabe'];
+        $fb_rechner = $fb_einmal['rechner'];
+        $fb_formwerte = $fb_einmal['formular'];
     }
 }
 
@@ -1334,6 +1468,9 @@ window.addEventListener('resize', fbRollbalken);
 <?php } ?>
 <?php if ($fb_fehler) { ?>
 <div class="sm-warnung"><b><?= fb_e(fb_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('fb_e', $fb_fehler)) ?></div>
+<?php } ?>
+<?php if ($fb_hinweise) { ?>
+<div class="sm-warnung"><?= implode('<br>', array_map('fb_e', $fb_hinweise)) ?></div>
 <?php } ?>
 <?php if ($fb_ergaenzt) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('ALLG.ERGAENZT'), fb_e(implode(', ', $fb_ergaenzt))) ?></div>
@@ -1774,8 +1911,8 @@ if ($fb_luecke_da) { ?>
 <h3><?= fb_e(fb_t('EINST.R_H')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.R_ERKLAERUNG') ?></div>
 <?php
-$fb_r_alt = function ($name, $vorgabe) {
-    return isset($_POST[$name]) && is_string($_POST[$name]) ? $_POST[$name] : $vorgabe;
+$fb_r_alt = function ($name, $vorgabe) use ($fb_formwerte) {
+    return isset($fb_formwerte[$name]) ? $fb_formwerte[$name] : $vorgabe;
 };
 $fb_r_liste = array();
 foreach ($fb_cfg['fenster'] as $fb_ri => $fb_rf) {
@@ -1791,7 +1928,7 @@ if (!$fb_r_liste) { ?>
   <label for="fb_h_zeile"><?= fb_e(fb_t('EINST.R_L_ZEILE')) ?></label>
   <select data-role="none" id="fb_h_zeile" name="h_zeile">
 <?php foreach ($fb_r_liste as $fb_ri => $fb_rf) { ?>
-    <option value="<?= (int) $fb_ri ?>"<?= (isset($_POST['h_zeile']) && (int) $_POST['h_zeile'] === (int) $fb_ri) ? ' selected' : '' ?>><?= fb_e(sprintf('%d. %s (%s, %d Grad)', $fb_ri + 1, $fb_rf['kuerzel'],
+    <option value="<?= (int) $fb_ri ?>"<?= (isset($fb_formwerte['h_zeile']) && (int) $fb_formwerte['h_zeile'] === (int) $fb_ri) ? ' selected' : '' ?>><?= fb_e(sprintf('%d. %s (%s, %d°)', $fb_ri + 1, $fb_rf['kuerzel'],
         $fb_rf['name'] !== '' ? $fb_rf['name'] : '-', (int) $fb_rf['azimut'])) ?></option>
 <?php } ?>
   </select>
@@ -1817,7 +1954,7 @@ if (!$fb_r_liste) { ?>
   <input data-role="none" type="text" id="fb_h_breite" name="h_breite" value="<?= fb_e($fb_r_alt('h_breite', '')) ?>">
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="h_ersetzen" value="1"<?= !empty($_POST['h_ersetzen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.R_L_ERSETZEN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="h_ersetzen" value="1"<?= !empty($fb_formwerte['h_ersetzen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.R_L_ERSETZEN')) ?></label>
 </div>
 <?php if ($fb_rechner !== null) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('EINST.R_ERGEBNIS'),
@@ -2293,7 +2430,7 @@ if (!empty($fb_cfg['stellung_ein'])) {
 </table>
 </div>
 <?php if (!$fb_raeume) { ?>
-<div class="sm-hinweis"><?= fb_t('LOX.KEINE_RAEUME') ?></div>
+<div class="sm-hinweis"><?= sprintf(fb_t('LOX.KEINE_RAEUME'), count(fb_messgroessen())) ?></div>
 <?php } ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
@@ -2307,25 +2444,33 @@ if (!empty($fb_cfg['stellung_ein'])) {
 </div>
 
 <h3><?= fb_e(fb_t('LOX.H_ADRESSE')) ?></h3>
-<p class="sm-hilfe"><?= fb_t('LOX.ADRESSE_HILFE') ?></p>
+<?php /* Ein vorhandenes Kuerzel statt eines Platzhalters: die Adresse
+     soll abschreibbar sein, nicht erklaerungsbeduerftig.
+     O12 (Durchgang 30.09.2026): die Zeilen stehen in einer Liste, und der
+     Hilfetext nennt ihre Zahl aus dieser Liste - bis 0.12.10 stand "alle
+     drei" ueber vier Adressen (Oberflaeche-Pruefer Nr. 12). */
+$fb_bsp = '';
+foreach ($fb_liste as $fb_f) { if ($fb_f['kuerzel'] !== '') { $fb_bsp = $fb_f['kuerzel']; break; } }
+if ($fb_bsp === '') { $fb_bsp = fb_klartext('LOX.Z_FENSTER_BSP'); }
+$fb_adressen = array(
+    'LOX.Z_STATUS'   => fb_endpunkt() . '?token=' . fb_token() . '&aktion=status',
+    'LOX.Z_JSON'     => fb_endpunkt() . '?token=' . fb_token() . '&aktion=json',
+    'LOX.Z_FENSTER'  => fb_endpunkt() . '?token=' . fb_token() . '&aktion=fenster&k=' . $fb_bsp,
+    'LOX.Z_SELFTEST' => fb_endpunkt() . '?token=' . fb_token() . '&selftest=1',
+); ?>
+<p class="sm-hilfe"><?= sprintf(fb_t('LOX.ADRESSE_HILFE'), count($fb_adressen)) ?></p>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= fb_e(fb_t('LOX.SP_ZWECK')) ?></th><th><?= fb_e(fb_t('LOX.SP_ADRESSE')) ?></th></tr>
-<tr><td><?= fb_e(fb_t('LOX.Z_STATUS')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=status') ?></span></td></tr>
-<tr><td><?= fb_e(fb_t('LOX.Z_JSON')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=json') ?></span></td></tr>
-<?php /* Ein vorhandenes Kuerzel statt eines Platzhalters: die Adresse
-     soll abschreibbar sein, nicht erklaerungsbeduerftig. */
-$fb_bsp = '';
-foreach ($fb_liste as $fb_f) { if ($fb_f['kuerzel'] !== '') { $fb_bsp = $fb_f['kuerzel']; break; } }
-if ($fb_bsp === '') { $fb_bsp = fb_klartext('LOX.Z_FENSTER_BSP'); } ?>
-<tr><td><?= fb_e(fb_t('LOX.Z_FENSTER')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&aktion=fenster&k=' . $fb_bsp) ?></span></td></tr>
-<tr><td><?= fb_e(fb_t('LOX.Z_SELFTEST')) ?></td><td><span class="sm-mono"><?= fb_e(fb_endpunkt() . '?token=' . fb_token() . '&selftest=1') ?></span></td></tr>
+<?php foreach ($fb_adressen as $fb_zweck => $fb_adr) { ?>
+<tr><td><?= fb_e(fb_t($fb_zweck)) ?></td><td><span class="sm-mono"><?= fb_e($fb_adr) ?></span></td></tr>
+<?php } ?>
 </table>
 </div>
 <p class="sm-hilfe"><?= fb_t('LOX.TOKEN_HINWEIS') ?></p>
 
 <h3><?= fb_e(fb_t('LOX.H_FELDER')) ?></h3>
-<p class="sm-hilfe"><?= fb_t('LOX.FELDER_HILFE') ?></p>
+<p class="sm-hilfe"><?= sprintf(fb_t('LOX.FELDER_HILFE'), count(fb_felder()), count(fb_summenfelder())) ?></p>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th><?= fb_e(fb_t('LOX.SP_TITEL')) ?></th><th><?= fb_e(fb_t('LOX.SP_EINHEIT')) ?></th>
@@ -2534,9 +2679,22 @@ if ($fb_bsp === '') { $fb_bsp = fb_klartext('LOX.Z_FENSTER_BSP'); } ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+    <label><input data-role="none" type="checkbox" name="log_bestaetigt" value="1"> <?= fb_e(fb_t('LOG.BESTAETIGEN')) ?></label>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= fb_e(fb_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>
+<?php
+/* I8 (Durchgang 30.09.2026): die Fehlerausgabe des Takts. cron/cron.05min
+ * lenkt sie seit 0.12.11 nach log/plugins/<ordner>/cron.err (Hausstandard,
+ * Regeln/06, Bauform Docker NG 1.3.7); gezeigt wird sie, sobald etwas darin
+ * steht. */
+$fb_cronerr = $fb_p['logdir'] . '/cron.err';
+clearstatcache(true, $fb_cronerr);
+if (is_file($fb_cronerr) && filesize($fb_cronerr) > 0) { ?>
+<h3><?= fb_e(fb_t('LOG.H_CRONERR')) ?></h3>
+<p class="sm-hilfe"><?= fb_t('LOG.CRONERR_ERKLAERUNG') ?> <span class="sm-mono"><?= fb_e($fb_cronerr) ?></span></p>
+<div class="sm-log"><?= fb_e(implode("\n", fb_log_ende($fb_cronerr, 100))) ?></div>
+<?php } ?>
 </div>
 
 </div><!-- /sm-wrap -->

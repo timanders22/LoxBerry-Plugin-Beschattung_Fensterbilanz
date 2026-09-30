@@ -105,6 +105,10 @@ if (!defined('FB_REIHE_MAX')) { define('FB_REIHE_MAX', 60); }
  * Regeln/07 hat ihn mit 90 Datagrammen geeicht: ohne Pause kamen 0, 0 und 6
  * von 90 an, mit 5 ms alle 90, mit 50 ms nur 40. */
 if (!defined('FB_MQTT_ABSTAND')) { define('FB_MQTT_ABSTAND', 5000); }
+/* Der Takt des Rueckhalt-Laufs in Sekunden (cron/cron.05min). Entscheidung
+ * Nr. 4 vom 29.09.2026: OK=0, sobald der Stand aelter ist als das Dreifache
+ * davon (C4, fb_zeile()). */
+if (!defined('FB_TAKT')) { define('FB_TAKT', 300); }
 
 /**
  * Die Pfade. $neu = true wirft den gemerkten Stand weg.
@@ -440,6 +444,14 @@ function fb_vorgaben()
         'mqtt_ein'       => 1,
         'mqtt_topic'     => 'fenster',
         'aktionstoken'   => '',
+        /* M4 (Durchgang 30.09.2026): das zuletzt verlassene Themenpraefix.
+         * Beim Praefixwechsel werden die zurueckbehaltenen Themen darunter
+         * sofort abgeraeumt; der UDP-Eingang des Gateways verwirft aber unter
+         * Last, und die Deinstallation leert dieses Praefix deshalb ein
+         * zweites Mal. Leer heisst: kein anderes Praefix war in Gebrauch.
+         * Kein Schalter, keine Wirkung auf die Rechnung - nur ein Vermerk
+         * (Bauart BatterieBMS 0.9.30). */
+        'mqtt_praefix_alt' => '',
     );
 }
 
@@ -612,6 +624,33 @@ function fb_json_lesen($pfad)
 }
 
 /**
+ * C3 (Durchgang 30.09.2026): eine LANGZEITDATEI lesen - bilanz.json,
+ * lernen.json, pv.json. Rueckgabe array(Daten, Zustand) wie
+ * fb_json_lesen_geprueft().
+ *
+ * Ist sie unlesbar (abgeschnitten, Stromausfall beim Schreiben), wird sie als
+ * <name>.kaputt beiseitegelegt (liegt dort schon eine, mit Zeitstempel
+ * dahinter) und EINMAL protokolliert; der Aufrufer schreibt dann keinen
+ * kurzen Bestand darueber. Bis 0.12.10 las fb_json_lesen() sie als leer, und
+ * der naechste Tageswechsel schrieb eine lernen.json mit einem Tag ueber die
+ * mit 100 Tagen - ohne Datei und ohne Zeile (gemessen, Code-Pruefer Nr. 4).
+ */
+function fb_langzeit_lesen($pfad)
+{
+    list($d, $z) = fb_json_lesen_geprueft($pfad);
+    if ($z !== 'kaputt') { return array($d, $z); }
+    $ziel = $pfad . '.kaputt';
+    if (file_exists($ziel)) { $ziel .= '.' . date('Ymd_His'); }
+    $weg = @rename($pfad, $ziel);
+    fb_log_wenn_neu('kaputt_' . basename($pfad), sprintf('%s war unlesbar (abgeschnitten?) und %s. '
+        . 'Es wird nicht mit einem leeren Bestand darueber weitergeschrieben; der alte Inhalt '
+        . 'laesst sich aus der beiseitegelegten Datei von Hand retten.', basename($pfad),
+        $weg ? 'liegt jetzt als ' . basename($ziel) . ' daneben'
+             : 'liess sich NICHT beiseitelegen'));
+    return array(array(), 'kaputt');
+}
+
+/**
  * Erst in eine Nebendatei, dann umbenennen.
  *
  * Die Nebendatei traegt Prozessnummer und einen Zufallsanteil: Cron-Lauf,
@@ -653,6 +692,161 @@ function fb_hat_inhalt($d)
 {
     return is_array($d) && isset($d['aktionstoken']) && is_string($d['aktionstoken'])
         && trim($d['aktionstoken']) !== '';
+}
+
+/**
+ * Ist das ein brauchbares Wortzeichen? (C1, Durchgang 30.09.2026)
+ *
+ * Eine ZEICHENKETTE aus 1 bis 64 Buchstaben, Ziffern, Punkten, Unter- und
+ * Bindestrichen - so weit, wie Wortzeichen im Bestand aussehen, und nur, was
+ * ohne Kodierung in eine Adresse passt (Regeln/05: das Muster richtet sich
+ * nach dem Bestand, nie enger). Ausgenommen ist die Zeichenkette, die PHP aus
+ * einer Liste macht: sie ist oeffentlich bekannt.
+ *
+ * Bis 0.12.10 nahm eine zurueckgespielte Sicherung ein Wortzeichen als Liste
+ * an; der Endpunkt wandelte es mit (string) um und liess danach jeden mit
+ * dieser oeffentlich bekannten Zeichenkette herein, das Formularmerkmal hing
+ * am selben Wort (gemessen, Code-Pruefer Nr. 1, Oberflaeche-Pruefer Nr. 1).
+ */
+function fb_token_gueltig($t)
+{
+    return is_string($t) && $t !== 'Array'
+        && preg_match('/^[A-Za-z0-9_.\-]{1,64}\z/', $t) === 1;
+}
+
+/**
+ * Hat fb_token() in diesem Aufruf ein Wortzeichen erzeugt? '' nein, 'neu'
+ * (es gab keines), 'ersetzt' (es gab eines, das unbrauchbar war). Die
+ * Oberflaeche zeigt es an - bis 0.12.10 stand es nur im Protokoll
+ * (Code-Pruefer Nr. 2).
+ */
+function fb_token_gewuerfelt($setzen = null)
+{
+    static $w = '';
+    if ($setzen !== null) { $w = (string) $setzen; }
+    return $w;
+}
+
+/**
+ * Die Zahlenfelder der Konfiguration: Schluessel => array(von, bis,
+ * Nachkommastellen, Sprachschluessel der Beschriftung).
+ *
+ * EINE Tabelle fuer das Formular "Standort und Modell" und fuer das
+ * Zurueckspielen einer Sicherung (C1): bis 0.12.10 stand sie nur im
+ * Formular, und die Rueckspielung nahm jeden Wert (breite als Liste -> 1 Grad
+ * Nord, tagesgrenze 999 -> still 35; gemessen, Oberflaeche-Pruefer Nr. 1).
+ */
+function fb_zahlfelder()
+{
+    return array(
+        'breite'         => array(-90, 90, 5, 'EINST.L_BREITE'),
+        'laenge'         => array(-180, 180, 5, 'EINST.L_LAENGE'),
+        'tagesgrenze'    => array(10, 35, 0, 'EINST.L_TAGESGRENZE'),
+        'spreizung_tag'  => array(1, 20, 0, 'EINST.L_SPREIZUNG_TAG'),
+        'spreizung_raum' => array(5, 100, 0, 'EINST.L_SPREIZUNG_RAUM'),
+        'gewicht_raum'   => array(0, 100, 0, 'EINST.L_GEWICHT_RAUM'),
+        'gewicht_tag'    => array(0, 100, 0, 'EINST.L_GEWICHT_TAG'),
+        'schwelle_ein'   => array(1, 100, 0, 'EINST.L_SCHWELLE_EIN'),
+        'schwelle_aus'   => array(0, 99, 0, 'EINST.L_SCHWELLE_AUS'),
+        'e_ref'          => array(50, 1000, 0, 'EINST.L_E_REF'),
+        'albedo'         => array(0, 90, 0, 'EINST.L_ALBEDO'),
+        'iam_b0'         => array(0, 50, 0, 'EINST.L_IAM'),
+        'hoechstalter'   => array(60, 86400, 0, 'EINST.L_HOECHSTALTER'),
+        'rechentakt'     => array(10, 3600, 0, 'EINST.L_RECHENTAKT'),
+        'vorschau'       => array(0, 10800, 0, 'EINST.L_VORSCHAU'),
+        'glaettung'      => array(0, 3600, 0, 'EINST.L_GLAETTUNG'),
+        'gewicht_bilanz' => array(0, 100, 0, 'EINST.L_GEWICHT_BILANZ'),
+        'bilanz_voll_qm' => array(10, 2000, 0, 'EINST.L_BILANZ_VOLL'),
+        'raumflaeche_vorgabe' => array(1, 1000, 0, 'EINST.L_RAUMFLAECHE_VORGABE'),
+        'gewicht_morgen' => array(0, 100, 0, 'EINST.L_GEWICHT_MORGEN'),
+        'vorabend_ab'    => array(0, 23, 0, 'EINST.L_VORABEND_AB'),
+        'daemm_grenze'   => array(-30, 25, 0, 'EINST.L_DAEMM_GRENZE'),
+        'stellung_zu'    => array(1, 100, 0, 'EINST.L_STELLUNG_ZU'),
+        'stellung_frist' => array(60, 86400, 0, 'EINST.L_STELLUNG_FRIST'),
+        'bericht_stunde' => array(0, 23, 0, 'EINST.L_BERICHT_STUNDE'),
+        'pv_abweichung'  => array(5, 90, 0, 'EINST.L_PV_ABWEICHUNG'),
+    );
+}
+
+/** Dasselbe je Fensterzeile: Feld => array(von, bis, Nachkommastellen, Beschriftung). */
+function fb_fenster_zahlfelder()
+{
+    return array(
+        'azimut'        => array(0, 359, 0, 'EINST.L_AZIMUT'),
+        'neigung'       => array(0, 90, 0, 'EINST.L_NEIGUNG'),
+        'flaeche'       => array(0.1, 30.0, 2, 'EINST.L_FLAECHE'),
+        'gwert'         => array(5, 95, 0, 'EINST.L_GWERT'),
+        'traegheit'     => array(0, 50, 0, 'EINST.L_TRAEGHEIT'),
+        'dach_tiefe'    => array(0, 300, 0, 'EINST.L_DACH_TIEFE'),
+        'dach_hoehe'    => array(0, 300, 0, 'EINST.L_DACH_HOEHE'),
+        'fenster_hoehe' => array(20, 400, 0, 'EINST.L_FENSTER_HOEHE'),
+        'blend_hoehe'   => array(0, 60, 0, 'EINST.L_BLEND_HOEHE'),
+        'blend_winkel'  => array(5, 89, 0, 'EINST.L_BLEND_WINKEL'),
+    );
+}
+
+/** Die Haken der Konfiguration (0 oder 1). */
+function fb_haken_felder()
+{
+    return array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe',
+                 'lernen_ein', 'mqtt_ein');
+}
+
+function fb_haken_ok($w)
+{
+    return $w === 0 || $w === 1 || $w === true || $w === false || $w === '0' || $w === '1';
+}
+
+/**
+ * Eine Zahl PRUEFEN, nicht zurechtbiegen - fuer Formular und Sicherung.
+ *
+ * Rueckgabe array(Wert|null, Grund). Grund '' heisst gueltig, sonst 'zahl'
+ * (keine Zahl), 'ganz' (Nachkommastellen, wo eine ganze Zahl verlangt ist),
+ * 'stellen' (mehr Nachkommastellen als erlaubt) oder 'bereich'. Bis 0.12.10
+ * rundete das Formular still (tagesgrenze 20.6 -> 21, f_flaeche 1.234 ->
+ * 1.23; gemessen, Oberflaeche-Pruefer Nr. 5).
+ */
+function fb_zahl_pruefen($w, $von, $bis, $nachkomma = 0)
+{
+    if (is_int($w) || is_float($w)) {
+        $f = (float) $w;
+    } elseif (is_string($w)) {
+        $s = str_replace(',', '.', trim($w));
+        if ($s === '' || !is_numeric($s)) { return array(null, 'zahl'); }
+        $f = (float) $s;
+    } else {
+        return array(null, 'zahl');
+    }
+    if (!is_finite($f)) { return array(null, 'zahl'); }
+    $n = (int) $nachkomma;
+    if (abs($f - round($f, $n)) > 1e-9 * max(1.0, abs($f))) {
+        return array(null, $n === 0 ? 'ganz' : 'stellen');
+    }
+    if ($f < $von || $f > $bis) { return array(null, 'bereich'); }
+    return array($n > 0 ? round($f, $n) : (int) round($f), '');
+}
+
+/** Ein Wert fuer eine Meldung: Skalare als Text (gekuerzt), alles andere als Art. */
+function fb_sich_zeigen($w)
+{
+    if (is_bool($w)) { return $w ? 'true' : 'false'; }
+    if ($w === null) { return 'null'; }
+    if (is_scalar($w)) {
+        $s = (string) $w;
+        return strlen($s) > 40 ? substr($s, 0, 40) . '...' : $s;
+    }
+    return '[' . gettype($w) . ']';
+}
+
+/**
+ * Ist das ein brauchbares MQTT-Themenpraefix? Kleinbuchstaben, Ziffern,
+ * Binde- und Unterstrich, Ebenen durch GENAU einen Schraegstrich getrennt,
+ * keiner am Rand (M9: "haus//fb" wurde bis 0.12.10 angenommen, angezeigt als
+ * haus//fb/..., gesendet als haus/fb/...; MQTT-Pruefer B9).
+ */
+function fb_thema_gueltig($t)
+{
+    return is_string($t) && preg_match('#^[a-z0-9_\-]+(?:/[a-z0-9_\-]+)*\z#', $t) === 1;
 }
 
 /**
@@ -810,8 +1004,17 @@ function fb_config_richten($cfg)
                                       array('isotrop', 'hdkr'), true)
                              ? (string) $cfg['himmelsmodell'] : 'isotrop';
     $cfg['mqtt_ein']       = empty($cfg['mqtt_ein']) ? 0 : 1;
-    $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower((string) $cfg['mqtt_topic']));
+    $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower(is_string($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''));
+    /* M9 (Durchgang 30.09.2026): doppelte Schraegstriche zusammenziehen wie
+     * fb_mqtt_thema() beim Senden - sonst zeigte die Oberflaeche haus//fb/...,
+     * gesendet wurde unter haus/fb/... (gemessen, MQTT-Pruefer B9). Das
+     * Formular und die Sicherung weisen ein solches Praefix vorher ab; das
+     * hier ist die zweite Linie fuer eine von Hand geaenderte Datei. */
+    $t = preg_replace('#/+#', '/', $t);
     $cfg['mqtt_topic'] = trim($t, '/') !== '' ? trim($t, '/') : 'fenster';
+    $cfg['mqtt_praefix_alt'] = (isset($cfg['mqtt_praefix_alt']) && fb_thema_gueltig($cfg['mqtt_praefix_alt'])
+                                && $cfg['mqtt_praefix_alt'] !== $cfg['mqtt_topic'])
+                               ? $cfg['mqtt_praefix_alt'] : '';
     /* Die Ausschaltschwelle muss unter der Einschaltschwelle liegen, sonst
      * gibt es keine Hysterese, sondern ein Flattern am Schwellwert. Hier
      * wird NICHT zurechtgebogen, sondern angeglichen und im Reiter Test
@@ -1022,18 +1225,27 @@ function fb_token_erzeugen($laenge = 24)
  */
 function fb_token()
 {
+    /* C1 (Durchgang 30.09.2026): geprueft wird mit fb_token_gueltig(), nicht
+     * mit (string). Ein Wortzeichen als Liste wurde bis 0.12.10 zu der
+     * Zeichenkette, die PHP aus Listen macht, und galt (unter PHP 8 mit
+     * Warnung). Ein unbrauchbares wird jetzt ersetzt - und das wird auf der
+     * Seite GESAGT (fb_token_gewuerfelt()), nicht nur protokolliert. */
     $cfg = fb_config();
-    if (trim((string) $cfg['aktionstoken']) !== '') { return (string) $cfg['aktionstoken']; }
+    if (fb_token_gueltig($cfg['aktionstoken'])) { return $cfg['aktionstoken']; }
     $fp = fb_config_sperre();
     if ($fp === null) {
+        $war = $cfg['aktionstoken'];
         $cfg['aktionstoken'] = fb_token_erzeugen();
         fb_config_speichern($cfg);
+        fb_token_gewuerfelt(($war === '' || $war === null) ? 'neu' : 'ersetzt');
         return (string) $cfg['aktionstoken'];
     }
     $cfg = fb_config();                     // zweiter Blick unter der Sperre
-    if (trim((string) $cfg['aktionstoken']) === '') {
+    if (!fb_token_gueltig($cfg['aktionstoken'])) {
+        $war = $cfg['aktionstoken'];
         $cfg['aktionstoken'] = fb_token_erzeugen();
         fb_config_speichern($cfg);
+        fb_token_gewuerfelt(($war === '' || $war === null) ? 'neu' : 'ersetzt');
         /* EIN NEUES WORTZEICHEN WIRD GEMELDET.
          *
          * Bis 0.12.6 geschah das stumm. Beim ersten Aufruf einer frischen
@@ -1052,6 +1264,62 @@ function fb_token()
 }
 
 /**
+ * O1 (Durchgang 30.09.2026): die Einmalmeldung fuer "POST -> 303 -> GET".
+ *
+ * Regeln/04: jeder POST-Handler endet mit einer Umleitung; das Ergebnis reist
+ * in data/plugins/<ordner>/einmalmeldung.json (0600), wird beim naechsten
+ * GET gelesen und sofort geloescht, und gilt hoechstens 120 s. Bis 0.12.10
+ * antwortete jeder POST mit 200, und F5 wiederholte ihn - "Horizont
+ * eintragen" haengte dieselben Punkte zweimal und dreimal an (gemessen,
+ * Code-Pruefer Nr. 9, Oberflaeche-Pruefer Nr. 3). Bauart BYD Autos 0.9.19.
+ */
+function fb_einmal_schreiben($daten)
+{
+    $p = fb_paths();
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) {
+        return false;
+    }
+    $daten['zeit'] = time();
+    return fb_json_schreiben($p['datadir'] . '/einmalmeldung.json', $daten, 0600);
+}
+
+function fb_einmal_lesen()
+{
+    $f = fb_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) { return null; }
+    list($d, $z) = fb_json_lesen_geprueft($f);
+    @unlink($f);
+    if ($z !== 'ok' || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) { return null; }
+    $aus = array();
+    foreach (array('meldungen', 'fehler', 'hinweise', 'ergaenzt') as $k) {
+        $aus[$k] = array();
+        if (isset($d[$k]) && is_array($d[$k])) {
+            foreach ($d[$k] as $m) { if (is_string($m)) { $aus[$k][] = $m; } }
+        }
+    }
+    $aus['ausgabe'] = isset($d['ausgabe']) && is_string($d['ausgabe']) ? $d['ausgabe'] : '';
+    $aus['formular'] = array();
+    if (isset($d['formular']) && is_array($d['formular'])) {
+        foreach ($d['formular'] as $k => $v) {
+            if (is_string($k) && is_string($v) && preg_match('/^h_[a-z]+\z/', $k)) { $aus['formular'][$k] = $v; }
+        }
+    }
+    $aus['rechner'] = null;
+    if (isset($d['rechner']['text'], $d['rechner']['kuerzel'], $d['rechner']['zeile'], $d['rechner']['werte'])
+        && is_string($d['rechner']['text']) && is_string($d['rechner']['kuerzel'])
+        && is_int($d['rechner']['zeile']) && is_array($d['rechner']['werte'])) {
+        $w = array();
+        foreach (array('ueber', 'weite_mitte', 'hoehe_mitte', 'hoehe_kante') as $k) {
+            $w[$k] = (isset($d['rechner']['werte'][$k]) && is_numeric($d['rechner']['werte'][$k]))
+                     ? (float) $d['rechner']['werte'][$k] : 0.0;
+        }
+        $aus['rechner'] = array('text' => $d['rechner']['text'], 'kuerzel' => $d['rechner']['kuerzel'],
+                                'zeile' => $d['rechner']['zeile'], 'werte' => $w);
+    }
+    return $aus;
+}
+
+/**
  * Das Merkmal gegen Formulare, die auf fremden Seiten stehen.
  *
  * htmlauth/ schuetzt gegen den unangemeldeten Aufruf - NICHT dagegen, dass
@@ -1062,8 +1330,12 @@ function fb_token()
  */
 function fb_formtoken()
 {
-    $t = trim((string) fb_config()['aktionstoken']);
-    if ($t === '') { return ''; }
+    /* C1: nur ein brauchbares Wortzeichen traegt ein Merkmal - ein Merkmal
+     * aus der Zeichenkette einer Liste waere oeffentlich berechenbar
+     * (gemessen, Code-Pruefer Nr. 1: ein POST mit diesem Merkmal leerte das
+     * Protokoll). */
+    $t = fb_config()['aktionstoken'];
+    if (!fb_token_gueltig($t)) { return ''; }
     return hash_hmac('sha256', 'formular-v1', $t);
 }
 
@@ -1707,7 +1979,7 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
         if ($daten_fehlen) {
             $e['grund'] = 'keine_daten';
             $e['grundnr'] = $grund_nr['keine_daten'];
-            $e['begruendung'] = 'Es fehlen gueltige Messwerte - es wird nicht geraten.';
+            $e['begruendung'] = fb_t('FB_SATZ.KEINE_DATEN');     // O16
             $stand['fenster'][(string) $nr] = $e;
             continue;
         }
@@ -1886,8 +2158,7 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
                                            $raum_ist, $raum_grenze, $werte, $verschattet,
                                            count($punkte) > 0, $n_bilanz, $n_morgen);
         if ($unlesbar) {
-            $e['begruendung'] .= ' Achtung: ' . count($unlesbar)
-                              . ' Stuetzpunkt(e) des Horizonts sind unlesbar und bleiben unberuecksichtigt.';
+            $e['begruendung'] .= ' ' . sprintf(fb_t('FB_SATZ.HORIZONT_UNLESBAR'), count($unlesbar));
         }
         $stand['fenster'][(string) $nr] = $e;
     }
@@ -1906,50 +2177,48 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
 }
 
 /**
- * Ein Satz, der das Urteil erklaert. Deutsch, ohne Sprachdatei.
+ * Ein Satz, der das Urteil erklaert - aus der Sprachdatei (Abschnitt
+ * FB_SATZ), in der Sprache des LoxBerry.
  *
- * Warum fest im Quelltext und nicht uebersetzt: der Satz wird aus Zahlen
- * zusammengesetzt, die je Fenster verschieden sind, und er wandert
- * unveraendert nach MQTT. Ein Satz aus acht Bruchstuecken in zwei Sprachen
- * waere in beiden schlechter als einer in einer. Die Oberflaeche zeigt ihn
- * zusaetzlich zu den uebersetzten Beschriftungen; wer ihn uebersetzt haben
- * will, bekommt eine ehrliche Antwort in der Hilfe statt einer schlechten
- * Uebersetzung.
+ * O16 (Durchgang 30.09.2026): bis 0.12.10 stand der Satz deutsch und in
+ * Umschrift im Quelltext; die englische Oberflaeche zeigte ihn so, und die
+ * deutsche zeigte "gueltige" und "ueber" (gemessen, Oberflaeche-Pruefer
+ * Nr. 16). Er wandert weiter unveraendert nach MQTT - in der Sprache, in der
+ * er gerechnet wurde (Cron: Base.Lang aus general.json, siehe fb_sprache()).
  */
 function fb_begruendung($e, $sonne, $n_raum, $n_tag, $raum_ist, $raum_grenze,
                         $werte, $verschattet, $horizont_da,
                         $n_bilanz = null, $n_morgen = null)
 {
     $t = array();
-    $t[] = sprintf('Sonne %d Grad hoch, Azimut %d Grad',
+    $t[] = sprintf(fb_t('FB_SATZ.SONNE'),
                    (int) round($sonne['hoehe']), (int) round($sonne['azimut']));
     if ($e['einfall'] >= 0) {
-        $t[] = sprintf('Einfall %d Grad zur Senkrechten', (int) $e['einfall']);
+        $t[] = sprintf(fb_t('FB_SATZ.EINFALL'), (int) $e['einfall']);
     } else {
-        $t[] = 'Sonne steht hinter dem Fenster';
+        $t[] = fb_t('FB_SATZ.HINTER');
     }
     if (!empty($e['dach'])) {
         /* Nur nennen, wenn er auch wirkt - ein Satzteil "0 Prozent
          * verschattet" bei jedem Fenster den ganzen Winter waere Laerm. */
-        $t[] = sprintf('Dachueberstand verschattet %d Prozent des Glases', (int) $e['dach']);
+        $t[] = sprintf(fb_t('FB_SATZ.DACH'), (int) $e['dach']);
     }
     if ($verschattet) {
-        $t[] = 'vom eingetragenen Horizont verdeckt, nur Himmelslicht';
+        $t[] = fb_t('FB_SATZ.HORIZONT');
     } elseif (!$horizont_da) {
-        $t[] = 'kein Horizont hinterlegt, freie Sicht angenommen';
+        $t[] = fb_t('FB_SATZ.KEIN_HORIZONT');
     }
-    $t[] = sprintf('%d W/m2 am Glas, %d W durchs Fenster', (int) $e['glas'], (int) $e['watt']);
+    $t[] = sprintf(fb_t('FB_SATZ.GLAS'), (int) $e['glas'], (int) $e['watt']);
     if ($raum_ist !== null && $raum_grenze !== null) {
-        $t[] = sprintf('Raum %.1f Grad, Beschattungsgrenze %.1f Grad',
-                       $raum_ist, $raum_grenze);
+        $t[] = sprintf(fb_t('FB_SATZ.RAUM'), $raum_ist, $raum_grenze);
     } else {
-        $t[] = 'ohne Raumwerte gerechnet';
+        $t[] = fb_t('FB_SATZ.OHNE_RAUM');
     }
     if ($werte['prognose'] !== null) {
-        $t[] = sprintf('Tageshoechstwert %.0f Grad erwartet', $werte['prognose']);
+        $t[] = sprintf(fb_t('FB_SATZ.PROGNOSE'), $werte['prognose']);
     }
     if ($n_bilanz !== null) {
-        $t[] = sprintf('%d Wh heute schon durch dieses Glas', (int) $e['wh']);
+        $t[] = sprintf(fb_t('FB_SATZ.BILANZ'), (int) $e['wh']);
         /* DIE RAUMFLAECHE GEHOERT IN DEN SATZ.
          *
          * Der Bilanzteil misst Wattstunden je Quadratmeter Grundflaeche.
@@ -1958,20 +2227,19 @@ function fb_begruendung($e, $sonne, $n_raum, $n_tag, $raum_ist, $raum_grenze,
          * diesen Halbsatz saehe eine geschaetzte Flaeche im Ergebnis
          * genauso aus wie eine aus der Projektdatei gelesene. */
         if (isset($e['raum_qm'])) {
-            $t[] = sprintf('Raum %.1f m2%s', (float) $e['raum_qm'],
-                           empty($e['raum_qm_geschaetzt']) ? '' : ' (geschaetzt)');
+            $t[] = sprintf(fb_t('FB_SATZ.RAUM_QM'), (float) $e['raum_qm'])
+                 . (empty($e['raum_qm_geschaetzt']) ? '' : ' (' . fb_t('FB_SATZ.GESCHAETZT') . ')');
         }
     }
     if ($n_morgen !== null && $werte['prognose1'] !== null) {
-        $t[] = sprintf('morgen %.0f Grad erwartet', $werte['prognose1']);
+        $t[] = sprintf(fb_t('FB_SATZ.MORGEN'), $werte['prognose1']);
     }
-    if (!empty($e['blendung'])) { $t[] = 'blendet'; }
-    if (!empty($e['daemmen']))  { $t[] = 'Nachtdaemmung'; }
+    if (!empty($e['blendung'])) { $t[] = fb_t('FB_SATZ.BLENDET'); }
+    if (!empty($e['daemmen']))  { $t[] = fb_t('FB_SATZ.DAEMMUNG'); }
     if (isset($e['gefahren']) && (int) $e['gefahren'] === 0 && !empty($e['gemeldet'])) {
-        $t[] = sprintf('Loxone meldet Stellung %d Prozent - das passt nicht zur Forderung',
-                       (int) $e['stellung']);
+        $t[] = sprintf(fb_t('FB_SATZ.STELLUNG'), (int) $e['stellung']);
     }
-    $t[] = sprintf('Urteil %+d', (int) $e['urteil']);
+    $t[] = sprintf(fb_t('FB_SATZ.URTEIL'), (int) $e['urteil']);
     return implode('; ', $t) . '.';
 }
 
@@ -2007,11 +2275,19 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     if (fb_upgrade_laeuft()) {
         fb_log('Eine Aktualisierung laeuft (Marke ' . basename($p['marke'])
              . ') - dieser Lauf setzt aus.');
-        return array(false, fb_stand());
+        /* C6 (Durchgang 30.09.2026): das dritte Feld nennt den Grund, aus dem
+         * nicht gerechnet wurde - 'aktualisierung', 'takt' oder 'sperre';
+         * leer, wenn gerechnet wurde. Bis 0.12.10 meldete die Oberflaeche
+         * "es wurde sofort neu gerechnet", auch wenn die Sperre belegt war
+         * (gemessen, Code-Pruefer Nr. 8). */
+        return array(false, fb_stand(), 'aktualisierung');
     }
     $cfg = fb_config($erzeugen);
     $vorher = fb_stand();
     $jetzt = time();
+    /* M8: die Abodatei nachfuehren - nur aus Cron und Oberflaeche
+     * ($erzeugen), der Endpunkt schreibt nie nach config/. */
+    if ($erzeugen && $p['home'] !== '') { fb_abo_datei($cfg['mqtt_topic'], true); }
 
     /* EIN STAND AUS DER ZUKUNFT DARF DEN LAUF NICHT ANHALTEN.
      *
@@ -2041,7 +2317,7 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     }
     if (!$erzwingen && $abstand !== null
         && $abstand < (int) $cfg['rechentakt']) {
-        return array(false, $vorher);
+        return array(false, $vorher, 'takt');
     }
 
     /* EINE SPERRE UM DEN GANZEN LAUF.
@@ -2067,7 +2343,7 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     if ($sperre !== false && $sperre !== null) {
         if (!@flock($sperre, LOCK_EX | LOCK_NB)) {
             fclose($sperre);
-            return array(false, $vorher);
+            return array(false, $vorher, 'sperre');
         }
     } else {
         $sperre = null;
@@ -2077,7 +2353,10 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
 
     /* Erst der Tageswechsel, dann die Rechnung: sonst schriebe der erste
      * Lauf nach Mitternacht die Wattstunden von gestern fort. */
-    $bilanz = fb_tageswechsel($cfg, fb_json_lesen($p['bilanz']), $jetzt);
+    /* C3: die Tagesbilanz streng lesen - eine abgeschnittene geht nach
+     * bilanz.json.kaputt, mit einer Zeile, statt still als leer zu gelten. */
+    list($bilanz_roh, ) = fb_langzeit_lesen($p['bilanz']);
+    $bilanz = fb_tageswechsel($cfg, $bilanz_roh, $jetzt);
 
     $stand = fb_rechnen($cfg, $messwerte, $jetzt, $vorher, $bilanz);
 
@@ -2162,7 +2441,19 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
 
     fb_mqtt_senden($cfg, $stand);
     if ($sperre !== null) { @flock($sperre, LOCK_UN); fclose($sperre); }
-    return array(true, $stand);
+    return array(true, $stand, '');
+}
+
+/**
+ * C6: der Satz fuer "es wurde NICHT sofort gerechnet" - nach dem Grund aus
+ * fb_lauf(). Leer, wenn gerechnet wurde.
+ */
+function fb_lauf_grund_text($grund)
+{
+    if ($grund === 'sperre')         { return fb_t('ALLG.NICHT_GERECHNET_SPERRE'); }
+    if ($grund === 'aktualisierung') { return fb_t('ALLG.NICHT_GERECHNET_UPDATE'); }
+    if ($grund === 'takt')           { return fb_t('ALLG.NICHT_GERECHNET_TAKT'); }
+    return '';
 }
 
 /* ==================================================================
@@ -2254,17 +2545,16 @@ function fb_mqtt_wert_saeubern($v)
  *
  * Die Einordnung im Einzelnen, weil sie sich nicht von selbst versteht:
  *
- * RETAINED BLEIBEN SEIT 0.12.10 NUR ZWEI, beide mit derselben Frage
- * geprueft ("wird der Wert allein durch die Uhr falsch?"):
+ * RETAINED BLEIBT SEIT 0.12.11 NUR EINES:
  *   fenster_anzahl
  *       Die Zahl der eingerichteten Fenster - eine Einstellung. Sie aendert
  *       sich nur, wenn jemand die Konfiguration aendert.
  *   bericht
- *       Der Text nennt sein eigenes Datum ("Tagesbericht 2026-09-24: ...")
- *       und beschreibt einen abgeschlossenen Tag; er bleibt wahr, wie ein
- *       absoluter Zeitstempel eines Ereignisses (Regeln/07, Funkwacht
- *       "letzte"). Leer geht er fluechtig hinaus (sonst loeschte er das
- *       zurueckbehaltene Thema).
+ *       FLUECHTIG seit 0.12.11 (M7, Entscheidung Nr. 3 und Frage 14 vom
+ *       29./30.09.2026): der Tagesbericht ist ein Tageswert, und Tages- und
+ *       Monatswerte gehen nie zurueckbehalten hinaus. 0.12.9 bis 0.12.10
+ *       sendeten ihn retained; der Altwert wird ueber 'altlast' abgeraeumt.
+ *       Ohne Bericht geht '-' hinaus, nie eine leere Nutzlast (Nr. 5).
  *
  *   <kuerzel>/urteil, /beschatten, /grund, /begruendung, /urteil30,
  *   /beschatten30, /blendung, /daemmen, /gefahren, dazu beschatten_anzahl,
@@ -2338,15 +2628,15 @@ function fb_mqtt_tabelle()
         'fluechtig'           => array('herz', 'ts', 'strahlung', 'sonne_hoehe', 'sonne_azimut',
                                        'ok', 'saison', 'wh_tag',
                                        'beschatten_anzahl', 'beschatten30_anzahl', 'blendung_anzahl',
-                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung'),
+                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung', 'bericht'),
         'fluechtig_je_fenster' => array('watt', 'glas', 'wh',
                                        'urteil', 'beschatten', 'grund', 'begruendung', 'urteil30',
                                        'beschatten30', 'blendung', 'daemmen', 'gefahren'),
-        'retained'            => array('fenster_anzahl', 'bericht'),
+        'retained'            => array('fenster_anzahl'),
         'retained_je_fenster' => array(),
         'altlast'             => array('ok', 'wh_tag', 'saison',
                                        'beschatten_anzahl', 'beschatten30_anzahl', 'blendung_anzahl',
-                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung'),
+                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung', 'bericht'),
         'altlast_je_fenster'  => array('wh', 'urteil', 'beschatten', 'grund', 'begruendung', 'urteil30',
                                        'beschatten30', 'blendung', 'daemmen', 'gefahren'),
     );
@@ -2371,6 +2661,19 @@ function fb_mqtt_altlast_liste($cfg)
         foreach ($tab['altlast_je_fenster'] as $feld) { $l[] = $k . '/' . $feld; }
     }
     return array_values(array_unique($l));
+}
+
+/**
+ * M6 (Durchgang 30.09.2026): die Filter '+/<feld>' (ohne Praefix) fuer die
+ * Felder, die eine fruehere Fassung je Fenster zurueckbehalten gesendet hat -
+ * dieselben wie in fb_mqtt_leer_themen(). Damit findet auch das Abraeumen im
+ * Betrieb die Reste eines Fensters, das es nicht mehr gibt.
+ */
+function fb_mqtt_altlast_muster()
+{
+    $m = array();
+    foreach (fb_mqtt_tabelle()['altlast_je_fenster'] as $feld) { $m[] = '+/' . $feld; }
+    return $m;
 }
 
 /** Passt ein Thema auf einen Abonnementfilter? Genau oder mit '+' fuer eine Ebene. */
@@ -2576,14 +2879,37 @@ function fb_mqtt_behalten_liste(array $filter)
  * wird einmal nachgefragt. Bauart bw_mqtt_altlast() aus Beschattungswaechter
  * 0.9.21.
  */
-function fb_mqtt_altlast($praefix, array $liste)
+function fb_mqtt_altlast($praefix, array $liste, array $muster = array())
 {
+    /* Rueckgabe seit 0.12.11 zusaetzlich 'extra': volle Themen, die ueber
+     * die Filter $muster ('+/<feld>', M6) gefunden wurden und zu keinem Thema
+     * dieses Laufs gehoeren - Reste entfernter oder umbenannter Fenster und
+     * abgeschalteter Zweige. Sie bekommen eine leere retain-Nutzlast ohne
+     * Wert dahinter; bis 0.12.10 blieben sie stehen, und der Merker entstand
+     * trotzdem (gemessen, MQTT-Pruefer B6: GONE/beschatten 1 nach zehn
+     * Laeufen). Der Merker entsteht weiter NUR, wenn der Broker fuer die
+     * Liste UND die Filter nichts mehr meldet. */
     $praefix = (string) $praefix;
     $p = fb_paths();
     $merker = $p['datadir'] . '/retain_altlast_bestaetigt';
     $kennung = 'leer-bestaetigt ' . $praefix . ': ' . implode(' ', $liste);
     if (is_file($merker) && trim((string) @file_get_contents($merker)) === $kennung) {
-        return array('lage' => 'erledigt', 'themen' => array());
+        return array('lage' => 'erledigt', 'themen' => array(), 'extra' => array());
+    }
+    /* M5 (Durchgang 30.09.2026): war der Broker nicht zu fragen, gehen die
+     * Altthemen hoechstens EINMAL JE STUNDE leer hinaus. Bis 0.12.10 in jedem
+     * Lauf - 26 leere Datagramme vor 39 Werten, bei 25 Fenstern 180 von 417,
+     * ohne Ende (gemessen, MQTT-Pruefer B5); der UDP-Eingang verwirft unter
+     * Last, und das trifft alle Linien. Der Vermerk sagt nur "zuletzt
+     * versucht um"; der Merker "erledigt" haengt weiter allein an der
+     * Antwort des Brokers. */
+    $versuch = $p['datadir'] . '/retain_altlast_versuch';
+    $vz = is_file($versuch) ? trim((string) @file_get_contents($versuch)) : '';
+    if (preg_match('/^([0-9]{1,12}) (.*)\z/s', $vz, $vm) && $vm[2] === $kennung) {
+        $seit = time() - (int) $vm[1];
+        if ($seit >= -300 && $seit < 3600) {
+            return array('lage' => 'pause', 'themen' => array(), 'extra' => array());
+        }
     }
     $voll = array();
     $zurueck = array();
@@ -2592,30 +2918,37 @@ function fb_mqtt_altlast($praefix, array $liste)
         $voll[] = $v;
         $zurueck[$v] = $t;
     }
-    $f = fb_mqtt_behalten_liste($voll);
+    $filter_m = array();
+    foreach ($muster as $m) { $filter_m[] = fb_mqtt_thema($praefix) . '/' . $m; }   // '+' nicht saeubern
+    $f = fb_mqtt_behalten_liste(array_merge($voll, $filter_m));
+    if ($f['lage'] === 'ok') { @unlink($versuch); }
     if ($f['lage'] === 'ok' && !$f['belegt']) {
         if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
         if (@file_put_contents($merker, $kennung . "\n") !== false) {
             fb_log('MQTT: unter ' . $praefix . '/ steht keiner der frueher zurueckbehaltenen Werte '
                  . 'mehr im Broker (' . implode(', ', $liste) . '; vom Broker bestaetigt).');
         }
-        return array('lage' => 'erledigt', 'themen' => array());
+        return array('lage' => 'erledigt', 'themen' => array(), 'extra' => array());
     }
     if ($f['lage'] === 'ok') {
         $t = array();
+        $extra = array();
         foreach (array_keys($f['belegt']) as $v) {
-            if (isset($zurueck[$v])) { $t[] = $zurueck[$v]; }
+            if (isset($zurueck[$v])) { $t[] = $zurueck[$v]; } else { $extra[] = $v; }
         }
         fb_log_wenn_neu('altlast', 'MQTT: im Broker stehen noch zurueckbehaltene Altwerte unter '
-            . $praefix . '/ (' . implode(', ', $t) . ') - sie gehen mit leerer Nutzlast unmittelbar '
-            . 'vor dem gueltigen Wert hinaus; der naechste Lauf fragt wieder nach.');
-        return array('lage' => 'belegt', 'themen' => $t);
+            . $praefix . '/ (' . implode(', ', array_merge($t, $extra)) . ') - sie gehen mit leerer '
+            . 'Nutzlast hinaus, die Themen dieses Laufs unmittelbar vor dem gueltigen Wert; der '
+            . 'naechste Lauf fragt wieder nach.');
+        return array('lage' => 'belegt', 'themen' => $t, 'extra' => $extra);
     }
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    @file_put_contents($versuch, time() . ' ' . $kennung . "\n");
     fb_log_wenn_neu('altlast', 'MQTT: der Broker liess sich nicht befragen (Brokerhost, '
         . 'Brokerport und Zugangsdaten in general.json) - die frueher zurueckbehaltenen Werte unter '
-        . $praefix . '/ gehen deshalb in jedem Lauf mit leerer Nutzlast unmittelbar vor dem '
-        . 'gueltigen Wert hinaus. Siehe README.');
-    return array('lage' => 'unbekannt', 'themen' => $liste);
+        . $praefix . '/ gehen deshalb hoechstens einmal je Stunde mit leerer Nutzlast unmittelbar '
+        . 'vor dem gueltigen Wert hinaus; ob sie danach fort sind, ist nicht nachgeprueft. Siehe README.');
+    return array('lage' => 'unbekannt', 'themen' => $liste, 'extra' => array());
 }
 
 /**
@@ -2660,15 +2993,38 @@ function fb_mqtt_leer_themen($cfg)
  * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas bzw.
  * der Eingang war nicht erreichbar, 2 nicht moeglich.
  */
-function fb_mqtt_leeren($runden = 3, $pause_us = 1000000)
+function fb_mqtt_leeren($runden = 3, $pause_us = 1000000, $praefix = null, $cfg = null)
 {
-    $cfg = fb_config(false);
-    $w = (string) $cfg['mqtt_topic'];
+    $e = fb_mqtt_leeren_unter($runden, $pause_us, $praefix, $cfg);
+    foreach ($e['zeilen'] as $z) { echo $z . "\n"; }
+    return $e['rc'];
+}
+
+/**
+ * M4 (Durchgang 30.09.2026): das Leeren fuer ein BELIEBIGES Praefix und eine
+ * mitgegebene Konfiguration - fuer den Praefixwechsel und das Abschalten im
+ * Reiter MQTT und fuer das zuletzt verlassene Praefix bei der
+ * Deinstallation. Ablauf, Meldungen und Rueckgabe wie fb_mqtt_leeren(); die
+ * Zeilen kommen als Liste zurueck, dazu 'art' fuer die Oberflaeche:
+ * 'leer' (nichts stand da), 'geleert' (nachgelesen, fort), 'rest' (steht
+ * noch), 'ungeprueft' (gesendet, nicht nachgelesen), 'kein_port',
+ * 'udp_weg', 'ungueltig' (Praefix unbrauchbar).
+ */
+function fb_mqtt_leeren_unter($runden = 3, $pause_us = 1000000, $praefix = null, $cfg = null)
+{
+    $aus = array('rc' => 2, 'art' => 'ungueltig', 'zeilen' => array(), 'offen' => array());
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    $w = ($praefix === null) ? (string) $cfg['mqtt_topic'] : (string) $praefix;
+    if (!fb_thema_gueltig($w)) {
+        $aus['zeilen'][] = '<WARNING> MQTT: das Praefix "' . $w . '" ist kein gueltiges Thema - nichts geleert.';
+        return $aus;
+    }
     $z = fb_mqtt_zustand();
     if ($z['udpport'] < 1 || $z['udpport'] > 65535) {
-        echo '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
-           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.' . "\n";
-        return 2;
+        $aus['art'] = 'kein_port';
+        $aus['zeilen'][] = '<INFO> MQTT: in der general.json steht kein UDP-Eingangsport des Gateways - '
+           . 'zurueckbehaltene Themen unter ' . $w . '/ wurden nicht geleert.';
+        return $aus;
     }
     list($genau, $muster) = fb_mqtt_leer_themen($cfg);
     $g = array();
@@ -2679,18 +3035,22 @@ function fb_mqtt_leeren($runden = 3, $pause_us = 1000000)
     $nachgelesen = ($f['lage'] === 'ok');
     $offen = $nachgelesen ? array_keys($f['belegt']) : $g;
     if ($nachgelesen && !$offen) {
-        echo '<OK> MQTT: der Broker bestaetigt: unter ' . $w . '/ steht keines der Themen dieses '
-           . 'Plugins zurueckbehalten - nichts zu leeren.' . "\n";
-        return 0;
+        $aus['rc'] = 0;
+        $aus['art'] = 'leer';
+        $aus['zeilen'][] = '<OK> MQTT: der Broker bestaetigt: unter ' . $w . '/ steht keines der Themen dieses '
+           . 'Plugins zurueckbehalten - nichts zu leeren.';
+        return $aus;
     }
     $eno = 0;
     $etxt = '';
     $fp = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $eno, $etxt, 2);
     if (!$fp) {
-        echo '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
+        $aus['rc'] = 1;
+        $aus['art'] = 'udp_weg';
+        $aus['zeilen'][] = '<WARNING> MQTT: der UDP-Eingang des Gateways ist nicht erreichbar (Port '
            . (int) $z['udpport'] . ') - zurueckbehaltene Themen unter ' . $w
-           . '/ wurden nicht geleert.' . "\n";
-        return 1;
+           . '/ wurden nicht geleert.';
+        return $aus;
     }
     $zu_leeren = count($offen);
     $datagramme = 0;
@@ -2716,24 +3076,90 @@ function fb_mqtt_leeren($runden = 3, $pause_us = 1000000)
         }
     }
     fclose($fp);
-    echo '<INFO> MQTT: ' . $zu_leeren . ' Themen unter ' . $w . '/ mit leerer Nutzlast an den '
+    $aus['zeilen'][] = '<INFO> MQTT: ' . $zu_leeren . ' Themen unter ' . $w . '/ mit leerer Nutzlast an den '
        . 'UDP-Eingang ' . (int) $z['udpport'] . ' des Gateways gesendet (' . $gelaufen
-       . ' Runde(n), ' . $datagramme . ' Datagramme).' . "\n";
+       . ' Runde(n), ' . $datagramme . ' Datagramme).';
+    $aus['offen'] = $offen;
     if ($nachgelesen && !$offen) {
-        echo '<OK> MQTT: der Broker bestaetigt: keines davon steht mehr zurueckbehalten.' . "\n";
-        return 0;
+        $aus['rc'] = 0;
+        $aus['art'] = 'geleert';
+        $aus['zeilen'][] = '<OK> MQTT: der Broker bestaetigt: keines davon steht mehr zurueckbehalten.';
+        return $aus;
     }
     if ($nachgelesen) {
-        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+        $aus['rc'] = 1;
+        $aus['art'] = 'rest';
+        $aus['zeilen'][] = '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
-        return 1;
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).';
+        return $aus;
     }
-    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+    $aus['rc'] = 0;
+    $aus['art'] = 'ungeprueft';
+    $aus['zeilen'][] = '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
        . 'verwirft unter Last Datagramme, und Fenster, die es nicht mehr gibt, sind ohne '
        . 'Rueckfrage nicht zu finden; was stehen bleibt, laesst sich mit '
-       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
-    return 0;
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.';
+    return $aus;
+}
+
+/**
+ * M4: aus dem Reiter MQTT abraeumen (Praefixwechsel, Abschalten). Die
+ * Zeilen gehen ins Protokoll, die Seite bekommt einen Satz nach 'art'.
+ * Rueckgabe: der Satz fuer die Seite.
+ */
+function fb_mqtt_abraeumen($praefix, $cfg, $anlass)
+{
+    $e = fb_mqtt_leeren_unter(2, 300000, $praefix, $cfg);
+    $zeilen = array();
+    foreach ($e['zeilen'] as $z) { $zeilen[] = trim(preg_replace('/^<[A-Z]+>\s*/', '', $z)); }
+    fb_log('MQTT abraeumen (' . $anlass . ', ' . $praefix . '/): ' . implode(' / ', $zeilen));
+    $schluessel = array('leer' => 'MQTT.RAEUMEN_LEER', 'geleert' => 'MQTT.RAEUMEN_GELEERT',
+                        'rest' => 'MQTT.RAEUMEN_REST', 'ungeprueft' => 'MQTT.RAEUMEN_UNGEPRUEFT',
+                        'kein_port' => 'MQTT.RAEUMEN_NICHT', 'udp_weg' => 'MQTT.RAEUMEN_NICHT',
+                        'ungueltig' => 'MQTT.RAEUMEN_NICHT');
+    return sprintf(fb_t($schluessel[$e['art']]), $praefix, count($e['offen']));
+}
+
+/**
+ * M8 (Durchgang 30.09.2026): die Abodatei des MQTT-Gateways,
+ * config/plugins/<ordner>/mqtt_subscriptions.cfg, mit einer Zeile
+ * "<praefix>/#".
+ *
+ * Das Gateway V1 liest diese Datei jedes installierten Plugins und abonniert
+ * daraus (Regeln/07, am Geraet belegt 13.09.2026, Midea2Lox). Bis 0.12.10
+ * lieferte die Linie keine; unter V1 kam ohne Handeintrag nichts an, nach
+ * einem Praefixwechsel auch mit dem alten nicht (MQTT-Pruefer B8). Das Archiv
+ * bringt "fenster/#" mit; beim Speichern des Praefixes und im Lauf
+ * (angemeldet bzw. Cron, nie aus dem Endpunkt) wird sie nachgefuehrt, NUR
+ * wenn sie abweicht (Bauart Einspeisebremse 0.9.20, BatterieBMS 0.9.30). Ob
+ * Gateway V2 sie liest, ist NICHT gemessen.
+ *
+ * Rueckgabe array(pfad, steht das Praefix darin?).
+ */
+function fb_abo_datei($praefix, $schreiben = false)
+{
+    $p = fb_paths();
+    $pfad = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $pr = fb_thema_gueltig($praefix) ? $praefix : 'fenster';
+    $soll = $pr . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $p['home'] !== '' && $roh !== $soll . "\n" && is_dir($p['configdir'])) {
+        $tmp = $pfad . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(3));
+        $inhalt = $soll . "\n";
+        $ok = (@file_put_contents($tmp, $inhalt) === strlen($inhalt));
+        if ($ok) { @chmod($tmp, 0644); $ok = @rename($tmp, $pfad); }
+        if (!$ok) { @unlink($tmp); }
+        if ($ok) {
+            fb_log('MQTT: Abodatei des Gateways gesetzt: ' . $soll . ' (' . $pfad . ').');
+            $da = true;
+        } else {
+            fb_log_wenn_neu('abo_datei', 'MQTT: die Abodatei ' . $pfad . ' liess sich nicht '
+                . 'schreiben - unter Gateway V1 muss das Abo ' . $soll . ' von Hand eingetragen werden.');
+        }
+    }
+    return array($pfad, $da);
 }
 
 function fb_mqtt_themen()
@@ -2796,6 +3222,35 @@ function fb_mqtt_themen()
  * Zusammengehalten werden die beiden jetzt von fb_mqtt_kongruent(), und die
  * Zeile steht im Reiter Test.
  */
+/** M3: die Zahl der eingerichteten Fenster - aus der Konfiguration, nicht aus der Rechnung. */
+function fb_fenster_zahl($cfg)
+{
+    $n = 0;
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+        if (is_array($f) && isset($f['kuerzel']) && (string) $f['kuerzel'] !== '') { $n++; }
+    }
+    return $n;
+}
+
+/**
+ * M3: wurde der Tagesteil (saison) in diesem Stand wirklich gerechnet? Ohne
+ * Standort oder ohne gueltige Prognose nicht - fb_rechnen() legt dann
+ * prognose -99 ab bzw. rechnet gar nicht.
+ */
+function fb_saison_gerechnet($stand)
+{
+    return isset($stand['saison'], $stand['prognose']) && (float) $stand['prognose'] > -99.0;
+}
+
+/** M3: die Themen, die in diesem Stand nicht gerechnet wurden und deshalb fehlen. */
+function fb_mqtt_ungerechnet($stand)
+{
+    $u = array();
+    if (!isset($stand['sonne_hoehe'])) { $u[] = 'sonne_hoehe'; $u[] = 'sonne_azimut'; }
+    if (!fb_saison_gerechnet($stand)) { $u[] = 'saison'; }
+    return $u;
+}
+
 function fb_mqtt_nachrichten($cfg, $stand)
 {
     $m = array(
@@ -2807,14 +3262,22 @@ function fb_mqtt_nachrichten($cfg, $stand)
         'herz'              => (isset($stand['ts']) && (int) $stand['ts'] > 0)
                                ? (int) floor((time() - (int) $stand['ts']) / 60) : -1,
         'ts'                => isset($stand['ts']) ? (int) $stand['ts'] : 0,
-        'fenster_anzahl'    => isset($stand['anzahl']) ? (int) $stand['anzahl'] : 0,
+        /* M3 (Durchgang 30.09.2026): aus der KONFIGURATION gezaehlt. Bis
+         * 0.12.10 kam die Zahl aus der Rechnung und stand ohne Standort
+         * retained auf 0, obwohl drei Fenster eingerichtet waren (gemessen,
+         * MQTT-Pruefer B3, L6). */
+        'fenster_anzahl'    => fb_fenster_zahl($cfg),
         'beschatten_anzahl' => isset($stand['beschatten_anzahl']) ? (int) $stand['beschatten_anzahl'] : 0,
-        'sonne_hoehe'       => isset($stand['sonne_hoehe']) ? $stand['sonne_hoehe'] : 0,
-        'sonne_azimut'      => isset($stand['sonne_azimut']) ? $stand['sonne_azimut'] : 0,
-        'saison'            => isset($stand['saison']) ? (int) $stand['saison'] : 0,
-        'strahlung'         => isset($stand['strahlung']) ? $stand['strahlung'] : -1,
-        'wh_tag'            => isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0,
     );
+    /* M3: was nicht gerechnet wurde, geht nicht hinaus - keine erfundene 0.
+     * Sonnenhoehe 0 hiesse Horizont, saison 0 "neutral" (MQTT-Pruefer B3). */
+    if (isset($stand['sonne_hoehe'])) {
+        $m['sonne_hoehe']  = $stand['sonne_hoehe'];
+        $m['sonne_azimut'] = isset($stand['sonne_azimut']) ? $stand['sonne_azimut'] : 0;
+    }
+    if (fb_saison_gerechnet($stand)) { $m['saison'] = (int) $stand['saison']; }
+    $m['strahlung'] = isset($stand['strahlung']) ? $stand['strahlung'] : -1;
+    $m['wh_tag']    = isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0;
     /* Welche Zweige es gibt, entscheidet DIESELBE Funktion, die auch die
      * Tabelle im Reiter MQTT fuellt - sonst laufen Anleitung und Wirklichkeit
      * auseinander. Die Kongruenzprobe im Reiter Test haelt beide gegeneinander. */
@@ -2844,7 +3307,11 @@ function fb_mqtt_nachrichten($cfg, $stand)
          * Hier geht der zuletzt geschriebene mit, damit ein Abonnent, der
          * spaeter dazukommt, ihn ueberhaupt sieht. */
         $b = fb_json_lesen(fb_paths()['bilanz']);
-        $m['bericht'] = isset($b['letzter_bericht']) ? (string) $b['letzter_bericht'] : '';
+        /* M1 (Entscheidung Nr. 5): ohne Bericht '-', nie eine leere Nutzlast.
+         * Bis 0.12.10 ging bis zur Berichtsstunde in jedem Lauf "publish
+         * fenster/bericht " leer hinaus (gemessen, MQTT-Pruefer B1). */
+        $m['bericht'] = (isset($b['letzter_bericht']) && is_string($b['letzter_bericht'])
+                         && trim($b['letzter_bericht']) !== '') ? $b['letzter_bericht'] : '-';
     }
     foreach ((isset($stand['fenster']) ? $stand['fenster'] : array()) as $e) {
         $k = $e['kuerzel'];
@@ -2855,7 +3322,9 @@ function fb_mqtt_nachrichten($cfg, $stand)
         $m[$k . '/watt']        = (int) $e['watt'];
         $m[$k . '/glas']        = (int) $e['glas'];
         $m[$k . '/wh']          = (int) $e['wh'];
-        $m[$k . '/begruendung'] = (string) $e['begruendung'];
+        /* M2 (Nr. 5): ein abgeschaltetes Fenster hat keine Begruendung - es
+         * geht '-' hinaus statt einer leeren Nutzlast (MQTT-Pruefer B2). */
+        $m[$k . '/begruendung'] = ((string) $e['begruendung'] !== '') ? (string) $e['begruendung'] : '-';
         if (isset($themen['<kuerzel>/urteil30'])) {
             $m[$k . '/urteil30']     = isset($e['urteil30']) ? (int) $e['urteil30'] : 0;
             $m[$k . '/beschatten30'] = isset($e['beschatten30']) ? (int) $e['beschatten30'] : 0;
@@ -2909,7 +3378,7 @@ function fb_mqtt_senden($cfg, $stand)
     foreach (fb_mqtt_altlast_liste($cfg) as $t) {
         if (isset($nachrichten[$t])) { $liste[] = $t; }
     }
-    $alt = fb_mqtt_altlast($praefix, $liste);
+    $alt = fb_mqtt_altlast($praefix, $liste, fb_mqtt_altlast_muster());
     foreach ($alt['themen'] as $t) { $weg[$t] = true; }
     $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
     if (!$s) {
@@ -2960,6 +3429,17 @@ function fb_mqtt_senden($cfg, $stand)
         if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']) !== false) {
             $gesendet++;
             if ($retain) { $zurueckbehalten++; }
+        }
+    }
+    /* M6: Reste, die zu keinem Thema dieses Laufs gehoeren (entfernte
+     * Fenster, abgeschaltete Zweige) - leere retain-Nutzlast, kein Wert
+     * dahinter. Sie stehen unter keinem Eingang, den das Plugin noch
+     * bedient. */
+    foreach ($alt['extra'] as $t) {
+        $leer = 'retain ' . $t . ' ';
+        if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
+        if (@socket_sendto($s, $leer, strlen($leer), 0, '127.0.0.1', $z['udpport']) !== false) {
+            $geraeumt++;
         }
     }
     socket_close($s);
@@ -3016,7 +3496,11 @@ function fb_felder($cfg = null)
          * immer in der Vorlage, auch wenn der Bilanzterm abgeschaltet ist -
          * ansehen soll man sie von Anfang an, benutzen erst dann, wenn man
          * sie kennt. */
-        'WH'         => array('Wh',     0,   99999, 'FB_FELD.WH'),
+        /* O15 (Durchgang 30.09.2026): 30 m2 Glas mal 95 Prozent g-Wert mal
+         * rund 5 kWh/m2 am Tag sind etwa 142 500 Wh - mit 99999 kappte Loxone
+         * den Tageswert eines grossen Fensters still (Oberflaeche-Pruefer
+         * Nr. 15, gerechnet). 500 000 laesst Reserve. */
+        'WH'         => array('Wh',     0,   500000, 'FB_FELD.WH'),
         /* GLAS - die Leistung, die gerade durch die Scheibe kommt.
          *
          * Sie ging bis 0.12.6 ueber MQTT hinaus (<kuerzel>/glas), fehlte
@@ -3068,8 +3552,10 @@ function fb_summenfelder($cfg = null)
         'HERZ'       => array('min',  -1,   43200,      'FB_FELD.HERZ'),
         'FENSTER'    => array('',      0,   99,         'FB_FELD.FENSTER'),
         'BESCHATTEN' => array('',      0,   99,         'FB_FELD.S_BESCHATTEN'),
-        'SONNE_H'    => array('Grad', -90,  90,         'FB_FELD.SONNE_H'),
-        'SONNE_AZ'   => array('Grad',  0,   360,        'FB_FELD.SONNE_AZ'),
+        /* O16: das Gradzeichen statt des deutschen Worts - es steht in der
+         * Tabelle beider Sprachen und als Unit in der Vorlage. */
+        'SONNE_H'    => array('°', -90,  90,         'FB_FELD.SONNE_H'),
+        'SONNE_AZ'   => array('°',  0,   360,        'FB_FELD.SONNE_AZ'),
         'SAISON'     => array('',     -100, 100,        'FB_FELD.SAISON'),
         /* 1600 wie die Annahmegrenze in fb_messgroessen(). Bis 0.12.6
          * standen hier 1400, waehrend der Endpunkt bis 1600 annahm - und
@@ -3111,11 +3597,14 @@ function fb_felderwerte($stand, $cfg = null)
     if ($cfg === null) { $cfg = fb_config(false); }
     $w = array(
         'OK'         => isset($stand['ok']) ? (int) $stand['ok'] : 0,
-        'FENSTER'    => isset($stand['anzahl']) ? (int) $stand['anzahl'] : 0,
+        /* M3: dieselben Regeln wie fb_mqtt_nachrichten(). Nicht Gerechnetes
+         * steht als '-' in der Zeile (fb_zeile() gibt Nichtzahlen als Strich
+         * aus), nicht als erfundene 0. */
+        'FENSTER'    => fb_fenster_zahl($cfg),
         'BESCHATTEN' => isset($stand['beschatten_anzahl']) ? (int) $stand['beschatten_anzahl'] : 0,
-        'SONNE_H'    => isset($stand['sonne_hoehe']) ? round($stand['sonne_hoehe'], 1) : 0,
-        'SONNE_AZ'   => isset($stand['sonne_azimut']) ? round($stand['sonne_azimut'], 1) : 0,
-        'SAISON'     => isset($stand['saison']) ? (int) $stand['saison'] : 0,
+        'SONNE_H'    => isset($stand['sonne_hoehe']) ? round($stand['sonne_hoehe'], 1) : '-',
+        'SONNE_AZ'   => isset($stand['sonne_azimut']) ? round($stand['sonne_azimut'], 1) : '-',
+        'SAISON'     => fb_saison_gerechnet($stand) ? (int) $stand['saison'] : '-',
         'STRAHLUNG'  => isset($stand['strahlung']) ? $stand['strahlung'] : -1,
         'TS'         => isset($stand['ts']) ? (int) $stand['ts'] : 0,
         'WH_TAG'     => isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0,
@@ -3173,6 +3662,9 @@ function fb_mqtt_kongruent()
         }
     }
     $ist = array_keys(fb_mqtt_nachrichten(fb_config(false), $stand));
+    /* M3: was in diesem Stand nicht gerechnet wurde, geht nicht hinaus -
+     * das ist kein Auseinanderlaufen der Listen. */
+    $soll = array_values(array_diff($soll, fb_mqtt_ungerechnet($stand)));
     sort($soll); sort($ist);
     $fehlt = array_diff($soll, $ist);
     $zuviel = array_diff($ist, $soll);
@@ -3216,13 +3708,44 @@ function fb_einheit($e)
     return $e === '' ? '<v.0>' : ('<v.0> ' . $e);
 }
 
+/**
+ * O14 (Durchgang 30.09.2026): der Rechner, unter dem der Miniserver diesen
+ * LoxBerry erreicht - fuer Adresstabelle und Vorlagen.
+ *
+ * Wird die Oberflaeche ueber eine Rueckschleife aufgerufen (127.*, localhost,
+ * ::1), stand bis 0.12.10 genau diese in Vorlage und Tabelle (gemessen,
+ * Oberflaeche-Pruefer Nr. 14) - im Miniserver zeigt sie auf den Miniserver
+ * selbst. Dann gilt der Rechnername (Regeln/07, Raumklima 0.11.8); ein Port
+ * bleibt stehen. Die Bauliste nannte "die Adresse aus general.json": die
+ * general.json des Geraets traegt keinen Netzwerkblock (gemessen,
+ * Geraet/2026-09-28/10_general_schluessel.json).
+ */
+function fb_host()
+{
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:\[\]]/', '', (string) $_SERVER['HTTP_HOST']) : '';
+    $nur = $host;
+    $port = '';
+    if (preg_match('/^(\[[^\]]*\])(:\d+)?\z/', $host, $m)) {
+        $nur = trim($m[1], '[]');
+        $port = isset($m[2]) ? $m[2] : '';
+    } elseif (substr_count($host, ':') === 1) {
+        list($nur, $pz) = explode(':', $host, 2);
+        $port = preg_match('/^\d+\z/', $pz) ? ':' . $pz : '';
+    }
+    $klein = strtolower($nur);
+    if ($host === '' || $klein === 'localhost' || strpos($klein, '127.') === 0
+        || $klein === '::1' || $klein === '0:0:0:0:0:0:0:1') {
+        $name = gethostname();
+        return ((is_string($name) && $name !== '') ? $name : 'loxberry') . $port;
+    }
+    return $host;
+}
+
 function fb_endpunkt()
 {
     $p = fb_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
-    return 'http://' . $host . '/plugins/' . $p['plugin'] . '/index.php';
+    return 'http://' . fb_host() . '/plugins/' . $p['plugin'] . '/index.php';
 }
 
 /**
@@ -3354,6 +3877,37 @@ function fb_xml_virtual_out($kopf, $cmds)
     return $o;
 }
 
+/**
+ * O13 (Durchgang 30.09.2026): der Kachelname eines Befehls, hoechstens 40
+ * Zeichen. Der Comment eines virtuellen Eingangs wird in Loxone Config zum
+ * Namen der Kachel; bis 0.12.10 stand dort der ganze Erklaersatz - 22 von 26
+ * ueber 40 Zeichen, der laengste 103 (gemessen, Oberflaeche-Pruefer Nr. 13).
+ * Die Kurznamen stehen im Abschnitt FB_KACHEL der Sprachdatei, deckungsgleich
+ * mit FB_FELD und FB_MESS (Bauart Raumklima 0.11.8, Regeln/07); der lange
+ * Satz bleibt der Tabelle der Oberflaeche. Vorsatz ist der Fenstername, wenn
+ * er passt, sonst das Kuerzel. Abgeschnitten wird nur als letzte Linie.
+ */
+function fb_kachel($schluessel, $vorsatz = '')
+{
+    $teile = explode('.', (string) $schluessel, 2);
+    $k = 'FB_KACHEL.' . ($teile[0] === 'FB_MESS' ? 'M_' : '') . (isset($teile[1]) ? $teile[1] : '');
+    $kurz = fb_klartext($k);
+    if ($kurz === $k) { $kurz = fb_klartext($schluessel); }
+    $s = trim($vorsatz . ' ' . $kurz);
+    if (preg_match('/^.{0,40}/us', $s, $m)) { return rtrim($m[0]); }
+    return substr($s, 0, 40);
+}
+
+/** O13: der Vorsatz je Fenster - der Name, wenn Name und Kurzname zusammen passen. */
+function fb_kachel_vorsatz($f, $schluessel)
+{
+    $name = trim((string) $f['name']);
+    if ($name !== '' && preg_match_all('/./us', $name . ' ' . fb_kachel($schluessel)) <= 40) {
+        return $name;
+    }
+    return (string) $f['kuerzel'];
+}
+
 /** Die Vorlage der virtuellen EINGAENGE. Rueckgabe: array(Name, Inhalt). */
 function fb_vorlage()
 {
@@ -3362,7 +3916,7 @@ function fb_vorlage()
     foreach (fb_summenfelder($cfg) as $feld => $info) {
         $cmds[] = array(
             'title'   => 'FB_' . $feld,
-            'comment' => fb_klartext($info[3]),
+            'comment' => fb_kachel($info[3]),
             'check'   => fb_muster($feld),
             'min'     => $info[1],
             'max'     => $info[2],
@@ -3373,8 +3927,7 @@ function fb_vorlage()
         foreach (fb_felder($cfg) as $feld => $info) {
             $cmds[] = array(
                 'title'   => fb_titel($f, $feld),
-                'comment' => ($f['name'] !== '' ? $f['name'] : $f['kuerzel'])
-                           . ': ' . fb_klartext($info[3]),
+                'comment' => fb_kachel($info[3], fb_kachel_vorsatz($f, $info[3])),
                 'check'   => fb_muster(strtoupper($f['kuerzel']) . $feld),
                 'min'     => $info[1],
                 'max'     => $info[2],
@@ -3403,7 +3956,7 @@ function fb_vorlage_out()
     foreach (fb_messgroessen() as $name => $info) {
         $cmds[] = array(
             'title'   => 'FB_SET_' . strtoupper($name),
-            'comment' => fb_klartext($info[2]) . ' (' . $info[1] . ')',
+            'comment' => fb_kachel($info[2]),       // O13, die Einheit haengt Loxone an
             'cmd'     => $basis . $name . '&v=<v.0>',
         );
     }
@@ -3415,8 +3968,7 @@ function fb_vorlage_out()
         foreach (fb_fenster() as $f) {
             $cmds[] = array(
                 'title'   => 'FB_SET_STELLUNG_' . strtoupper($f['kuerzel']),
-                'comment' => fb_klartext('FB_MESS.STELLUNG') . ': '
-                           . ($f['name'] !== '' ? $f['name'] : $f['kuerzel']),
+                'comment' => fb_kachel('FB_MESS.STELLUNG', fb_kachel_vorsatz($f, 'FB_MESS.STELLUNG')),
                 'cmd'     => $basis . 'stellung.' . strtolower($f['kuerzel']) . '&v=<v.0>',
             );
         }
@@ -3430,22 +3982,18 @@ function fb_vorlage_out()
     foreach ($raeume as $raum => $bezeichnung) {
         $cmds[] = array(
             'title'   => 'FB_SET_IST_' . strtoupper($raum),
-            'comment' => fb_klartext('FB_MESS.RAUM_IST') . ': ' . $raum,
+            'comment' => fb_kachel('FB_MESS.RAUM_IST', $raum),
             'cmd'     => $basis . 'ist.' . $raum . '&v=<v.0>',
         );
         $cmds[] = array(
             'title'   => 'FB_SET_GRENZE_' . strtoupper($raum),
-            'comment' => fb_klartext('FB_MESS.RAUM_GRENZE') . ': ' . $raum,
+            'comment' => fb_kachel('FB_MESS.RAUM_GRENZE', $raum),
             'cmd'     => $basis . 'grenze.' . $raum . '&v=<v.0>',
         );
     }
-    $p = fb_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
     return array('VQ_FENSTERBILANZ.xml', fb_xml_virtual_out(array(
         'title'   => 'Fensterbilanz Messwerte',
-        'address' => 'http://' . $host,
+        'address' => 'http://' . fb_host(),     // O14
         'comment' => sprintf(fb_klartext('FB_XML.KOPF_OUT'), date('d.m.Y')),
     ), $cmds));
 }
@@ -3504,7 +4052,13 @@ function fb_zeile($stand, $hoechstalter = null)
     if ($hoechstalter === null) {
         $hoechstalter = (int) $cfg['hoechstalter'];
     }
-    if ($alter > (int) $hoechstalter) {
+    /* C4 (Durchgang 30.09.2026, Entscheidung Nr. 4): die Grenze fuer den
+     * STAND ist hoechstens das Dreifache des Takts (900 s). Das
+     * Messwert-Hoechstalter darf sie enger machen, nie weiter. Bis 0.12.10
+     * galt allein hoechstalter (bis 86400): ein zwei Stunden alter Stand ging
+     * mit OK=1 und BESCHATTEN=1 hinaus (gemessen, Code-Pruefer Nr. 7). */
+    $grenze = min((int) $hoechstalter, 3 * FB_TAKT);
+    if ($alter > $grenze) {
         $o = 'FENSTERBILANZ';
         foreach (fb_summenfelder($cfg) as $feld => $info) {
             if ($feld === 'HERZ')          { $o .= ';HERZ=' . $herz; }
@@ -3706,6 +4260,20 @@ function fb_tageswechsel($cfg, $bilanz, $jetzt)
     }
     $bilanz = array_merge(fb_bilanz_leer($heute), $bilanz);
     if ($bilanz['datum'] === $heute) { return $bilanz; }
+    /* C8 (Durchgang 30.09.2026): gewechselt wird nur, wenn das Datum
+     * VORLAEUFT. Springt die Uhr ueber Mitternacht zurueck (Neustart ohne
+     * Batterieuhr, Zeitkorrektur), schrieb der Wechsel bis 0.12.10 einen
+     * Zwanzig-Minuten-Tag als Lerntag und setzte die Tagesbilanz auf 0
+     * (gemessen am Funktionsersatz, Code-Pruefer Nr. 10). Y-m-d laesst sich
+     * als Zeichenkette vergleichen. */
+    if (preg_match('/^\d{4}-\d{2}-\d{2}\z/', (string) $bilanz['datum'])
+        && strcmp($heute, (string) $bilanz['datum']) < 0) {
+        fb_log_wenn_neu('uhrsprung_bilanz', sprintf('Die Uhr steht hinter dem Datum der '
+            . 'Tagesbilanz (%s, jetzt %s). Es wird kein Tageswechsel geschrieben und nichts '
+            . 'zurueckgesetzt, bis die Uhr das Datum wieder erreicht.',
+            (string) $bilanz['datum'], $heute));
+        return $bilanz;
+    }
 
     /* Der Tag ist vorbei. Was er ergeben hat, wandert in die beiden
      * Langzeitdateien - und zwar NUR hier, einmal am Tag. */
@@ -3799,7 +4367,10 @@ function fb_bilanz_fortschreiben($cfg, $stand, $bilanz, $messwerte, $jetzt)
 function fb_lernen_ablegen($bilanz)
 {
     $p = fb_paths();
-    $daten = fb_json_lesen($p['lernen']);
+    /* C3: streng lesen; ist die Datei kaputt, wird dieser Tag ausgelassen
+     * statt eine Reihe mit einem einzigen Tag darueberzuschreiben. */
+    list($daten, $zustand) = fb_langzeit_lesen($p['lernen']);
+    if ($zustand === 'kaputt') { return false; }
     foreach ((isset($bilanz['raeume']) ? $bilanz['raeume'] : array()) as $raum => $wh) {
         if ((float) $wh < 200.0) { continue; }
         if (!isset($bilanz['minmax'][$raum])) { continue; }
@@ -3865,7 +4436,9 @@ function fb_pv_ablegen($bilanz)
 {
     if ((float) $bilanz['strahlung'] <= 0.0 || (float) $bilanz['pv'] <= 0.0) { return; }
     $p = fb_paths();
-    $daten = fb_json_lesen($p['pv']);
+    /* C3: wie fb_lernen_ablegen(). */
+    list($daten, $zustand) = fb_langzeit_lesen($p['pv']);
+    if ($zustand === 'kaputt') { return false; }
     if (!isset($daten['tage']) || !is_array($daten['tage'])) { $daten['tage'] = array(); }
     $daten['tage'][] = array('d' => $bilanz['datum'],
                              's' => round((float) $bilanz['strahlung'], 1),
@@ -3991,24 +4564,27 @@ function fb_bericht_text($cfg, $bilanz, $stand)
         return isset($stand['fenster'][(string) $nr])
             ? $stand['fenster'][(string) $nr]['kuerzel'] : ('#' . $nr);
     };
-    $t = sprintf('Tagesbericht %s: %.1f kWh Sonneneintrag ueber %d Fenster.',
-                 (string) $bilanz['datum'], $wh / 1000.0, (int) $stand['anzahl']);
+    /* O16 (Durchgang 30.09.2026): aus der Sprachdatei (FB_SATZ.B_*), nicht
+     * mehr deutsch in Umschrift im Quelltext. */
+    $t = sprintf(fb_t('FB_SATZ.B_KOPF'),
+                 (string) $bilanz['datum'], $wh / 1000.0,
+                 isset($stand['anzahl']) ? (int) $stand['anzahl'] : 0);
     $zu = 0;
     foreach ((isset($bilanz['zu_s']) ? $bilanz['zu_s'] : array()) as $sek) {
         if ((int) $sek > 0) { $zu++; }
     }
-    $t .= sprintf(' %d Fenster waren mindestens einmal beschattet.', $zu);
+    $t .= ' ' . sprintf(fb_t('FB_SATZ.B_BESCHATTET'), $zu);
     if ($laengste['s'] > 0) {
-        $t .= sprintf(' Am laengsten %s mit %d Stunden %d Minuten.',
+        $t .= ' ' . sprintf(fb_t('FB_SATZ.B_LAENGSTE'),
                       $name($laengste['nr']), (int) floor($laengste['s'] / 3600),
                       (int) floor(($laengste['s'] % 3600) / 60));
     }
     if ($spitze['w'] > 0) {
-        $t .= sprintf(' Hoechster Eintrag: %s mit %d W um %s.',
+        $t .= ' ' . sprintf(fb_t('FB_SATZ.B_SPITZE'),
                       $name($spitze['nr']), $spitze['w'], date('H:i', $spitze['t']));
     }
     if ((float) $bilanz['strahlung'] > 0.0) {
-        $t .= sprintf(' Einstrahlung des Tages: %.1f kWh je Quadratmeter.',
+        $t .= ' ' . sprintf(fb_t('FB_SATZ.B_STRAHLUNG'),
                       (float) $bilanz['strahlung'] / 1000.0);
     }
     return $t;
@@ -4871,6 +5447,17 @@ function fb_sprache()
         $s = LBSystem::lblanguage();
     } elseif (getenv('LBLANG')) {
         $s = getenv('LBLANG');
+    } else {
+        /* O16 (Durchgang 30.09.2026): Begruendung und Tagesbericht entstehen
+         * seit 0.12.11 aus der Sprachdatei - auch im Cron-Lauf, der das SDK
+         * nicht laedt. Dort gilt die Sprache des LoxBerry aus general.json
+         * (Base.Lang, am Geraet vorhanden: Geraet/2026-09-28/
+         * 10_general_schluessel.json); ohne sie bleibt es bei Deutsch. */
+        $p = fb_paths();
+        if ($p['home'] !== '') {
+            $gen = fb_json_lesen($p['home'] . '/config/system/general.json');
+            if (isset($gen['Base']['Lang']) && is_string($gen['Base']['Lang'])) { $s = $gen['Base']['Lang']; }
+        }
     }
     $s = strtolower(substr((string) $s, 0, 2));
     return in_array($s, array('de', 'en'), true) ? $s : 'en';
@@ -4952,15 +5539,32 @@ function fb_t($schluessel)
  */
 function fb_sicherung_lesen($roh)
 {
+    /* C1 (Durchgang 30.09.2026): Rueckgabe traegt ein viertes Feld,
+     * array('token_leer' => bool, 'uebergangen' => Liste). Jeder Wert wird mit
+     * denselben Regeln geprueft wie im Formular (fb_sicherung_wert()); bis
+     * 0.12.10 wurde nur die Schluesselmenge verglichen, und "37 Werte
+     * uebernommen" stand auch ueber einem Wortzeichen als Liste, einem Thema
+     * als Liste, einem Standort "abc" und einer Fensterliste als Text
+     * (gemessen unter 7.4 und 8.5, Code-Pruefer Nr. 1-3, Oberflaeche-Pruefer
+     * Nr. 1). Eine halb gueltige Datei aendert weiterhin gar nichts. */
     $mangel = array();
+    $info = array('token_leer' => false, 'uebergangen' => array());
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(fb_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, array(fb_t('EINST.SICH_KEIN_JSON')), 0, $info);
     }
+    /* O18: traegt die Datei den Kopf, den der Sichern-Knopf DIESER Linie
+     * schreibt, stammt sie aus einer ihrer Fassungen. Ein Schluessel, den
+     * diese Fassung nicht mehr kennt, ist dann ein Altschluessel: er wird
+     * uebergangen und genannt. Bis 0.12.10 wies er die eigene Sicherung als
+     * Ganzes ab (gemessen, Oberflaeche-Pruefer Nr. 18). Ohne diesen Kopf
+     * bleibt es bei der Beanstandung. */
+    $eigen = isset($daten['_plugin']) && $daten['_plugin'] === 'LoxBerry-Plugin-Beschattung_Fensterbilanz';
     $neu = fb_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        $k = (string) $k;
         /* Der lesbare Kopf wird uebersprungen, nicht beanstandet.
          *
          * Seit 0.12.7 schreibt der Sichern-Knopf _hinweis, _plugin und
@@ -4971,12 +5575,33 @@ function fb_sicherung_lesen($roh)
          * NICHTS aendert, waere sie damit unbrauchbar. */
         if ($k !== '' && $k[0] === '_') { continue; }
         if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(fb_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            if ($eigen) { $info['uebergangen'][] = $k; continue; }
+            /* O19: roh - maskiert wird an der Ausgabe (fb_e). Bis 0.12.10
+             * wurde hier UND dort maskiert (gemessen, Oberflaeche-Pruefer
+             * Nr. 19). */
+            $mangel[] = sprintf(fb_t('EINST.SICH_FREMD'), $k);
             continue;
         }
+        $wm = fb_sicherung_wert($k, $w);
+        if ($wm) {
+            foreach ($wm as $z) { $mangel[] = $z; }
+            continue;
+        }
+        /* Ein LEERES Wortzeichen heisst "keines gesichert" - der Aufrufer
+         * setzt das geltende ein und sagt es (Code-Pruefer Nr. 2). */
+        if ($k === 'aktionstoken' && $w === '') { $info['token_leer'] = true; }
         $neu[$k] = $w;
         $anzahl++;
+    }
+    /* Dieselben Querpruefungen wie der Speicher-Handler. */
+    if (!$mangel) {
+        if ((int) $neu['schwelle_aus'] >= (int) $neu['schwelle_ein']) {
+            $mangel[] = sprintf(fb_t('FEHLER.SCHWELLEN'),
+                                (int) $neu['schwelle_aus'], (int) $neu['schwelle_ein']);
+        }
+        if ((int) $neu['gewicht_raum'] + (int) $neu['gewicht_tag'] === 0) {
+            $mangel[] = fb_t('FEHLER.GEWICHTE_NULL');
+        }
     }
     if ($anzahl === 0) {
         $mangel[] = fb_t('EINST.SICH_LEER');
@@ -5000,13 +5625,147 @@ function fb_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(fb_vorgaben()) as $fk) {
+        if (in_array($fk, fb_sicherung_freiwillig(), true)) { continue; }
         if (!array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
     }
     if ($fehlend) {
         $mangel[] = sprintf(fb_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+            implode(', ', $fehlend));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel, $anzahl, $info);
+}
+
+/**
+ * Schluessel, die in einer Sicherung fehlen duerfen: reine Vermerke ohne
+ * Wirkung auf den Betrieb, die aeltere Fassungen nicht kannten
+ * (mqtt_praefix_alt seit 0.12.11, M4). Sie bleiben dann auf ihrer Vorgabe.
+ */
+function fb_sicherung_freiwillig()
+{
+    return array('mqtt_praefix_alt');
+}
+
+/**
+ * Einen Wert der Sicherung pruefen - mit denselben Regeln wie das Formular.
+ * Rueckgabe: Liste der Beanstandungen (leer = gueltig).
+ */
+function fb_sicherung_wert($k, $w)
+{
+    $zf = fb_zahlfelder();
+    if (isset($zf[$k])) {
+        list(, $grund) = fb_zahl_pruefen($w, $zf[$k][0], $zf[$k][1], $zf[$k][2]);
+        return $grund === '' ? array() : array(fb_sich_zahlmeldung($k, $w, $grund, $zf[$k]));
+    }
+    if (in_array($k, fb_haken_felder(), true)) {
+        return fb_haken_ok($w) ? array() : array(sprintf(fb_t('EINST.SICH_W_HAKEN'), $k));
+    }
+    switch ($k) {
+        case 'aktionstoken':
+            return ($w === '' || fb_token_gueltig($w)) ? array() : array(fb_t('EINST.SICH_W_TOKEN'));
+        case 'mqtt_topic':
+            return fb_thema_gueltig($w) ? array() : array(sprintf(fb_t('EINST.SICH_W_THEMA'), $k));
+        case 'mqtt_praefix_alt':
+            return ($w === '' || fb_thema_gueltig($w)) ? array()
+                : array(sprintf(fb_t('EINST.SICH_W_THEMA'), $k));
+        case 'himmelsmodell':
+            return (is_string($w) && in_array($w, array('isotrop', 'hdkr'), true)) ? array()
+                : array(sprintf(fb_t('EINST.SICH_W_AUSWAHL'), $k, fb_sich_zeigen($w), 'isotrop, hdkr'));
+        case 'raumflaechen':
+            if (!is_array($w)) { return array(sprintf(fb_t('EINST.SICH_W_LISTE'), $k)); }
+            $m = array();
+            foreach ($w as $r => $q) {
+                if (preg_match('/^[a-z0-9_]{1,20}\z/', (string) $r) !== 1) {
+                    $m[] = sprintf(fb_t('EINST.SICH_W_TEXT'), $k . '.' . fb_sich_zeigen($r));
+                    continue;
+                }
+                list(, $grund) = fb_zahl_pruefen($q, 0.1, 1000.0, 1);
+                if ($grund !== '') {
+                    $m[] = fb_sich_zahlmeldung($k . '.' . $r, $q, $grund,
+                                               array(0.1, 1000, 1, 'EINST.L_RAUMFLAECHE'));
+                }
+            }
+            return $m;
+        case 'fenster':
+            return fb_sicherung_fenster($w);
+    }
+    return array();
+}
+
+/** Die Meldung zu einer abgewiesenen Zahl der Sicherung. */
+function fb_sich_zahlmeldung($k, $w, $grund, $feld)
+{
+    if ($grund === 'ganz') { return sprintf(fb_t('EINST.SICH_W_GANZ'), $k, fb_sich_zeigen($w)); }
+    if ($grund === 'stellen') {
+        return sprintf(fb_t('EINST.SICH_W_STELLEN'), $k, fb_sich_zeigen($w), (int) $feld[2]);
+    }
+    if ($grund === 'bereich') {
+        return sprintf(fb_t('EINST.SICH_W_BEREICH'), $k, fb_sich_zeigen($w), $feld[0], $feld[1]);
+    }
+    return sprintf(fb_t('EINST.SICH_W_ZAHL'), $k, fb_sich_zeigen($w));
+}
+
+/**
+ * Die Fensterliste der Sicherung: eine Liste von Zeilen, jede mit den Feldern
+ * aus fb_fenster_vorgabe() und denselben Regeln wie die Fenstertabelle.
+ * Fehlende Felder einer Zeile treten auf ihre Vorgabe (fb_config_richten()),
+ * unbekannte werden beanstandet. Ein doppeltes Kuerzel wird beanstandet wie
+ * im Formular - bis 0.12.10 leerte fb_config_richten() es still.
+ */
+function fb_sicherung_fenster($w)
+{
+    if (!is_array($w)) { return array(sprintf(fb_t('EINST.SICH_W_LISTE'), 'fenster')); }
+    $m = array();
+    if (count($w) > FB_FENSTER) {
+        $m[] = sprintf(fb_t('EINST.SICH_W_ZUVIELE'), count($w), FB_FENSTER);
+    }
+    $vorgabe = fb_fenster_vorgabe();
+    $zf = fb_fenster_zahlfelder();
+    $gesehen = array();
+    foreach ($w as $i => $f) {
+        if (!is_int($i) || $i < 0 || $i >= FB_FENSTER) {
+            $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), 0,
+                           sprintf(fb_t('EINST.SICH_FREMD'), 'fenster.' . fb_sich_zeigen($i)));
+            continue;
+        }
+        $nr = $i + 1;
+        if (!is_array($f)) {
+            $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), $nr, sprintf(fb_t('EINST.SICH_W_LISTE'), 'fenster'));
+            continue;
+        }
+        foreach ($f as $fk => $fw) {
+            $fk = (string) $fk;
+            $z = '';
+            if (!array_key_exists($fk, $vorgabe)) {
+                $z = sprintf(fb_t('EINST.SICH_FREMD'), $fk);
+            } elseif (isset($zf[$fk])) {
+                list(, $grund) = fb_zahl_pruefen($fw, $zf[$fk][0], $zf[$fk][1], $zf[$fk][2]);
+                if ($grund !== '') { $z = fb_sich_zahlmeldung($fk, $fw, $grund, $zf[$fk]); }
+            } elseif (in_array($fk, array('aktiv', 'raumwerte', 'daemmen'), true)) {
+                if (!fb_haken_ok($fw)) { $z = sprintf(fb_t('EINST.SICH_W_HAKEN'), $fk); }
+            } elseif ($fk === 'kuerzel') {
+                if (!is_string($fw) || preg_match('/^[A-Za-z0-9_]{0,16}\z/', $fw) !== 1) {
+                    $z = sprintf(fb_t('EINST.SICH_W_TEXT'), $fk);
+                }
+            } elseif ($fk === 'raum') {
+                if (!is_string($fw) || preg_match('/^[a-z0-9_]{0,20}\z/', $fw) !== 1) {
+                    $z = sprintf(fb_t('EINST.SICH_W_TEXT'), $fk);
+                }
+            } elseif (!is_string($fw) || preg_match('/[\x00-\x1F\x7F"\']/', $fw) === 1) {
+                // name, horizont: Text ohne Steuer- und Anfuehrungszeichen
+                $z = sprintf(fb_t('EINST.SICH_W_TEXT'), $fk);
+            }
+            if ($z !== '') { $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), $nr, $z); }
+        }
+        if (isset($f['kuerzel']) && is_string($f['kuerzel']) && $f['kuerzel'] !== '') {
+            $gross = strtoupper($f['kuerzel']);
+            if (isset($gesehen[$gross])) {
+                $m[] = sprintf(fb_t('EINST.SICH_W_DOPPELT'), $nr, $f['kuerzel'], $gesehen[$gross]);
+            } else {
+                $gesehen[$gross] = $nr;
+            }
+        }
+    }
+    return $m;
 }

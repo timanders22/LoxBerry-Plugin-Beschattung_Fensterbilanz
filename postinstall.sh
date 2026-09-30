@@ -97,33 +97,16 @@ fb_inhalt() {   # $1 Datei, $2 Art: token | json | eingerichtet
 # (Regeln/06, Ergaenzung vom 17.09.2026). Vor dem ersten Lauf unten wird sie
 # ausdruecklich entfernt, sonst setzte er selbst aus.
 #
-# Sie gilt, wenn ihr Inhalt eine Zahl ist und hoechstens 3600 s zurueck bzw.
-# 300 s voraus liegt. Beide Zahlen werden VOR der Rechnung als Zahl geprueft -
-# bash wertet in $(( )) den INHALT einer Variablen aus, und ein Markeninhalt
-# wie a[$(befehl)] fuehrte den Befehl aus (Klasse M, Bestand-2026-09-18;
-# Fall Z16). Ohne lesbare Uhr gilt eine liegende Marke (geschlossen, Fall Z18).
+# I1/I2 (Durchgang 30.09.2026, Entscheidung Nr. 1): LIEGT sie, ist dies eine
+# Aktualisierung - ohne Altersvergleich. Nur dann werden Zweitschrift und
+# Rettungen eingespielt. Bis 0.12.10 entschied das Alter von Marke und
+# Stempel (hoechstens 3600 s): nach einem langsamen oder einem zweiten
+# Update-Versuch fehlte die Lernkurve (in WSL gemessen, Installer-Pruefer U3,
+# U7). Die 3600 s gelten weiter, aber nur als Startsperre des Plugins
+# (fb_upgrade_laeuft()). Der Inhalt der Marke wird hier nicht mehr gelesen.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
-UHR=$(date +%s 2>/dev/null)
-case "$UHR" in ''|*[!0-9]*) UHR="" ;; esac
-MARKE_GILT=""
-if [ -f "$MARKE" ]; then
-    MARKE_WERT=$(cat "$MARKE" 2>/dev/null)
-    if [ -z "$UHR" ]; then
-        MARKE_GILT=ja
-    else
-        case "$MARKE_WERT" in
-            ''|*[!0-9]*) ;;
-            *)
-                if [ "${#MARKE_WERT}" -le 12 ]; then
-                    MARKE_ALTER=$(( UHR - 10#$MARKE_WERT ))
-                    if [ "$MARKE_ALTER" -ge -300 ] && [ "$MARKE_ALTER" -lt 3600 ]; then
-                        MARKE_GILT=ja
-                    fi
-                fi
-                ;;
-        esac
-    fi
-fi
+MARKE_DA=""
+[ -f "$MARKE" ] && MARKE_DA=ja
 trap 'rm -f "$MARKE" 2>/dev/null' EXIT
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
@@ -153,7 +136,11 @@ if [ ! -f "$PCONFIG/fensterbilanz.json" ]; then
 fi
 chmod 600 "$PCONFIG/fensterbilanz.json" 2>/dev/null
 
-# Sicherung zurueckspielen (uebersteht Update UND Neuinstallation).
+# Sicherung zurueckspielen - NUR bei einer Aktualisierung (liegende Marke).
+# Bis 0.12.10 stand hier "uebersteht Update UND Neuinstallation", und eine
+# Neuinstallation uebernahm Wortzeichen, Standort und Fenster einer frueheren
+# Installation (I1, Installer-Pruefer N2). Bei einer Neuinstallation hat
+# preinstall.sh die Zweitschrift schon nach .alt gelegt.
 #
 # NACH INHALT, NICHT NACH GROESSE. Bis 0.12.9 entschied "leer oder {}": eine
 # Konfiguration mit irgendetwas darin, aber ohne Wortzeichen, blieb stehen
@@ -164,7 +151,9 @@ chmod 600 "$PCONFIG/fensterbilanz.json" 2>/dev/null
 # .kaputt (0600) daneben liegen. Gemeldet wird, was geschah.
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/fensterbilanz.json"
-if [ -f "$BK" ]; then
+if [ -f "$BK" ] && [ -z "$MARKE_DA" ]; then
+    echo "<INFO> Neuinstallation: die Sicherung $BK wird nicht eingespielt."
+elif [ -f "$BK" ]; then
     fb_inhalt "$CF" token
     CF_RC=$?
     if [ "$CF_RC" != 0 ]; then
@@ -249,15 +238,20 @@ fi
 # BIS 0.12.9 nur, wenn am Ziel nichts lag - und sonst wurde die Rettung
 # GELOESCHT. In der Luecke vor diesem Skript schrieben Takt und Endpunkt aber
 # eine frische bilanz.json; das Ziel war belegt, die Tagesbilanz weg (in WSL
-# gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle Z4, Z5). Seit
-# 0.12.10 entscheidet der Stempel aus preupgrade.sh (<ordner>.rettung.zeit):
-# steht die Datei darin und ist er hoechstens eine Stunde alt, stammt die
-# Rettung aus DIESER Aktualisierung und wird eingespielt, auch ueber ein
-# belegtes Ziel. Ohne lesbare Uhr entscheidet die Marke (sie gilt dann, siehe
-# oben). Eine Rettung, die nicht aus diesem Vorgang stammt, spielt nichts ein
-# und bleibt mit einer WARNING liegen; uninstall raeumt sie weg (Regeln/06,
-# Ergaenzung vom 17.09.2026; Fall Z14). Geloescht wird eine Rettung nur, wenn
-# die Rueckholung nach Inhalt gelang (cmp).
+# gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle Z4, Z5).
+#
+# SEIT 0.12.11 ENTSCHEIDET DIE MARKE (I2, Entscheidung Nr. 1): liegt sie,
+# ist dies eine Aktualisierung, und eingespielt wird, was im Stempel
+# (<ordner>.rettung.zeit) steht - auch ueber ein belegtes Ziel, ohne
+# Altersvergleich. Bis 0.12.10 musste der Stempel juenger als eine Stunde
+# sein; nach einem langsamen oder einem zweiten Update-Versuch blieb die
+# Lernkurve deshalb draussen (in WSL gemessen, Installer-Pruefer U3, U7).
+# Rettungen aus einem FRUEHEREN Vorgang raeumt preupgrade.sh vorher nach
+# .alt (I3). Liegt KEINE Marke (Neuinstallation), hat preinstall.sh sie schon
+# beiseitegelegt; was trotzdem liegt, geht hier nach .alt, mit EINER WARNING
+# (I4; bis 0.12.10 drei Zeilen je Datei und die Datei blieb unter ihrem
+# Namen). Geloescht wird eine Rettung nur, wenn die Rueckholung nach Inhalt
+# gelang (cmp).
 STEMPEL="$BASE/data/plugins/$PFOLDER.rettung.zeit"
 ST_ZEIT=""
 ST_NAMEN=""
@@ -266,17 +260,9 @@ if [ -f "$STEMPEL" ]; then
     # Umlenkung selbst, bevor 2>/dev/null greift (Weissware 0.9.30, Fall C1).
     { read -r ST_ZEIT ST_NAMEN < "$STEMPEL"; } 2>/dev/null
 fi
-rettung_frisch() {
-    if [ -z "$UHR" ]; then
-        [ -n "$MARKE_GILT" ]
-        return
-    fi
-    case "$ST_ZEIT" in ''|*[!0-9]*) return 1 ;; esac
-    [ "${#ST_ZEIT}" -le 12 ] || return 1
-    ST_ALTER=$(( UHR - 10#$ST_ZEIT ))
-    [ "$ST_ALTER" -ge -300 ] && [ "$ST_ALTER" -lt 3600 ]
-}
 ZURUECK=0
+ZNAMEN=""
+NICHT=""
 for N in bilanz lernen pv messwerte; do
     R="$BASE/data/plugins/$PFOLDER.rettung.$N.json"
     Z="$PDATA/$N.json"
@@ -285,10 +271,8 @@ for N in bilanz lernen pv messwerte; do
         *" $N "*) GELISTET=ja ;;
         *) GELISTET="" ;;
     esac
-    if [ -z "$GELISTET" ] || ! rettung_frisch; then
-        echo "<WARNING> $R stammt nicht aus dieser Aktualisierung (kein Stempel"
-        echo "<WARNING> oder aelter als eine Stunde) - nicht eingespielt, sie bleibt liegen."
-        echo "<WARNING> Die Deinstallation raeumt sie weg."
+    if [ -z "$MARKE_DA" ] || [ -z "$GELISTET" ]; then
+        NICHT="$NICHT $R"
         continue
     fi
     fb_inhalt "$R" json
@@ -304,14 +288,39 @@ for N in bilanz lernen pv messwerte; do
         chmod 644 "$Z" 2>/dev/null
         rm -f "$R"
         ZURUECK=$((ZURUECK+1))
+        ZNAMEN="$ZNAMEN $N"
     else
         echo "<FAIL> $N.json liess sich nicht zurueckholen; die Rettung"
         echo "<FAIL> bleibt unter $R liegen."
     fi
 done
+if [ -n "$NICHT" ]; then
+    # I4: EINE Meldung, und die Dateien gehen nach .alt statt unter ihrem
+    # Namen liegenzubleiben (dort waeren sie beim naechsten Update wieder
+    # Kandidaten).
+    ALT_N=""
+    for R in $NICHT; do
+        rm -f "${R:?}.alt" 2>/dev/null
+        mv -f "$R" "$R.alt" 2>/dev/null && ALT_N="$ALT_N $R.alt"
+    done
+    if [ -z "$MARKE_DA" ]; then
+        W="<WARNING> Neuinstallation: liegengebliebene Messreihen einer frueheren Installation werden nicht eingespielt."
+    else
+        W="<WARNING> Diese Rettungen stehen nicht im Stempel dieser Aktualisierung und werden nicht eingespielt."
+    fi
+    echo "$W Beiseitegelegt:$ALT_N (die Deinstallation raeumt sie ab)."
+fi
 if [ "$ZURUECK" -gt 0 ]; then
     echo "<OK> $ZURUECK Datei(en) mit Messreihen zurueckgeholt (Tagesbilanz,"
     echo "<OK> Lernkurve, PV-Gegenprobe, Messwerte)."
+fi
+# I6 (Durchgang 30.09.2026): was WIRKLICH zurueckkam, fuer postupgrade.sh -
+# es zaehlte bis 0.12.10 die Dateien im Datenordner und nannte eine frisch
+# angelegte bilanz.json "wieder da" (in WSL gemessen, Installer-Pruefer U3,
+# U7). Nur bei einer Aktualisierung; der Merker liegt neben dem Datenordner,
+# postupgrade.sh liest und entfernt ihn.
+if [ -n "$MARKE_DA" ]; then
+    printf '%s%s\n' "$ZURUECK" "$ZNAMEN" > "$BASE/data/plugins/$PFOLDER.zurueckgeholt" 2>/dev/null
 fi
 # Der Stempel geht, sobald keine Rettung mehr liegt.
 if ! ls "$BASE"/data/plugins/"$PFOLDER".rettung.*.json >/dev/null 2>&1; then
@@ -384,7 +393,10 @@ fi
 # Standort oder mindestens ein Fenster (fb_inhalt ... eingerichtet). Das
 # Wortzeichen allein zaehlt nicht - es entsteht beim ersten Oeffnen der
 # Oberflaeche. Scheiterte die Rueckholung, erscheint die Anleitung wieder.
-if fb_inhalt "$CF" eingerichtet; then
+# I1: "Aktualisierung abgeschlossen" nur bei einer Aktualisierung (Marke).
+# Bis 0.12.10 stand der Satz auch nach einer Neuinstallation, die eine
+# fremde Zweitschrift eingespielt hatte (Installer-Pruefer N2).
+if [ -n "$MARKE_DA" ] && fb_inhalt "$CF" eingerichtet; then
     echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen - es ist nichts weiter zu tun."
     exit 0
 fi

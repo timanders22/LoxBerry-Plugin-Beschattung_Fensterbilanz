@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.10
+Version 0.12.11
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -143,9 +143,9 @@ die PV-Gegenprobe oder der Tagesbericht eingeschaltet, kommen die zugehörigen
 Themen hinzu — welche genau, zeigt der Reiter *MQTT*, und der Reiter *Test*
 hält die Liste gegen das, was tatsächlich gesendet wird.
 
-Zurückbehalten (retained) gehen seit 0.12.10 nur `fenster_anzahl` (eine
-Einstellung) und `bericht` (der Text nennt sein Datum). Alles andere geht
-flüchtig hinaus, auch die Urteile je Fenster (siehe unten).
+Zurückbehalten (retained) geht seit 0.12.11 nur `fenster_anzahl` (eine
+Einstellung). Alles andere geht flüchtig hinaus, auch `bericht` (ein
+Tageswert) und die Urteile je Fenster (siehe unten).
 
 **Über HTTP**, tokengeschützt, mit denselben Werten:
 
@@ -343,6 +343,60 @@ Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
 beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
 Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
 länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
+
+## Fassung 0.12.11 — Sicherung geprüft, ehrliche Werte, Lernbestand geschützt
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Fensterbilanz_BEFUNDE_UND_VERBESSERUNGEN.md`.
+
+**Bitte beide Loxone-Vorlagen neu erzeugen und importieren.** Die Kommentare
+sind auf 40 Zeichen gekürzt, `WH` hat einen größeren Bereich, und bei Aufruf
+über 127.0.0.1 steht jetzt der Rechnername in der Adresse. Loxone Config legt
+beim Import neu an und überschreibt nichts.
+
+**Baustein-Liste berichtigt.** Zeile #5 verundete die Freigabe mit „Fensterbilanz
+unbrauchbar“ – die Beschattung wäre nur bei ausgefallenem Plugin freigegeben
+worden. Richtig ist: `FB_<kürzel>_BESCHATTEN` UND NICHT unbrauchbar, das Ergebnis
+ODER die bisherige Freigabe. Wer die Liste nachgebaut hat, prüft diese Zeile.
+Die Ausfallerkennung hängt jetzt am Zeitstempel, nicht an `FB_HERZ` (über MQTT
+immer 0), mit einer Schwelle von 15 Minuten.
+
+**Sicherung.** Beim Zurückspielen wird jeder Wert geprüft wie im Formular.
+Bis 0.12.10 nahm der Endpunkt nach einer Sicherung mit einer Liste als Token
+`token=Array` an, `fenster: "kaputt"` löschte alle Fenster, und ein leeres Token
+wurde still neu gewürfelt.
+
+**Ehrliche Werte**
+
+* `OK=0`, sobald der Stand älter als das Dreifache des Takts ist (15 Minuten),
+  auch wenn das Höchstalter höher eingestellt ist. Ohne jeden Stand antwortet
+  der Endpunkt mit 503.
+* Ohne Standort gehen Sonnenhöhe und -richtung nicht mehr als 0 hinaus, und
+  `fenster_anzahl` zählt die eingerichteten Fenster.
+* Keine leeren Nachrichten mehr (`begruendung`, `bericht` ohne Text: `-`).
+* `bericht` geht flüchtig hinaus (ein Tageswert); zurückbehalten bleibt nur
+  `fenster_anzahl`.
+* Beim Präfixwechsel und beim Abschalten von MQTT räumt das Plugin die alten
+  Themen ab und liest über den Broker nach. Die Abodatei
+  `mqtt_subscriptions.cfg` führt es selbst.
+
+**Lernbestand geschützt.** Eine abgeschnittene `lernen.json`, `pv.json` oder
+`bilanz.json` wird nicht mehr still durch einen kurzen Bestand ersetzt,
+sondern als `.kaputt` beiseitegelegt, mit einer Zeile im Protokoll. Ein
+Rücksprung der Uhr schreibt keinen Lerntag. Bei einem Update kommen die
+Rettungen nach der Upgrade-Marke zurück, nicht mehr nach dem Alter eines
+Zeitstempels – bis 0.12.10 fehlte der Lernbestand nach einem Update, das länger
+als eine Stunde dauerte.
+
+**Oberfläche und Installation**
+
+* Jedes Absenden endet mit einer Umleitung; F5 hängt keine Horizontpunkte
+  doppelt an.
+* Eingaben werden abgewiesen statt gerundet.
+* Eine Neuinstallation spielt keine alte Zweitschrift mehr ein (`preinstall.sh`,
+  `.alt`); der Abschluss sagt dann „Installation abgeschlossen“.
+* Die Fehlerausgabe des Takts landet in `cron.err`.
 
 ## Fassung 0.12.10 — Retain, Aktualisierung, Deinstallation
 

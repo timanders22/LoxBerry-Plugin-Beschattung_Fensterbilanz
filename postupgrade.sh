@@ -68,25 +68,36 @@ if [ -z "$BASE" ]; then
 fi
 PDATA="$BASE/data/plugins/$PFOLDER"
 
-# Nachsehen, ob postinstall.sh die Rettung wirklich zurueckgeholt hat.
-# Was hier gemeldet wird, ist gezaehlt - nicht angenommen.
-DA=0
-for N in bilanz lernen pv messwerte; do
-    [ -s "$PDATA/$N.json" ] && DA=$((DA+1))
-done
+# Nachsehen, was postinstall.sh wirklich zurueckgeholt hat.
+#
+# I6 (Durchgang 30.09.2026): gezaehlt wird, was postinstall.sh in den Merker
+# <ordner>.zurueckgeholt schreibt - Zahl und Namen der zurueckgeholten
+# Dateien. Bis 0.12.10 zaehlte dieses Skript die Dateien im Datenordner; eine
+# bilanz.json, die der erste Lauf in postinstall FRISCH angelegt hatte, galt
+# als "wieder da" (in WSL gemessen, Installer-Pruefer U3, U7: "1 von 4
+# Messreihen liegen wieder da", zurueck kam keine).
+ZM="$BASE/data/plugins/$PFOLDER.zurueckgeholt"
+ZAHL=""
+ZN=""
+if [ -f "$ZM" ]; then
+    { read -r ZAHL ZN < "$ZM"; } 2>/dev/null
+    rm -f "$ZM" 2>/dev/null
+fi
+case "$ZAHL" in ''|*[!0-9]*) ZAHL="" ;; esac
 UEBRIG=0
 for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json; do
     [ -f "$R" ] && UEBRIG=$((UEBRIG+1))
 done
 
 echo "<OK> postupgrade abgeschlossen - beim naechsten Lauf wird frisch gerechnet."
-if [ "$DA" -gt 0 ]; then
-    echo "<INFO> $DA von 4 Messreihen liegen wieder da (Tagesbilanz, Lernkurve,"
-    echo "<INFO> PV-Gegenprobe, Messwerte)."
+if [ -z "$ZAHL" ]; then
+    echo "<INFO> Wie viele Messreihen zurueckgeholt wurden, ist nicht feststellbar (postinstall.sh"
+    echo "<INFO> hat keinen Merker hinterlassen) - bitte im Reiter Test nachsehen."
+elif [ "$ZAHL" -gt 0 ]; then
+    echo "<INFO> $ZAHL von 4 Messreihen wurden zurueckgeholt:$ZN."
 else
-    echo "<INFO> Es liegen keine Messreihen vor. Bei einer Neuinstallation ist das"
-    echo "<INFO> richtig; nach einem Update waere es ein Befund - dann bitte im"
-    echo "<INFO> Reiter Test nachsehen."
+    echo "<INFO> Es wurde keine Messreihe zurueckgeholt. Lagen vor dem Update keine vor, ist"
+    echo "<INFO> das richtig; sonst waere es ein Befund - dann bitte im Reiter Test nachsehen."
 fi
 if [ "$UEBRIG" -gt 0 ]; then
     # Seit 0.12.10 laesst postinstall.sh eine Rettung mit Absicht liegen, wenn

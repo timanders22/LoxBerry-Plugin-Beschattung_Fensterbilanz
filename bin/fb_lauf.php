@@ -85,7 +85,15 @@ if (in_array('--zeile', $fb_argumente, true)) {
  * fb_mqtt_leeren(); ohne Wurzel oder aus einem Archiv 1. */
 if (in_array('--mqtt-leeren', $fb_argumente, true)) {
     fb_keine_wurzel_abbruch('fb_lauf.php --mqtt-leeren');
-    exit(fb_mqtt_leeren());
+    /* M4 (Durchgang 30.09.2026): --praefix=<p> leert ein anderes Praefix
+     * als das eingestellte - die Deinstallation ruft damit das zuletzt
+     * verlassene (mqtt_praefix_alt). Geprueft wird es in
+     * fb_mqtt_leeren_unter(). */
+    $fb_pr = null;
+    foreach ($fb_argumente as $fb_a) {
+        if (strpos((string) $fb_a, '--praefix=') === 0) { $fb_pr = substr((string) $fb_a, 10); }
+    }
+    exit(fb_mqtt_leeren(3, 1000000, $fb_pr));
 }
 
 /* Ohne Wurzel oder aus einem Archiv heraus nichts rechnen, nichts senden,
@@ -100,10 +108,20 @@ if (fb_upgrade_laeuft()) {
 }
 
 $fb_erzwingen = in_array('--jetzt', $fb_argumente, true);
-list($fb_gerechnet, $fb_stand) = fb_lauf($fb_erzwingen);
+list($fb_gerechnet, $fb_stand, $fb_warum) = fb_lauf($fb_erzwingen);
 
 if (!$fb_gerechnet) {
-    echo "Der letzte Lauf liegt noch innerhalb des Rechentakts - es wurde nicht neu gerechnet.\n";
+    /* C6 (Durchgang 30.09.2026): der wahre Grund. Bis 0.12.10 stand hier auch
+     * bei --jetzt "innerhalb des Rechentakts", waehrend die Sperre belegt war
+     * (gemessen, Code-Pruefer Nr. 8). */
+    if ($fb_warum === 'sperre') {
+        echo "Ein anderer Lauf haelt gerade die Sperre (lauf.lock) - es wurde nicht neu gerechnet;\n"
+           . "der naechste Takt rechnet.\n";
+    } elseif ($fb_warum === 'aktualisierung') {
+        echo "Eine Aktualisierung laeuft - es wird nicht gerechnet, bis postinstall.sh fertig ist.\n";
+    } else {
+        echo "Der letzte Lauf liegt noch innerhalb des Rechentakts - es wurde nicht neu gerechnet.\n";
+    }
     exit(0);
 }
 if ($fb_stand['meldung'] === 'KEIN_STANDORT') {
@@ -834,7 +852,8 @@ $ort = array(48.2, 11.6);
             $qm_b . ' m2, geschaetzt=' . var_export($geschaetzt_b, true));
     $stand_ohne = fb_rechnen($cfg_ohne, $mess_august, $t0, array(), $bil_1500);
     $pruefe('Der Begruendungssatz nennt eine angenommene Flaeche als solche',
-            strpos($stand_ohne['fenster']['1']['begruendung'], 'geschaetzt') !== false,
+            /* O16: der Satz kommt seit 0.12.11 aus der Sprachdatei. */
+            strpos($stand_ohne['fenster']['1']['begruendung'], fb_t('FB_SATZ.GESCHAETZT')) !== false,
             $stand_ohne['fenster']['1']['begruendung']);
 
     /* --- Die Vorgabeflaeche wird gemeldet ---
@@ -1058,7 +1077,7 @@ $ort = array(48.2, 11.6);
             $mit_d['watt'] < $ohne_d['watt'] && $mit_d['watt'] > 0,
             $ohne_d['watt'] . ' W ohne, ' . $mit_d['watt'] . ' W mit Ueberstand');
     $pruefe('Und der Begruendungssatz nennt ihn',
-            strpos($mit_d['begruendung'], 'Dachueberstand') !== false,
+            strpos($mit_d['begruendung'], sprintf(fb_t('FB_SATZ.DACH'), (int) $mit_d['dach'])) !== false,
             $mit_d['begruendung']);
 
     /* --- Der Horizontrechner ---
@@ -1495,7 +1514,10 @@ $ort = array(48.2, 11.6);
     $bericht = fb_bericht_text($cfg, $bil_b, $stand_b);
     $pruefe('Der Tagesbericht nennt Menge, Dauer und Spitze',
             strpos($bericht, '4.2 kWh') !== false && strpos($bericht, '953 W') !== false
-            && strpos($bericht, '4 Stunden') !== false,
+            /* O16: die Dauer steht im Satz der Sprachdatei - in jeder Sprache. */
+            && strpos($bericht, sprintf(fb_t('FB_SATZ.B_LAENGSTE'),
+                   isset($stand_b['fenster']['1']['kuerzel']) ? $stand_b['fenster']['1']['kuerzel'] : '#1',
+                   4, 20)) !== false,
             substr($bericht, 0, 120));
 
     /* --- 3. Das Bild des Verschattungshorizonts --- */

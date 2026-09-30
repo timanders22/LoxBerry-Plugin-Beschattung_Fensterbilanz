@@ -112,7 +112,7 @@ function fb_test_bilanz()
     foreach ((isset($bilanz['raeume']) ? $bilanz['raeume'] : array()) as $raum => $wh) {
         $mm = isset($bilanz['minmax'][$raum]) ? $bilanz['minmax'][$raum] : null;
         $z[] = sprintf('  %-20s %8d Wh%s', $raum, (int) round($wh),
-            $mm ? sprintf('   %.1f bis %.1f Grad', $mm['min'], $mm['max']) : '');
+            $mm ? '   ' . sprintf(fb_klartext('TEST.SPANNE'), $mm['min'], $mm['max']) : '');   // O16
     }
     $z[] = '';
     $z[] = sprintf(fb_klartext('TEST.BILANZ_STRAHLUNG'),
@@ -173,7 +173,8 @@ function fb_test_pv()
     $z[] = '';
     if (!$tage) { $z[] = fb_klartext('TEST.PV_LEER'); return implode("\n", $z) . "\n"; }
     $z[] = sprintf('%-12s %12s %12s %10s', fb_klartext('TEST.PV_SP_TAG'),
-                   'Wh/m2 gemessen', 'Wh/m2 Prognose', fb_klartext('TEST.PV_SP_QUOT'));
+                   fb_klartext('TEST.PV_SP_GEMESSEN'), fb_klartext('TEST.PV_SP_PROGNOSE'),
+                   fb_klartext('TEST.PV_SP_QUOT'));    // O16
     $z[] = str_repeat('-', 50);
     foreach (array_slice($tage, -20) as $t) {
         $z[] = sprintf('%-12s %12.0f %12.0f %10s', (string) $t['d'],
@@ -489,7 +490,10 @@ function fb_probe_retain()
                  '<kuerzel>/watt', '<kuerzel>/glas',
                  'ok', 'saison', 'wh_tag', '<kuerzel>/wh',
                  '<kuerzel>/urteil', '<kuerzel>/beschatten', '<kuerzel>/grund',
-                 '<kuerzel>/begruendung', 'beschatten_anzahl');
+                 '<kuerzel>/begruendung', 'beschatten_anzahl',
+                 /* M7 (Durchgang 30.09.2026): der Tagesbericht ist ein
+                  * Tageswert (Entscheidung Nr. 3, Frage 14). */
+                 'bericht');
     $schlecht = array();
     $ret = 0;
     foreach ($themen as $t) {
@@ -520,6 +524,14 @@ function fb_probe_sicherung()
         return array(null, fb_klartext('TEST.A_SICH_KEINE'));
     }
     $voll = fb_vorgaben();
+    /* C2 (Durchgang 30.09.2026): auch WERTE, nicht nur Schluessel. Bis 0.12.10
+     * zeigte diese Zeile einen Haken, waehrend ein Wortzeichen als Liste
+     * durchging (gemessen, Oberflaeche-Pruefer Nr. 2). Die eigene Sicherung
+     * wird aus der geltenden Konfiguration gebaut, wie der Sichern-Knopf sie
+     * schreibt. */
+    $kopf = array('_hinweis' => 'x', '_plugin' => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
+                  '_stand' => 'x');
+    $eigene = array_merge($kopf, fb_config());
     $faelle = array(
         // Name              Inhalt                                 muss angenommen werden?
         array('gueltig',     json_encode($voll),                                     true),
@@ -528,6 +540,12 @@ function fb_probe_sicherung()
         array('fremd',       json_encode(array('broker' => 'x', 'topic' => 'y')),     false),
         array('kein JSON',   'das ist keine Sicherung',                               false),
         array('leer',        '{}',                                                    false),
+        array('eigene Sicherung', json_encode($eigene),                               true),
+        array('Token als Liste', json_encode(array_merge($voll, array('aktionstoken' => array('x', 'y')))), false),
+        array('Token Array', json_encode(array_merge($voll, array('aktionstoken' => 'Array'))), false),
+        array('Fenster als Text', json_encode(array_merge($voll, array('fenster' => 'kaputt'))), false),
+        array('Breite abc',  json_encode(array_merge($voll, array('breite' => 'abc'))),   false),
+        array('Thema als Liste', json_encode(array_merge($voll, array('mqtt_topic' => array('a')))), false),
     );
     $schlecht = array();
     foreach ($faelle as $f) {
@@ -844,8 +862,9 @@ function fb_test_sonne()
     $z[] = sprintf(fb_klartext('TEST.SONNE_STAND'), $s['hoehe'], $s['azimut'],
                    $s['deklination'], $s['zeitgleichung']);
     $z[] = '';
-    $z[] = sprintf('%-10s %6s %8s %8s %8s %8s %7s', 'Kuerzel', 'Dir', 'Einfall',
-                   'Horizont', 'W/m2', 'Watt', 'Urteil');
+    $z[] = sprintf('%-10s %6s %8s %8s %8s %8s %7s', fb_klartext('TAB.KUERZEL'), 'Dir',
+                   fb_klartext('TEST.SP_EINFALL'), fb_klartext('TEST.SP_HORIZONT'), 'W/m2',
+                   fb_klartext('TEST.SP_WATT'), fb_klartext('TEST.SP_URTEIL'));    // O16
     $z[] = str_repeat('-', 64);
     /* JETZT rechnen, nicht den abgelegten Stand anzeigen.
      *
@@ -902,7 +921,8 @@ function fb_test_tagesgang()
     $z = array();
     $z[] = fb_klartext('TEST.TAGESGANG_KOPF');
     $z[] = '';
-    $kopf = sprintf('%5s %6s %6s', 'Zeit', 'Hoehe', 'Azim');
+    $kopf = sprintf('%5s %6s %6s', fb_klartext('TEST.SP_ZEIT'), fb_klartext('TEST.SP_HOEHE'),
+                    fb_klartext('TEST.SP_AZIM'));    // O16
     foreach ($fenster as $f) { $kopf .= sprintf(' %8s', substr($f['kuerzel'], 0, 8)); }
     $z[] = $kopf;
     $z[] = str_repeat('-', strlen($kopf));
@@ -956,7 +976,8 @@ function fb_test_messwerte()
     $z = array();
     $z[] = sprintf(fb_klartext('TEST.MESS_KOPF'), (int) $cfg['hoechstalter']);
     $z[] = '';
-    $z[] = sprintf('%-22s %10s %10s  %s', 'Name', 'Wert', 'Alter/s', 'Zustand');
+    $z[] = sprintf('%-22s %10s %10s  %s', fb_klartext('TEST.SP_NAME'), fb_klartext('TEST.SP_WERT'),
+                   fb_klartext('TEST.SP_ALTER'), fb_klartext('TEST.SP_ZUSTAND'));    // O16
     $z[] = str_repeat('-', 60);
     foreach ($m as $name => $v) {
         $a = $jetzt - (int) $v['t'];
@@ -1021,7 +1042,7 @@ function fb_test_endpunkt()
      * abgeschaltet: file_get_contents folgt von sich aus bis zu zwanzigmal
      * und schickt dabei mitgegebene Kopfzeilen erneut. */
     $ctx = stream_context_create(array('http' => array(
-        'timeout' => 10, 'ignore_errors' => true,
+        'timeout' => 3, 'ignore_errors' => true,          // O9: 3 s wie die Pruefzeile
         'follow_location' => 0, 'max_redirects' => 1)));
     /* DAS @ GENUEGT HIER NICHT.
      *
@@ -1056,14 +1077,21 @@ function fb_test_endpunkt()
  */
 function fb_probe_endpunkt()
 {
-    $token = trim((string) fb_config()['aktionstoken']);
-    if ($token === '') { return array(null, fb_klartext('TEST.A_TOKEN_NEIN')); }
+    $token = fb_config()['aktionstoken'];
+    if (!fb_token_gueltig($token)) { return array(null, fb_klartext('TEST.A_TOKEN_NEIN')); }
+    /* O9 (Durchgang 30.09.2026): Zeitgrenze 3 s, und KEINE Antwort ist
+     * "nicht feststellbar" (grauer Strich mit Satz), kein Kreuz (Regeln/04,
+     * Selbstpruefung ruft den eigenen Endpunkt auf). Bis 0.12.10 stand nach
+     * 10 s ein Kreuz (gemessen, Oberflaeche-Pruefer Nr. 9). */
     $ctx = stream_context_create(array('http' => array(
-        'timeout' => 10, 'ignore_errors' => true,
+        'timeout' => 3, 'ignore_errors' => true,
         'follow_location' => 0, 'max_redirects' => 1)));
     $adresse = fb_endpunkt() . '?token=' . $token . '&selftest=1';
     $text = fb_holen($adresse, $ctx);
-    if ($text === false || strpos((string) $text, 'SELBSTTEST;OK=1') === false) {
+    if ($text === false) {
+        return array(null, sprintf(fb_klartext('TEST.P_EP_KEINE_ANTWORT'), $adresse));
+    }
+    if (strpos((string) $text, 'SELBSTTEST;OK=1') === false) {
         return array(false, sprintf(fb_klartext('TEST.P_EP_FEHL'), $adresse,
                      $text === false ? '-' : substr(trim((string) $text), 0, 120)));
     }
@@ -1078,9 +1106,17 @@ function fb_probe_endpunkt()
 
 function fb_test_rechnen()
 {
-    list($gerechnet, $stand) = fb_lauf(true);
+    list($gerechnet, $stand, $warum) = fb_lauf(true);
     $z = array();
-    $z[] = sprintf(fb_klartext('TEST.RECHNEN_KOPF'), date('d.m.Y H:i:s', (int) $stand['ts']));
+    /* C6: nicht gerechnet heisst: der gezeigte Stand ist der alte - und das
+     * steht davor. */
+    if (!$gerechnet) {
+        $z[] = fb_klartext('ALLG.NICHT_GERECHNET') . ' ' . fb_lauf_grund_text($warum);
+        /* Gibt es noch gar keinen Stand, ist nichts anzuzeigen. */
+        if (!isset($stand['ts'], $stand['meldung'])) { return implode("\n", $z) . "\n"; }
+    }
+    $z[] = sprintf(fb_klartext('TEST.RECHNEN_KOPF'),
+                   date('d.m.Y H:i:s', isset($stand['ts']) ? (int) $stand['ts'] : 0));
     if ($stand['meldung'] === 'KEIN_STANDORT') {
         $z[] = fb_klartext('TEST.A_STANDORT_NEIN');
         return implode("\n", $z) . "\n";
@@ -1092,8 +1128,9 @@ function fb_test_rechnen()
     }
     $z[] = '';
     foreach ((isset($stand['fenster']) ? $stand['fenster'] : array()) as $e) {
+        $fb_marke = '[' . fb_klartext('TEST.MARKE_BESCHATTEN') . ']';     // O16
         $z[] = sprintf('%-10s %+5d %s  %s', $e['kuerzel'], (int) $e['urteil'],
-            $e['beschatten'] ? '[beschatten]' : '[           ]',
+            $e['beschatten'] ? $fb_marke : str_repeat(' ', strlen($fb_marke)),
             fb_klartext('GRUND.' . strtoupper($e['grund'])));
         if ($e['begruendung'] !== '') { $z[] = '           ' . $e['begruendung']; }
     }

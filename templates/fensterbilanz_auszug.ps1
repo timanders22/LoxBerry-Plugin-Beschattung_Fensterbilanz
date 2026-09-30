@@ -87,16 +87,26 @@ for ($i = 0; $i -lt $anfaenge.Count; $i++) {
     $kopf = if ($kopfEnde -gt 0) { $block.Substring(0, $kopfEnde) } else { $block }
     $mT = [regex]::Match($kopf, '\sTitle="([^"]*)"')
     $titel = if ($mT.Success) { $mT.Groups[1].Value } else { '' }
+    # O10 (Durchgang 30.09.2026): ohne Title gilt Desc - wie im Plugin
+    # (fb_projekt_lesen). Bis 0.12.10 ergab ein Baustein mit leerem Title und
+    # Desc "Bad Ost" hier das Kuerzel FENSTER, aus der Datei BAD_OST
+    # (gemessen, Oberflaeche-Pruefer Nr. 10).
+    if ($titel -eq '') {
+        $mDs = [regex]::Match($kopf, '\sDesc="([^"]*)"')
+        if ($mDs.Success) { $titel = $mDs.Groups[1].Value }
+    }
     $titel = [System.Net.WebUtility]::HtmlDecode($titel)
 
     $mD = [regex]::Match($block, '<Co K="Dir"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
     $mDT = [regex]::Match($block, '<Co K="DirTol"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
 
     if ($mD.Success) {
+        # O10: kaufmaennisch runden wie PHP round() - [math]::Round rundet ab
+        # Werk auf die gerade Zahl (22.5 -> 22, im Plugin 23).
         $null = $fenster.Add([ordered]@{
             titel  = $titel
-            dir    = [int][math]::Round([double]$mD.Groups[1].Value)
-            dirtol = if ($mDT.Success) { [int][math]::Round([double]$mDT.Groups[1].Value) } else { $null }
+            dir    = [int][math]::Round([double]$mD.Groups[1].Value, [System.MidpointRounding]::AwayFromZero)
+            dirtol = if ($mDT.Success) { [int][math]::Round([double]$mDT.Groups[1].Value, [System.MidpointRounding]::AwayFromZero) } else { $null }
         })
     } else {
         # MELDEN, nicht raten. Ein Baustein, dessen Richtung an einem Eingang

@@ -18,15 +18,34 @@
 # in der ersten Fassung dieser Datei stand er hier noch.)
 LAUF="REPLACELBPBINDIR/fb_lauf.php"
 
+# DIE FEHLERAUSGABE GEHT NACH cron.err (I8, Durchgang 30.09.2026;
+# Hausstandard Regeln/06, Bauform Docker NG 1.3.7 und Abfahrts-Assistent
+# 1.6.10). LoxBerry ruft jede Cron-Datei mit "> /dev/null 2>&1" auf
+# (/etc/cron.d/lbdefaults, Geraet/2026-09-05/11_cron.txt). Bis 0.12.10 stand
+# hier "nur die Fehlerausgabe geht weiter" - sie ging nirgends hin, auch nicht
+# "kein Standort", "es fehlen gueltige Messwerte" oder ein PHP-Abbruch
+# (Installer-Pruefer I8). Das Verzeichnis wird vorher angelegt, sonst
+# scheitert schon die Umlenkung; touch, weil ein Anhaengen ohne Inhalt die
+# Aenderungszeit nicht auffrischt (Regeln/06, 16.09.2026); gekappt auf die
+# letzten 300 Zeilen ueber 256 kB, denn log/ liegt im Arbeitsspeicher. Der
+# Reiter Logdateien zeigt die Datei, sobald etwas darin steht.
+ERR="REPLACELBPLOGDIR/cron.err"
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "$ERR" 2>/dev/null
+if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+
 # Fail loud statt still. Ein Cron, der schweigend nichts tut, ist schlimmer
 # als keiner: in Loxone sieht ein stehengebliebenes Urteil aus wie ein
-# gueltiges. Nur die Fehlerausgabe geht weiter, die normale Ausgabe nicht -
-# sonst schriebe jeder Lauf eine Zeile in die Systempost.
+# gueltiges. Die normale Ausgabe geht nicht mit - sonst stuende jeder Lauf
+# in der Datei.
 if [ ! -f "$LAUF" ]; then
     MELDUNG="Fensterbilanz: fb_lauf.php wurde nicht gefunden - es wird nicht gerechnet."
     command -v logger >/dev/null 2>&1 && logger -t fensterbilanz "$MELDUNG"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MELDUNG" >> "$ERR" 2>/dev/null
     echo "$MELDUNG" >&2
     exit 1
 fi
 
-php "$LAUF" >/dev/null
+php "$LAUF" >/dev/null 2>>"$ERR"
