@@ -83,6 +83,10 @@ if (isset($_POST['activetab']) && is_string($_POST['activetab'])
 $fb_meldungen = array();
 $fb_fehler = array();
 $fb_testausgabe = '';
+/* X-2 (Verbesserungsbau 01.10.2026): welches Formular, welche Felder
+ * beanstandet wurden - daraus reisen die Eingaben mit der Einmalmeldung. */
+$fb_eingaben_form = '';
+$fb_beanstandet = array();
 $fb_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 /* O1: war es ein POST? Bleibt wahr, auch wenn der Wachposten ihn abweist -
  * auch die Abweisung endet mit einer Umleitung. */
@@ -261,9 +265,11 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
     /* Die Tabelle steht seit 0.12.11 in fb_zahlfelder() - dieselbe, mit der
      * das Zurueckspielen einer Sicherung prueft (C1). */
     foreach (fb_zahlfelder() as $fb_k => $fb_d) {
+        $fb_n0 = count($fb_fehler);
         $w = $fb_zahl(isset($_POST[$fb_k]) ? $_POST[$fb_k] : '',
                       $fb_d[0], $fb_d[1], fb_t($fb_d[3]), $fb_d[2]);
         if ($w !== null) { $fb_cfg[$fb_k] = $w; }
+        if (count($fb_fehler) > $fb_n0) { $fb_beanstandet[] = $fb_k; }   // X-2
     }
     /* Die Haken. isset() genuegt hier, weil sie in DIESEM Formular stehen -
      * jeder Reiter hat seinen eigenen Handler, und ein Haken aus einem
@@ -278,6 +284,7 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
         $fb_cfg['himmelsmodell'] = $fb_modell;
     } elseif ($fb_modell !== '') {
         $fb_fehler[] = sprintf(fb_t('FEHLER.MODELL'), $fb_modell);
+        $fb_beanstandet[] = 'himmelsmodell';
     }
 
     /* Beanstanden, nicht zurechtbiegen: eine Ausschaltschwelle ueber der
@@ -285,11 +292,21 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
     if ((int) $fb_cfg['schwelle_aus'] >= (int) $fb_cfg['schwelle_ein']) {
         $fb_fehler[] = sprintf(fb_t('FEHLER.SCHWELLEN'),
                                (int) $fb_cfg['schwelle_aus'], (int) $fb_cfg['schwelle_ein']);
+        $fb_beanstandet[] = 'schwelle_ein';
+        $fb_beanstandet[] = 'schwelle_aus';
     }
     if ((int) $fb_cfg['gewicht_raum'] + (int) $fb_cfg['gewicht_tag'] === 0) {
         $fb_fehler[] = fb_t('FEHLER.GEWICHTE_NULL');
+        $fb_beanstandet[] = 'gewicht_raum';
+        $fb_beanstandet[] = 'gewicht_tag';
     }
-    /* BEANSTANDEN, ABER SPEICHERN, WAS IN ORDNUNG IST.
+    /* ENTSCHEIDUNG 16 (Verbesserungsbau 01.10.2026): BEI EINER BEANSTANDUNG
+     * WIRD NICHTS GESPEICHERT - auch nicht die uebrigen Felder. Die
+     * eingetippten Werte kommen per X-2 zurueck ins Formular, das
+     * beanstandete Feld ist markiert. Der Grund fuer das Teilspeichern
+     * unten ("alles neu tippen") entfaellt damit. Bis 0.12.12 stand hier:
+     *
+     * BEANSTANDEN, ABER SPEICHERN, WAS IN ORDNUNG IST.
      *
      * Hier stand ein "if (!$fb_fehler)" um das Speichern. Wirkung, gemessen:
      * ein einziger Wert ausserhalb seiner Grenzen - etwa der Glas-Beiwert
@@ -305,12 +322,14 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
      * Moeglich ist das, weil $fb_zahl() bei einer Beanstandung null
      * zurueckgibt und der bisherige Wert dann unangetastet bleibt - das
      * Feld wird also uebergangen, nicht zurechtgebogen. */
-    {
+    if ($fb_fehler) {
+        $fb_eingaben_form = 'modell';
+        $fb_fehler[] = fb_t('ALLG.NICHTS_GESPEICHERT');
+    } else {
         $fb_neu_cfg = fb_config_richten($fb_cfg);
         if (fb_config_speichern($fb_neu_cfg)) {
             fb_config_freigeben($fb_sperre); $fb_sperre = null;
-            if (!$fb_fehler) { $fb_meldungen[] = fb_t('ALLG.GESPEICHERT'); }
-            else { $fb_meldungen[] = fb_t('ALLG.TEILWEISE'); }
+            $fb_meldungen[] = fb_t('ALLG.GESPEICHERT');
             fb_log('Standort und Modellwerte gespeichert.');
             /* Neu rechnen, aber NUR wenn sich wirklich etwas geaendert hat.
              *
@@ -372,6 +391,7 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
             $fb_vor_n = count($fb_fehler);
             $w = $fb_zahl($fb_feld($fb_postname[$fb_f], $fb_i), $fb_d[0], $fb_d[1],
                           $bez . ' / ' . fb_t($fb_d[3]), $fb_d[2]);
+            if (count($fb_fehler) > $fb_vor_n) { $fb_beanstandet[] = $fb_postname[$fb_f] . '.' . $fb_i; }   // X-2
             if ($w !== null) {
                 $f[$fb_f] = $w;
             } elseif (count($fb_fehler) > $fb_vor_n && isset($fb_cfg['fenster'][$fb_i][$fb_f])) {
@@ -394,10 +414,13 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
             if ($fb_name_roh !== $f['name']) {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.NAME_GEAENDERT'), $fb_i + 1,
                                        $fb_name_roh, $f['name']);
+                $fb_beanstandet[] = 'f_name.' . $fb_i;
             }
             if ($f['kuerzel'] === '') {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.KUERZEL_FEHLT'), $fb_i + 1);
+                $fb_beanstandet[] = 'f_kuerzel.' . $fb_i;
             } elseif ($f['kuerzel'] !== $roh_kuerzel) {
+                $fb_beanstandet[] = 'f_kuerzel.' . $fb_i;
                 /* MELDEN, nicht stillschweigend uebernehmen: aus dem
                  * Kuerzel wird der Name eines virtuellen Eingangs und ein
                  * MQTT-Zweig. Wer nicht erfaehrt, dass Zeichen weggefallen
@@ -414,12 +437,14 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
                                            $fb_i + 1, $f['kuerzel'],
                                            $fb_kuerzel_gesehen[strtoupper($f['kuerzel'])]);
                     $fb_blockiert = true;
+                    $fb_beanstandet[] = 'f_kuerzel.' . $fb_i;
                 } else {
                     $fb_kuerzel_gesehen[strtoupper($f['kuerzel'])] = $fb_i + 1;
                 }
             }
             if (!empty($_POST['f_raumwerte'][$fb_i]) && $f['raum'] === '') {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.RAUM_FEHLT'), $fb_i + 1);
+                $fb_beanstandet[] = 'f_raum.' . $fb_i;
             }
             /* Auch der Raumschluessel wird zurechtgerueckt - und das wurde
              * bis zum ersten Prueflauf gar nicht gemeldet. Aus ihm entsteht
@@ -429,11 +454,13 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
             if ($f['raum'] !== '' && $f['raum'] !== $roh_raum) {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.RAUM_GEAENDERT'),
                                        $fb_i + 1, $roh_raum, $f['raum']);
+                $fb_beanstandet[] = 'f_raum.' . $fb_i;
             }
             list($fb_punkte, $fb_unlesbar) = fb_horizont_lesen($f['horizont']);
             if ($fb_unlesbar) {
                 $fb_fehler[] = sprintf(fb_t('FEHLER.HORIZONT'), $fb_i + 1,
                                        implode(' | ', $fb_unlesbar));
+                $fb_beanstandet[] = 'f_horizont.' . $fb_i;
             }
         }
         /* ZEILE LEEREN.
@@ -455,12 +482,16 @@ if ($fb_post && isset($_POST['speichern_fenster'])) {
         }
         $fb_neu[$fb_i] = $f;
     }
-    /* Beanstandungen melden, aber speichern, was in Ordnung ist - sonst
-     * tippt der Benutzer wegen einer Zeile alles noch einmal. Blockiert
-     * wird nur, wenn ein Kuerzel doppelt vorkommt: dann gingen in Loxone
-     * und ueber MQTT Werte lautlos verloren, weil zwei Fenster denselben
-     * Namen truegen. */
-    if (!$fb_blockiert) {
+    /* ENTSCHEIDUNG 16 (Verbesserungsbau 01.10.2026): bei JEDER Beanstandung
+     * wird nichts gespeichert. Bis 0.12.12 wurde gespeichert, was in Ordnung
+     * war ("sonst tippt der Benutzer wegen einer Zeile alles noch einmal"),
+     * blockiert nur bei einem doppelten Kuerzel. Das Neutippen erspart jetzt
+     * X-2: die eingetippte Tabelle kommt zurueck, das beanstandete Feld ist
+     * markiert. */
+    if ($fb_fehler || $fb_blockiert) {
+        $fb_eingaben_form = 'fenster';
+        $fb_fehler[] = fb_t('ALLG.NICHTS_GESPEICHERT');
+    } else {
         $fb_cfg['fenster'] = $fb_neu;
         $fb_neu_cfg = fb_config_richten($fb_cfg);
         if (fb_config_speichern($fb_neu_cfg)) {
@@ -575,17 +606,19 @@ if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_ein
      * beanstandet. Ein Tippfehler in "Fensterhoehe" ergab damit
      * kommentarlos 1,5 m, und der eingetragene Horizont war falsch. */
     $fb_rz_maengel = array();
-    $fb_rz = function ($name, $vorgabe, $von, $bis, $titel) use (&$fb_rz_maengel) {
+    $fb_rz = function ($name, $vorgabe, $von, $bis, $titel) use (&$fb_rz_maengel, &$fb_beanstandet) {
         if (!isset($_POST[$name]) || !is_string($_POST[$name])) { return $vorgabe; }
         $roh = trim(str_replace(',', '.', $_POST[$name]));
         if ($roh === '') { return $vorgabe; }
         if (!is_numeric($roh)) {
             $fb_rz_maengel[] = sprintf(fb_t('FEHLER.KEINE_ZAHL'), $titel, $roh);
+            $fb_beanstandet[] = $name;     // X-2
             return null;
         }
         $wert = (float) $roh;
         if ($wert < $von || $wert > $bis) {
             $fb_rz_maengel[] = sprintf(fb_t('FEHLER.AUSSERHALB'), $titel, $roh, $von, $bis);
+            $fb_beanstandet[] = $name;     // X-2
             return null;
         }
         return $wert;
@@ -597,6 +630,8 @@ if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_ein
                ? (int) $fb_cfg_r['fenster'][$fb_zeile_r]['azimut'] : -1;
     if ($fb_az_r < 0 || $fb_cfg_r['fenster'][$fb_zeile_r]['kuerzel'] === '') {
         $fb_fehler[] = fb_t('EINST.R_KEIN_FENSTER');
+        $fb_beanstandet[] = 'h_zeile';
+        $fb_eingaben_form = 'rechner';
     } else {
         /* Grenzen wie an den uebrigen Zahlenfeldern: Hoehen und Abstaende
          * in Metern, und was ausserhalb liegt, wird GENANNT. */
@@ -614,8 +649,10 @@ if ($fb_post && (isset($_POST['horizont_rechnen']) || isset($_POST['horizont_ein
                 $fb_r_hoehe, $fb_r_fenster, $fb_r_vor,
                 $fb_r_seit, $fb_r_breite, $fb_az_r);
         }
+        if ($fb_rz_maengel) { $fb_eingaben_form = 'rechner'; }   // X-2
         foreach ($fb_r_meld as $fb_mm) {
-            if ($fb_mm === 'ABSTAND')    { $fb_fehler[] = fb_t('EINST.R_ABSTAND'); }
+            if ($fb_mm === 'ABSTAND')    { $fb_fehler[] = fb_t('EINST.R_ABSTAND');
+                                           $fb_beanstandet[] = 'h_vor'; $fb_eingaben_form = 'rechner'; }
             if ($fb_mm === 'ZU_NIEDRIG') { $fb_meldungen[] = fb_t('EINST.R_ZU_NIEDRIG'); }
             if ($fb_mm === 'SEHR_HOCH')  { $fb_meldungen[] = fb_t('EINST.R_SEHR_HOCH'); }
             if ($fb_mm === 'OHNE_BREITE'){ $fb_meldungen[] = fb_t('EINST.R_OHNE_BREITE'); }
@@ -708,6 +745,7 @@ if ($fb_post && isset($_POST['speichern_raeume'])) {
         if ($fb_qq === '') { continue; }
         $fb_w = $fb_zahl($fb_qq, 0.1, 1000.0,
                          fb_t('EINST.L_RAUMFLAECHE') . ' ' . $fb_rr, 1);
+        if ($fb_w === null) { $fb_beanstandet[] = 'r_qm.' . $fb_rr; }   // X-2 (leer ist oben uebergangen)
         if ($fb_w !== null) { $fb_raeume_neu[$fb_rr] = $fb_w; }
         elseif (isset($fb_cfg['raumflaechen'][$fb_rr])) {
             /* O5: abgewiesen - die bisherige Flaeche bleibt, wie die Meldung sagt. */
@@ -716,7 +754,11 @@ if ($fb_post && isset($_POST['speichern_raeume'])) {
     }
     $fb_cfg['raumflaechen'] = $fb_raeume_neu;
     $fb_neu_cfg = fb_config_richten($fb_cfg);
-    if (fb_config_speichern($fb_neu_cfg)) {
+    if ($fb_fehler) {
+        /* Entscheidung 16 (Verbesserungsbau 01.10.2026): nichts speichern. */
+        $fb_eingaben_form = 'raeume';
+        $fb_fehler[] = fb_t('ALLG.NICHTS_GESPEICHERT');
+    } elseif (fb_config_speichern($fb_neu_cfg)) {
         fb_config_freigeben($fb_sperre); $fb_sperre = null;
         $fb_meldungen[] = fb_t('ALLG.GESPEICHERT');
         fb_log('Raumflaechen gespeichert (' . count($fb_neu_cfg['raumflaechen']) . ' Raeume).');
@@ -978,6 +1020,8 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     /* M4: Praefix und Schalter VOR dem Speichern - fuer das Abraeumen. */
     $fb_mqtt_vorher = $fb_cfg;
     $fb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+    /* Sonne-1 (Verbesserungsbau 01.10.2026): im selben Formular, ab Werk aus. */
+    $fb_cfg['sonne_teilen'] = !empty($_POST['sonne_teilen']) ? 1 : 0;
     /* Gegen den ROHEN Wert pruefen, nicht gegen den gesaeuberten. Sonst
      * wird "haus fenster" beanstandet und "haus\"fenster" stillschweigend
      * zu "hausfenster" - dieselbe Eingabeart, zweierlei Verhalten.
@@ -990,6 +1034,7 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_thema_roh = (isset($_POST['mqtt_topic']) && is_string($_POST['mqtt_topic']))
         ? trim($_POST['mqtt_topic']) : '';
     $fb_thema = $fb_thema_roh;
+    $fb_n0 = count($fb_fehler);
     if ($fb_thema === '') {
         /* EIN LEERES FELD LOESCHT NICHTS.
          *
@@ -1011,17 +1056,22 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     } else {
         $fb_cfg['mqtt_topic'] = $fb_thema;
     }
+    if (count($fb_fehler) > $fb_n0) { $fb_beanstandet[] = 'mqtt_topic'; }   // X-2
     $fb_p_alt = (string) $fb_mqtt_vorher['mqtt_topic'];
     if ($fb_cfg['mqtt_topic'] !== $fb_p_alt) { $fb_cfg['mqtt_praefix_alt'] = $fb_p_alt; }
-    /* Auch hier wird gespeichert, was in Ordnung ist: ein unzulaessiges
-     * Thema hat vorher den Haken "MQTT einschalten" mitgerissen, den der
-     * Bediener im selben Formular gesetzt hatte - gemessen. Das Thema
-     * bleibt in diesem Fall auf seinem alten Wert stehen. */
-    $fb_ok_m = fb_config_speichern($fb_cfg);
+    /* ENTSCHEIDUNG 16 (Verbesserungsbau 01.10.2026): bei einer Beanstandung
+     * wird NICHTS gespeichert, auch nicht der Haken "MQTT einschalten" -
+     * X-2 bringt ihn samt dem eingetippten Thema zurueck ins Formular. Bis
+     * 0.12.12 stand hier "Auch hier wird gespeichert, was in Ordnung ist"
+     * (der Haken ging mit, das Thema blieb auf dem alten Wert). Ohne
+     * Speichern gibt es auch kein Abraeumen und keine neue Abodatei. */
+    $fb_ok_m = $fb_fehler ? false : fb_config_speichern($fb_cfg);
     fb_config_freigeben($fb_sperre);
-    if ($fb_ok_m) {
-        if (!$fb_fehler) { $fb_meldungen[] = fb_t('ALLG.GESPEICHERT'); }
-        else { $fb_meldungen[] = fb_t('ALLG.TEILWEISE'); }
+    if ($fb_fehler) {
+        $fb_eingaben_form = 'mqtt';
+        $fb_fehler[] = fb_t('ALLG.NICHTS_GESPEICHERT');
+    } elseif ($fb_ok_m) {
+        $fb_meldungen[] = fb_t('ALLG.GESPEICHERT');
         fb_log('MQTT-Einstellungen gespeichert.');
         /* M8: die Abodatei auf das Praefix nachfuehren. */
         fb_abo_datei($fb_cfg['mqtt_topic'], true);
@@ -1112,15 +1162,21 @@ if ($fb_post && isset($_POST['test'])) {
  * Unterstrich, und fb_sicherung_lesen() ueberspringt genau diese - sonst
  * waere die eigene Sicherung beim Zurueckspielen "fremd". */
 if ($fb_post && isset($_POST['fb_sichern'])) {
-    $fb_aus = array_merge(array(
-        '_hinweis' => fb_klartext('EINST.SICH_KOPF'),
-        '_plugin'  => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
-        /* KEINE Fassungsnummer. Sie stuende hier als zweite Quelle neben
-         * plugin.cfg, release.cfg, prerelease.cfg und der README - und
-         * Werkzeuge/fassung_setzen.py kennt genau diese vier. Eine funfte
-         * Stelle waere eine, die beim naechsten Release stehenbleibt. */
-        '_stand'   => date('Y-m-d H:i:s'),
-    ), fb_config());
+    /* KEINE Fassungsnummer im Kopf (fb_sicherung_bauen()). Sie stuende hier
+     * als zweite Quelle neben plugin.cfg, release.cfg, prerelease.cfg und der
+     * README - und Werkzeuge/fassung_setzen.py kennt genau diese vier. Eine
+     * fuenfte Stelle waere eine, die beim naechsten Release stehenbleibt. */
+    $fb_aus = fb_sicherung_bauen();
+    /* X-3 (Verbesserungsbau 01.10.2026): wuerde das eigene Zurueckspielen
+     * diese Datei abweisen, sagt es der Kopf "_warnung" - nur NAMEN, nie
+     * Werte. Die Sicherung wird trotzdem vollstaendig geliefert (Bauart EVCC,
+     * Entscheidung 13). "_" am Anfang: fb_sicherung_lesen() ueberspringt ihn. */
+    $fb_alt_s = fb_rueckspiel_altwerte($fb_aus);
+    if ($fb_alt_s) {
+        $fb_aus = array_merge(array_slice($fb_aus, 0, 3, true),
+            array('_warnung' => sprintf(fb_klartext('EINST.SICH_WARN_KOPF'), implode(', ', $fb_alt_s))),
+            array_slice($fb_aus, 3, null, true));
+    }
     $fb_js = json_encode($fb_aus,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($fb_js !== false) {
@@ -1219,13 +1275,19 @@ foreach (array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite',
         $fb_formwerte[$fb_fk] = $_POST[$fb_fk];
     }
 }
+/* X-2: nur nach einer Beanstandung, nur das beanstandete Formular. */
+$fb_eingaben = ($fb_post && $fb_eingaben_form !== '')
+    ? fb_eingaben_sammeln($fb_eingaben_form, $fb_beanstandet) : null;
 if ($fb_post_roh) {
     if (fb_einmal_schreiben(array('meldungen' => $fb_meldungen, 'fehler' => $fb_fehler,
             'hinweise' => $fb_hinweise, 'ergaenzt' => $fb_ergaenzt, 'ausgabe' => $fb_testausgabe,
-            'rechner' => $fb_rechner, 'formular' => $fb_formwerte))) {
+            'rechner' => $fb_rechner, 'formular' => $fb_formwerte, 'eingaben' => $fb_eingaben))) {
         header('Location: index.php?form=' . rawurlencode(substr($fb_tab, 4)), true, 303);
         exit;
     }
+    /* X-2: liess sich die Einmalmeldung nicht schreiben, wird gleich
+     * angezeigt (siehe oben) - die Eingaben gelten dann fuer diese Seite. */
+    if ($fb_eingaben !== null) { fb_eingaben_setzen($fb_eingaben); }
 } else {
     $fb_einmal = fb_einmal_lesen();
     if ($fb_einmal !== null) {
@@ -1236,6 +1298,7 @@ if ($fb_post_roh) {
         $fb_testausgabe = $fb_einmal['ausgabe'];
         $fb_rechner = $fb_einmal['rechner'];
         $fb_formwerte = $fb_einmal['formular'];
+        fb_eingaben_setzen($fb_einmal['eingaben']);   // X-2
     }
 }
 
@@ -1386,6 +1449,9 @@ if ($fb_rahmen) {
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
+/* Eigene Zutat (X-2, Verbesserungsbau 01.10.2026), nicht aus der Vorlage:
+   das beanstandete Feld nach einer Rueckgabe der Eingaben. */
+.sm-wrap .sm-beanstandet { outline: 2px solid #b00000; outline-offset: 1px; background: #fff5f5; }
 .sm-aus { color: #b00000; font-weight: 700; }
 /* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Die Raute im SVG wird
    als %23 geschrieben: eine rohe Raute beendet in einer CSS-Adresse den Wert. */
@@ -1479,7 +1545,7 @@ window.addEventListener('resize', fbRollbalken);
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= fb_e(fb_t('ALLG.LETZTER_LAUF')) ?>
     <b class="<?= fb_alter() >= 0 && fb_alter() < 900 ? 'sm-an' : 'sm-aus' ?>"><?= fb_alter() < 0 ? '&ndash;' : (int) floor(fb_alter() / 60) ?></b>
-    <span class="sm-hilfe"><?= fb_alter() < 0 ? fb_e(fb_t('ALLG.NIE')) : fb_e(fb_t('ALLG.MINUTEN_HER')) ?></span>
+    <span class="sm-hilfe"><?= fb_alter() < 0 ? fb_e(fb_stand_voraus($fb_stand) > 0 ? sprintf(fb_t('ALLG.ZUKUNFT'), fb_stand_voraus($fb_stand)) : fb_t('ALLG.NIE')) : fb_e(fb_t('ALLG.MINUTEN_HER')) ?></span>
   </div>
   <div class="sm-kachel"><?= fb_e(fb_t('ALLG.FENSTER')) ?>
     <b><?= count($fb_liste) ?></b>
@@ -1577,14 +1643,15 @@ window.addEventListener('resize', fbRollbalken);
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
 <div class="sm-step"><?= fb_t('EINST.ORT_ERKLAERUNG') ?></div>
+<?= fb_eingaben_hinweis('modell') ?>
 <div class="sm-feld">
   <label for="fb_breite"><?= fb_e(fb_t('EINST.L_BREITE')) ?></label>
-  <input data-role="none" type="text" id="fb_breite" name="breite" value="<?= fb_e($fb_cfg['breite']) ?>">
+  <input data-role="none" type="text" id="fb_breite" name="breite" value="<?= fb_e(fb_eingabe('modell', 'breite', $fb_cfg['breite'])) ?>"<?= fb_markierung('modell', 'breite') ?>>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BREITE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_laenge"><?= fb_e(fb_t('EINST.L_LAENGE')) ?></label>
-  <input data-role="none" type="text" id="fb_laenge" name="laenge" value="<?= fb_e($fb_cfg['laenge']) ?>">
+  <input data-role="none" type="text" id="fb_laenge" name="laenge" value="<?= fb_e(fb_eingabe('modell', 'laenge', $fb_cfg['laenge'])) ?>"<?= fb_markierung('modell', 'laenge') ?>>
   <p class="sm-hilfe"><?= fb_t('EINST.H_ORT') ?></p>
 </div>
 
@@ -1592,87 +1659,88 @@ window.addEventListener('resize', fbRollbalken);
 <div class="sm-step"><?= fb_t('EINST.MODELL_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="fb_tagesgrenze"><?= fb_e(fb_t('EINST.L_TAGESGRENZE')) ?></label>
-  <input data-role="none" type="text" id="fb_tagesgrenze" name="tagesgrenze" value="<?= (int) $fb_cfg['tagesgrenze'] ?>">
+  <input data-role="none" type="text" id="fb_tagesgrenze" name="tagesgrenze" value="<?= fb_e(fb_eingabe('modell', 'tagesgrenze', (int) $fb_cfg['tagesgrenze'])) ?>"<?= fb_markierung('modell', 'tagesgrenze') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('tagesgrenze')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_TAGESGRENZE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_spreizung_tag"><?= fb_e(fb_t('EINST.L_SPREIZUNG_TAG')) ?></label>
-  <input data-role="none" type="text" id="fb_spreizung_tag" name="spreizung_tag" value="<?= (int) $fb_cfg['spreizung_tag'] ?>">
+  <input data-role="none" type="text" id="fb_spreizung_tag" name="spreizung_tag" value="<?= fb_e(fb_eingabe('modell', 'spreizung_tag', (int) $fb_cfg['spreizung_tag'])) ?>"<?= fb_markierung('modell', 'spreizung_tag') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('spreizung_tag')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SPREIZUNG_TAG') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_spreizung_raum"><?= fb_e(fb_t('EINST.L_SPREIZUNG_RAUM')) ?></label>
-  <input data-role="none" type="text" id="fb_spreizung_raum" name="spreizung_raum" value="<?= (int) $fb_cfg['spreizung_raum'] ?>">
+  <input data-role="none" type="text" id="fb_spreizung_raum" name="spreizung_raum" value="<?= fb_e(fb_eingabe('modell', 'spreizung_raum', (int) $fb_cfg['spreizung_raum'])) ?>"<?= fb_markierung('modell', 'spreizung_raum') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('spreizung_raum')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SPREIZUNG') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_gewicht_raum"><?= fb_e(fb_t('EINST.L_GEWICHT_RAUM')) ?></label>
-  <input data-role="none" type="text" id="fb_gewicht_raum" name="gewicht_raum" value="<?= (int) $fb_cfg['gewicht_raum'] ?>">
+  <input data-role="none" type="text" id="fb_gewicht_raum" name="gewicht_raum" value="<?= fb_e(fb_eingabe('modell', 'gewicht_raum', (int) $fb_cfg['gewicht_raum'])) ?>"<?= fb_markierung('modell', 'gewicht_raum') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_raum')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_RAUM') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_gewicht_tag"><?= fb_e(fb_t('EINST.L_GEWICHT_TAG')) ?></label>
-  <input data-role="none" type="text" id="fb_gewicht_tag" name="gewicht_tag" value="<?= (int) $fb_cfg['gewicht_tag'] ?>">
+  <input data-role="none" type="text" id="fb_gewicht_tag" name="gewicht_tag" value="<?= fb_e(fb_eingabe('modell', 'gewicht_tag', (int) $fb_cfg['gewicht_tag'])) ?>"<?= fb_markierung('modell', 'gewicht_tag') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_tag')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHTE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_schwelle_ein"><?= fb_e(fb_t('EINST.L_SCHWELLE_EIN')) ?></label>
-  <input data-role="none" type="text" id="fb_schwelle_ein" name="schwelle_ein" value="<?= (int) $fb_cfg['schwelle_ein'] ?>">
+  <input data-role="none" type="text" id="fb_schwelle_ein" name="schwelle_ein" value="<?= fb_e(fb_eingabe('modell', 'schwelle_ein', (int) $fb_cfg['schwelle_ein'])) ?>"<?= fb_markierung('modell', 'schwelle_ein') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('schwelle_ein')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SCHWELLE_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_schwelle_aus"><?= fb_e(fb_t('EINST.L_SCHWELLE_AUS')) ?></label>
-  <input data-role="none" type="text" id="fb_schwelle_aus" name="schwelle_aus" value="<?= (int) $fb_cfg['schwelle_aus'] ?>">
+  <input data-role="none" type="text" id="fb_schwelle_aus" name="schwelle_aus" value="<?= fb_e(fb_eingabe('modell', 'schwelle_aus', (int) $fb_cfg['schwelle_aus'])) ?>"<?= fb_markierung('modell', 'schwelle_aus') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('schwelle_aus')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_SCHWELLEN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_e_ref"><?= fb_e(fb_t('EINST.L_E_REF')) ?></label>
-  <input data-role="none" type="text" id="fb_e_ref" name="e_ref" value="<?= (int) $fb_cfg['e_ref'] ?>">
+  <input data-role="none" type="text" id="fb_e_ref" name="e_ref" value="<?= fb_e(fb_eingabe('modell', 'e_ref', (int) $fb_cfg['e_ref'])) ?>"<?= fb_markierung('modell', 'e_ref') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('e_ref')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_E_REF') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_albedo"><?= fb_e(fb_t('EINST.L_ALBEDO')) ?></label>
-  <input data-role="none" type="text" id="fb_albedo" name="albedo" value="<?= (int) $fb_cfg['albedo'] ?>">
+  <input data-role="none" type="text" id="fb_albedo" name="albedo" value="<?= fb_e(fb_eingabe('modell', 'albedo', (int) $fb_cfg['albedo'])) ?>"<?= fb_markierung('modell', 'albedo') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('albedo')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_ALBEDO') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_iam"><?= fb_e(fb_t('EINST.L_IAM')) ?></label>
-  <input data-role="none" type="text" id="fb_iam" name="iam_b0" value="<?= (int) $fb_cfg['iam_b0'] ?>">
+  <input data-role="none" type="text" id="fb_iam" name="iam_b0" value="<?= fb_e(fb_eingabe('modell', 'iam_b0', (int) $fb_cfg['iam_b0'])) ?>"<?= fb_markierung('modell', 'iam_b0') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('iam_b0')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_IAM') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_hoechstalter"><?= fb_e(fb_t('EINST.L_HOECHSTALTER')) ?></label>
-  <input data-role="none" type="text" id="fb_hoechstalter" name="hoechstalter" value="<?= (int) $fb_cfg['hoechstalter'] ?>">
+  <input data-role="none" type="text" id="fb_hoechstalter" name="hoechstalter" value="<?= fb_e(fb_eingabe('modell', 'hoechstalter', (int) $fb_cfg['hoechstalter'])) ?>"<?= fb_markierung('modell', 'hoechstalter') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('hoechstalter')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_HOECHSTALTER') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_rechentakt"><?= fb_e(fb_t('EINST.L_RECHENTAKT')) ?></label>
-  <input data-role="none" type="text" id="fb_rechentakt" name="rechentakt" value="<?= (int) $fb_cfg['rechentakt'] ?>">
+  <input data-role="none" type="text" id="fb_rechentakt" name="rechentakt" value="<?= fb_e(fb_eingabe('modell', 'rechentakt', (int) $fb_cfg['rechentakt'])) ?>"<?= fb_markierung('modell', 'rechentakt') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('rechentakt')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_RECHENTAKT') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_glaettung"><?= fb_e(fb_t('EINST.L_GLAETTUNG')) ?></label>
-  <input data-role="none" type="text" id="fb_glaettung" name="glaettung" value="<?= (int) $fb_cfg['glaettung'] ?>">
+  <input data-role="none" type="text" id="fb_glaettung" name="glaettung" value="<?= fb_e(fb_eingabe('modell', 'glaettung', (int) $fb_cfg['glaettung'])) ?>"<?= fb_markierung('modell', 'glaettung') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('glaettung')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GLAETTUNG') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_himmel"><?= fb_e(fb_t('EINST.L_HIMMELSMODELL')) ?></label>
-  <select data-role="none" id="fb_himmel" name="himmelsmodell">
-    <option value="isotrop"<?= $fb_cfg['himmelsmodell'] === 'isotrop' ? ' selected' : '' ?>><?= fb_e(fb_t('EINST.MODELL_ISOTROP')) ?></option>
-    <option value="hdkr"<?= $fb_cfg['himmelsmodell'] === 'hdkr' ? ' selected' : '' ?>><?= fb_e(fb_t('EINST.MODELL_HDKR')) ?></option>
+  <?php $fb_hm = fb_eingabe('modell', 'himmelsmodell', $fb_cfg['himmelsmodell']); ?>
+  <select data-role="none" id="fb_himmel" name="himmelsmodell"<?= fb_markierung('modell', 'himmelsmodell') ?>>
+    <option value="isotrop"<?= $fb_hm === 'isotrop' ? ' selected' : '' ?>><?= fb_e(fb_t('EINST.MODELL_ISOTROP')) ?></option>
+    <option value="hdkr"<?= $fb_hm === 'hdkr' ? ' selected' : '' ?>><?= fb_e(fb_t('EINST.MODELL_HDKR')) ?></option>
   </select>
   <p class="sm-hilfe"><?= fb_t('EINST.H_HIMMELSMODELL') ?></p>
 </div>
@@ -1680,7 +1748,7 @@ window.addEventListener('resize', fbRollbalken);
 <h3><?= fb_e(fb_t('EINST.H_VORSCHAU')) ?></h3>
 <div class="sm-feld">
   <label for="fb_vorschau"><?= fb_e(fb_t('EINST.L_VORSCHAU')) ?></label>
-  <input data-role="none" type="text" id="fb_vorschau" name="vorschau" value="<?= (int) $fb_cfg['vorschau'] ?>">
+  <input data-role="none" type="text" id="fb_vorschau" name="vorschau" value="<?= fb_e(fb_eingabe('modell', 'vorschau', (int) $fb_cfg['vorschau'])) ?>"<?= fb_markierung('modell', 'vorschau') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('vorschau')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_VORSCHAU') ?></p>
 </div>
@@ -1689,24 +1757,24 @@ window.addEventListener('resize', fbRollbalken);
 <div class="sm-step"><?= fb_t('EINST.BILANZ_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="fb_gewicht_bilanz"><?= fb_e(fb_t('EINST.L_GEWICHT_BILANZ')) ?></label>
-  <input data-role="none" type="text" id="fb_gewicht_bilanz" name="gewicht_bilanz" value="<?= (int) $fb_cfg['gewicht_bilanz'] ?>">
+  <input data-role="none" type="text" id="fb_gewicht_bilanz" name="gewicht_bilanz" value="<?= fb_e(fb_eingabe('modell', 'gewicht_bilanz', (int) $fb_cfg['gewicht_bilanz'])) ?>"<?= fb_markierung('modell', 'gewicht_bilanz') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_bilanz')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_BILANZ') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_bilanz_voll"><?= fb_e(fb_t('EINST.L_BILANZ_VOLL')) ?></label>
-  <input data-role="none" type="text" id="fb_bilanz_voll" name="bilanz_voll_qm" value="<?= (int) $fb_cfg['bilanz_voll_qm'] ?>">
+  <input data-role="none" type="text" id="fb_bilanz_voll" name="bilanz_voll_qm" value="<?= fb_e(fb_eingabe('modell', 'bilanz_voll_qm', (int) $fb_cfg['bilanz_voll_qm'])) ?>"<?= fb_markierung('modell', 'bilanz_voll_qm') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('bilanz_voll_qm')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BILANZ_VOLL') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_raumflaeche_vorgabe"><?= fb_e(fb_t('EINST.L_RAUMFLAECHE_VORGABE')) ?></label>
-  <input data-role="none" type="text" id="fb_raumflaeche_vorgabe" name="raumflaeche_vorgabe" value="<?= (int) $fb_cfg['raumflaeche_vorgabe'] ?>">
+  <input data-role="none" type="text" id="fb_raumflaeche_vorgabe" name="raumflaeche_vorgabe" value="<?= fb_e(fb_eingabe('modell', 'raumflaeche_vorgabe', (int) $fb_cfg['raumflaeche_vorgabe'])) ?>"<?= fb_markierung('modell', 'raumflaeche_vorgabe') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('raumflaeche_vorgabe')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_RAUMFLAECHE_VORGABE') ?></p>
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="lernen_ein" value="1"<?= $fb_cfg['lernen_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_LERNEN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="lernen_ein" value="1"<?= fb_eingabe_an('modell', 'lernen_ein', $fb_cfg['lernen_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_LERNEN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_LERNEN') ?></p>
 </div>
 
@@ -1714,13 +1782,13 @@ window.addEventListener('resize', fbRollbalken);
 <div class="sm-step"><?= fb_t('EINST.VORABEND_ERKLAERUNG') ?></div>
 <div class="sm-feld">
   <label for="fb_gewicht_morgen"><?= fb_e(fb_t('EINST.L_GEWICHT_MORGEN')) ?></label>
-  <input data-role="none" type="text" id="fb_gewicht_morgen" name="gewicht_morgen" value="<?= (int) $fb_cfg['gewicht_morgen'] ?>">
+  <input data-role="none" type="text" id="fb_gewicht_morgen" name="gewicht_morgen" value="<?= fb_e(fb_eingabe('modell', 'gewicht_morgen', (int) $fb_cfg['gewicht_morgen'])) ?>"<?= fb_markierung('modell', 'gewicht_morgen') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('gewicht_morgen')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_GEWICHT_MORGEN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_vorabend_ab"><?= fb_e(fb_t('EINST.L_VORABEND_AB')) ?></label>
-  <input data-role="none" type="text" id="fb_vorabend_ab" name="vorabend_ab" value="<?= (int) $fb_cfg['vorabend_ab'] ?>">
+  <input data-role="none" type="text" id="fb_vorabend_ab" name="vorabend_ab" value="<?= fb_e(fb_eingabe('modell', 'vorabend_ab', (int) $fb_cfg['vorabend_ab'])) ?>"<?= fb_markierung('modell', 'vorabend_ab') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('vorabend_ab')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_VORABEND_AB') ?></p>
 </div>
@@ -1728,12 +1796,12 @@ window.addEventListener('resize', fbRollbalken);
 <h3><?= fb_e(fb_t('EINST.H_DAEMMEN')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.DAEMMEN_ERKLAERUNG') ?></div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="daemmen_ein" value="1"<?= $fb_cfg['daemmen_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="daemmen_ein" value="1"<?= fb_eingabe_an('modell', 'daemmen_ein', $fb_cfg['daemmen_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_DAEMMEN_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_daemm_grenze"><?= fb_e(fb_t('EINST.L_DAEMM_GRENZE')) ?></label>
-  <input data-role="none" type="text" id="fb_daemm_grenze" name="daemm_grenze" value="<?= (int) $fb_cfg['daemm_grenze'] ?>">
+  <input data-role="none" type="text" id="fb_daemm_grenze" name="daemm_grenze" value="<?= fb_e(fb_eingabe('modell', 'daemm_grenze', (int) $fb_cfg['daemm_grenze'])) ?>"<?= fb_markierung('modell', 'daemm_grenze') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('daemm_grenze')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_DAEMM_GRENZE') ?></p>
 </div>
@@ -1741,30 +1809,30 @@ window.addEventListener('resize', fbRollbalken);
 <h3><?= fb_e(fb_t('EINST.H_STELLUNG')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.STELLUNG_ERKLAERUNG') ?></div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="stellung_ein" value="1"<?= $fb_cfg['stellung_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_STELLUNG_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="stellung_ein" value="1"<?= fb_eingabe_an('modell', 'stellung_ein', $fb_cfg['stellung_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_STELLUNG_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_stellung_zu"><?= fb_e(fb_t('EINST.L_STELLUNG_ZU')) ?></label>
-  <input data-role="none" type="text" id="fb_stellung_zu" name="stellung_zu" value="<?= (int) $fb_cfg['stellung_zu'] ?>">
+  <input data-role="none" type="text" id="fb_stellung_zu" name="stellung_zu" value="<?= fb_e(fb_eingabe('modell', 'stellung_zu', (int) $fb_cfg['stellung_zu'])) ?>"<?= fb_markierung('modell', 'stellung_zu') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('stellung_zu')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_ZU') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_stellung_frist"><?= fb_e(fb_t('EINST.L_STELLUNG_FRIST')) ?></label>
-  <input data-role="none" type="text" id="fb_stellung_frist" name="stellung_frist" value="<?= (int) $fb_cfg['stellung_frist'] ?>">
+  <input data-role="none" type="text" id="fb_stellung_frist" name="stellung_frist" value="<?= fb_e(fb_eingabe('modell', 'stellung_frist', (int) $fb_cfg['stellung_frist'])) ?>"<?= fb_markierung('modell', 'stellung_frist') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('stellung_frist')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_STELLUNG_FRIST') ?></p>
 </div>
 
 <h3><?= fb_e(fb_t('EINST.H_BERICHT')) ?></h3>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="bericht_ein" value="1"<?= $fb_cfg['bericht_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_BERICHT_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="bericht_ein" value="1"<?= fb_eingabe_an('modell', 'bericht_ein', $fb_cfg['bericht_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_BERICHT_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BERICHT') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_bericht_stunde"><?= fb_e(fb_t('EINST.L_BERICHT_STUNDE')) ?></label>
-  <input data-role="none" type="text" id="fb_bericht_stunde" name="bericht_stunde" value="<?= (int) $fb_cfg['bericht_stunde'] ?>">
+  <input data-role="none" type="text" id="fb_bericht_stunde" name="bericht_stunde" value="<?= fb_e(fb_eingabe('modell', 'bericht_stunde', (int) $fb_cfg['bericht_stunde'])) ?>"<?= fb_markierung('modell', 'bericht_stunde') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('bericht_stunde')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BERICHT_STUNDE') ?></p>
 </div>
@@ -1772,12 +1840,12 @@ window.addEventListener('resize', fbRollbalken);
 <h3><?= fb_e(fb_t('EINST.H_PV')) ?></h3>
 <div class="sm-step"><?= fb_t('EINST.PV_ERKLAERUNG') ?></div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="pv_gegenprobe" value="1"<?= $fb_cfg['pv_gegenprobe'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_PV_EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="pv_gegenprobe" value="1"<?= fb_eingabe_an('modell', 'pv_gegenprobe', $fb_cfg['pv_gegenprobe']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_PV_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_PV_GEGENPROBE') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_pv_abweichung"><?= fb_e(fb_t('EINST.L_PV_ABWEICHUNG')) ?></label>
-  <input data-role="none" type="text" id="fb_pv_abweichung" name="pv_abweichung" value="<?= (int) $fb_cfg['pv_abweichung'] ?>">
+  <input data-role="none" type="text" id="fb_pv_abweichung" name="pv_abweichung" value="<?= fb_e(fb_eingabe('modell', 'pv_abweichung', (int) $fb_cfg['pv_abweichung'])) ?>"<?= fb_markierung('modell', 'pv_abweichung') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('pv_abweichung')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_PV_ABWEICHUNG') ?></p>
 </div>
@@ -1794,6 +1862,7 @@ window.addEventListener('resize', fbRollbalken);
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
 <div class="sm-step"><?= fb_t('EINST.FENSTER_ERKLAERUNG') ?></div>
+<?= fb_eingaben_hinweis('fenster') ?>
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= fb_e(fb_t('EINST.L_KUERZEL')) ?></th><th><?= fb_e(fb_t('EINST.L_NAME')) ?></th>
@@ -1808,23 +1877,29 @@ window.addEventListener('resize', fbRollbalken);
 <?php for ($fb_i = 0; $fb_i < FB_FENSTER; $fb_i++) { $f = $fb_cfg['fenster'][$fb_i]; ?>
 <tr>
   <td><?= $fb_i + 1 ?></td>
-  <td><input data-role="none" type="text" size="8" name="f_kuerzel[<?= $fb_i ?>]" value="<?= fb_e($f['kuerzel']) ?>"></td>
-  <td><input data-role="none" type="text" size="18" name="f_name[<?= $fb_i ?>]" value="<?= fb_e($f['name']) ?>"></td>
-  <td><input data-role="none" type="text" size="4" name="f_azimut[<?= $fb_i ?>]" value="<?= (int) $f['azimut'] ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="f_neigung[<?= $fb_i ?>]" value="<?= (int) $f['neigung'] ?>"></td>
-  <td><input data-role="none" type="text" size="4" name="f_flaeche[<?= $fb_i ?>]" value="<?= fb_e($f['flaeche']) ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="f_gwert[<?= $fb_i ?>]" value="<?= (int) $f['gwert'] ?>"></td>
-  <td><input data-role="none" type="text" size="10" name="f_raum[<?= $fb_i ?>]" value="<?= fb_e($f['raum']) ?>">
-      <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_raumwerte[<?= $fb_i ?>]" value="1"<?= $f['raumwerte'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_RAUMWERTE')) ?></label></td>
-  <td><input data-role="none" type="text" size="3" name="f_traegheit[<?= $fb_i ?>]" value="<?= (int) $f['traegheit'] ?>"></td>
-  <td><input data-role="none" type="text" size="20" name="f_horizont[<?= $fb_i ?>]" value="<?= fb_e($f['horizont']) ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="f_dach_t[<?= $fb_i ?>]" value="<?= (int) $f['dach_tiefe'] ?>">
-      <input data-role="none" type="text" size="3" name="f_dach_h[<?= $fb_i ?>]" value="<?= (int) $f['dach_hoehe'] ?>">
-      <input data-role="none" type="text" size="3" name="f_fh[<?= $fb_i ?>]" value="<?= (int) $f['fenster_hoehe'] ?>"></td>
-  <td><input data-role="none" type="text" size="3" name="f_blend_h[<?= $fb_i ?>]" value="<?= (int) $f['blend_hoehe'] ?>">
-      <input data-role="none" type="text" size="3" name="f_blend_w[<?= $fb_i ?>]" value="<?= (int) $f['blend_winkel'] ?>"></td>
-  <td><input data-role="none" type="checkbox" name="f_aktiv[<?= $fb_i ?>]" value="1"<?= $f['aktiv'] ? ' checked' : '' ?>>
-      <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_daemmen[<?= $fb_i ?>]" value="1"<?= $f['daemmen'] ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN')) ?></label></td>
+<?php /* X-2 (Verbesserungsbau 01.10.2026): nach einer Beanstandung stehen
+       die eingetippten Werte der ganzen Tabelle da, das beanstandete Feld ist
+       markiert; sonst die gespeicherten. $fb_zw/$fb_zm/$fb_zh kuerzen nur ab. */
+      $fb_zw = function ($feld, $gespeichert) use ($fb_i) { return fb_e(fb_eingabe('fenster', $feld . '.' . $fb_i, $gespeichert)); };
+      $fb_zm = function ($feld) use ($fb_i) { return fb_markierung('fenster', $feld . '.' . $fb_i); };
+      $fb_zh = function ($feld, $gespeichert) use ($fb_i) { return fb_eingabe_an('fenster', $feld . '.' . $fb_i, $gespeichert) ? ' checked' : ''; }; ?>
+  <td><input data-role="none" type="text" size="8" name="f_kuerzel[<?= $fb_i ?>]" value="<?= $fb_zw('f_kuerzel', $f['kuerzel']) ?>"<?= $fb_zm('f_kuerzel') ?>></td>
+  <td><input data-role="none" type="text" size="18" name="f_name[<?= $fb_i ?>]" value="<?= $fb_zw('f_name', $f['name']) ?>"<?= $fb_zm('f_name') ?>></td>
+  <td><input data-role="none" type="text" size="4" name="f_azimut[<?= $fb_i ?>]" value="<?= $fb_zw('f_azimut', (int) $f['azimut']) ?>"<?= $fb_zm('f_azimut') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="f_neigung[<?= $fb_i ?>]" value="<?= $fb_zw('f_neigung', (int) $f['neigung']) ?>"<?= $fb_zm('f_neigung') ?>></td>
+  <td><input data-role="none" type="text" size="4" name="f_flaeche[<?= $fb_i ?>]" value="<?= $fb_zw('f_flaeche', $f['flaeche']) ?>"<?= $fb_zm('f_flaeche') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="f_gwert[<?= $fb_i ?>]" value="<?= $fb_zw('f_gwert', (int) $f['gwert']) ?>"<?= $fb_zm('f_gwert') ?>></td>
+  <td><input data-role="none" type="text" size="10" name="f_raum[<?= $fb_i ?>]" value="<?= $fb_zw('f_raum', $f['raum']) ?>"<?= $fb_zm('f_raum') ?>>
+      <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_raumwerte[<?= $fb_i ?>]" value="1"<?= $fb_zh('f_raumwerte', $f['raumwerte']) ?>> <?= fb_e(fb_t('EINST.L_RAUMWERTE')) ?></label></td>
+  <td><input data-role="none" type="text" size="3" name="f_traegheit[<?= $fb_i ?>]" value="<?= $fb_zw('f_traegheit', (int) $f['traegheit']) ?>"<?= $fb_zm('f_traegheit') ?>></td>
+  <td><input data-role="none" type="text" size="20" name="f_horizont[<?= $fb_i ?>]" value="<?= $fb_zw('f_horizont', $f['horizont']) ?>"<?= $fb_zm('f_horizont') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="f_dach_t[<?= $fb_i ?>]" value="<?= $fb_zw('f_dach_t', (int) $f['dach_tiefe']) ?>"<?= $fb_zm('f_dach_t') ?>>
+      <input data-role="none" type="text" size="3" name="f_dach_h[<?= $fb_i ?>]" value="<?= $fb_zw('f_dach_h', (int) $f['dach_hoehe']) ?>"<?= $fb_zm('f_dach_h') ?>>
+      <input data-role="none" type="text" size="3" name="f_fh[<?= $fb_i ?>]" value="<?= $fb_zw('f_fh', (int) $f['fenster_hoehe']) ?>"<?= $fb_zm('f_fh') ?>></td>
+  <td><input data-role="none" type="text" size="3" name="f_blend_h[<?= $fb_i ?>]" value="<?= $fb_zw('f_blend_h', (int) $f['blend_hoehe']) ?>"<?= $fb_zm('f_blend_h') ?>>
+      <input data-role="none" type="text" size="3" name="f_blend_w[<?= $fb_i ?>]" value="<?= $fb_zw('f_blend_w', (int) $f['blend_winkel']) ?>"<?= $fb_zm('f_blend_w') ?>></td>
+  <td><input data-role="none" type="checkbox" name="f_aktiv[<?= $fb_i ?>]" value="1"<?= $fb_zh('f_aktiv', $f['aktiv']) ?>>
+      <br><label class="sm-hilfe"><input data-role="none" type="checkbox" name="f_daemmen[<?= $fb_i ?>]" value="1"<?= $fb_zh('f_daemmen', $f['daemmen']) ?>> <?= fb_e(fb_t('EINST.L_DAEMMEN')) ?></label></td>
   <td><?php if ($f['kuerzel'] !== '') { ?>
       <input data-role="none" type="checkbox" name="f_loeschen[<?= $fb_i ?>]" value="1">
       <?php } else { ?><span class="sm-hilfe">&ndash;</span><?php } ?></td>
@@ -1912,7 +1987,8 @@ if ($fb_luecke_da) { ?>
 <div class="sm-step"><?= fb_t('EINST.R_ERKLAERUNG') ?></div>
 <?php
 $fb_r_alt = function ($name, $vorgabe) use ($fb_formwerte) {
-    return isset($fb_formwerte[$name]) ? $fb_formwerte[$name] : $vorgabe;
+    /* X-2: nach einer Beanstandung die eingetippte Eingabe. */
+    return fb_eingabe('rechner', $name, isset($fb_formwerte[$name]) ? $fb_formwerte[$name] : $vorgabe);
 };
 $fb_r_liste = array();
 foreach ($fb_cfg['fenster'] as $fb_ri => $fb_rf) {
@@ -1924,37 +2000,38 @@ if (!$fb_r_liste) { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<?= fb_eingaben_hinweis('rechner') ?>
 <div class="sm-feld">
   <label for="fb_h_zeile"><?= fb_e(fb_t('EINST.R_L_ZEILE')) ?></label>
-  <select data-role="none" id="fb_h_zeile" name="h_zeile">
+  <select data-role="none" id="fb_h_zeile" name="h_zeile"<?= fb_markierung('rechner', 'h_zeile') ?>>
 <?php foreach ($fb_r_liste as $fb_ri => $fb_rf) { ?>
-    <option value="<?= (int) $fb_ri ?>"<?= (isset($fb_formwerte['h_zeile']) && (int) $fb_formwerte['h_zeile'] === (int) $fb_ri) ? ' selected' : '' ?>><?= fb_e(sprintf('%d. %s (%s, %d°)', $fb_ri + 1, $fb_rf['kuerzel'],
+    <option value="<?= (int) $fb_ri ?>"<?= ((string) $fb_r_alt('h_zeile', '') !== '' && (int) $fb_r_alt('h_zeile', '') === (int) $fb_ri) ? ' selected' : '' ?>><?= fb_e(sprintf('%d. %s (%s, %d°)', $fb_ri + 1, $fb_rf['kuerzel'],
         $fb_rf['name'] !== '' ? $fb_rf['name'] : '-', (int) $fb_rf['azimut'])) ?></option>
 <?php } ?>
   </select>
 </div>
 <div class="sm-feld">
   <label for="fb_h_hoehe"><?= fb_e(fb_t('EINST.R_L_HOEHE')) ?></label>
-  <input data-role="none" type="text" id="fb_h_hoehe" name="h_hoehe" value="<?= fb_e($fb_r_alt('h_hoehe', '')) ?>">
+  <input data-role="none" type="text" id="fb_h_hoehe" name="h_hoehe"<?= fb_markierung('rechner', 'h_hoehe') ?> value="<?= fb_e($fb_r_alt('h_hoehe', '')) ?>">
 </div>
 <div class="sm-feld">
   <label for="fb_h_fenster"><?= fb_e(fb_t('EINST.R_L_FENSTER')) ?></label>
-  <input data-role="none" type="text" id="fb_h_fenster" name="h_fenster" value="<?= fb_e($fb_r_alt('h_fenster', '1.5')) ?>">
+  <input data-role="none" type="text" id="fb_h_fenster" name="h_fenster"<?= fb_markierung('rechner', 'h_fenster') ?> value="<?= fb_e($fb_r_alt('h_fenster', '1.5')) ?>">
 </div>
 <div class="sm-feld">
   <label for="fb_h_vor"><?= fb_e(fb_t('EINST.R_L_VOR')) ?></label>
-  <input data-role="none" type="text" id="fb_h_vor" name="h_vor" value="<?= fb_e($fb_r_alt('h_vor', '')) ?>">
+  <input data-role="none" type="text" id="fb_h_vor" name="h_vor"<?= fb_markierung('rechner', 'h_vor') ?> value="<?= fb_e($fb_r_alt('h_vor', '')) ?>">
 </div>
 <div class="sm-feld">
   <label for="fb_h_seit"><?= fb_e(fb_t('EINST.R_L_SEIT')) ?></label>
-  <input data-role="none" type="text" id="fb_h_seit" name="h_seit" value="<?= fb_e($fb_r_alt('h_seit', '0')) ?>">
+  <input data-role="none" type="text" id="fb_h_seit" name="h_seit"<?= fb_markierung('rechner', 'h_seit') ?> value="<?= fb_e($fb_r_alt('h_seit', '0')) ?>">
 </div>
 <div class="sm-feld">
   <label for="fb_h_breite"><?= fb_e(fb_t('EINST.R_L_BREITE')) ?></label>
-  <input data-role="none" type="text" id="fb_h_breite" name="h_breite" value="<?= fb_e($fb_r_alt('h_breite', '')) ?>">
+  <input data-role="none" type="text" id="fb_h_breite" name="h_breite"<?= fb_markierung('rechner', 'h_breite') ?> value="<?= fb_e($fb_r_alt('h_breite', '')) ?>">
 </div>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="h_ersetzen" value="1"<?= !empty($fb_formwerte['h_ersetzen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.R_L_ERSETZEN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="h_ersetzen" value="1"<?= fb_eingabe_an('rechner', 'h_ersetzen', !empty($fb_formwerte['h_ersetzen'])) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.R_L_ERSETZEN')) ?></label>
 </div>
 <?php if ($fb_rechner !== null) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('EINST.R_ERGEBNIS'),
@@ -2005,6 +2082,7 @@ if (!$fb_raeume_benutzt) { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<?= fb_eingaben_hinweis('raeume') ?>
 <table class="sm-tbl">
 <tr><th><?= fb_e(fb_t('EINST.L_RAUM')) ?></th>
     <th><?= fb_e(fb_t('EINST.L_RAUMFLAECHE')) ?></th>
@@ -2015,7 +2093,7 @@ if (!$fb_raeume_benutzt) { ?>
 <tr>
   <td><span class="sm-mono"><?= fb_e($fb_r) ?></span></td>
   <td><input data-role="none" type="text" size="5" name="r_qm[<?= fb_e($fb_r) ?>]"
-             value="<?= $fb_geschaetzt ? '' : fb_e($fb_qm) ?>">
+             value="<?= fb_e(fb_eingabe('raeume', 'r_qm.' . $fb_r, $fb_geschaetzt ? '' : $fb_qm)) ?>"<?= fb_markierung('raeume', 'r_qm.' . $fb_r) ?>>
       <?php if ($fb_geschaetzt) { ?><span class="sm-hilfe"><?= sprintf(fb_e(fb_t('EINST.RAUM_GESCHAETZT')), $fb_qm) ?></span><?php } ?></td>
   <td class="sm-hilfe"><?= fb_e(fb_liste_kurz($fb_kk)) ?></td>
   <td class="sm-hilfe"><?= (int) round((float) $fb_cfg['bilanz_voll_qm'] * $fb_qm) ?> Wh</td>
@@ -2254,6 +2332,12 @@ function fbOrdnerSetzen(sel) {
 <h2><?= fb_e(fb_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= fb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= fb_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (Verbesserungsbau 01.10.2026): gespeicherte Werte, die das eigene
+       Zurueckspielen abweisen wuerde - dieselbe Pruefung, nur Namen. */
+$fb_alt_w = fb_rueckspiel_altwerte();
+if ($fb_alt_w) { ?>
+<div class="sm-warnung" id="fb_sich_altwerte"><?= sprintf(fb_t('EINST.SICH_ALTWERTE'), fb_e(implode(', ', $fb_alt_w))) ?></div>
+<?php } ?>
 <!-- Legende: keine Knopfreihe ohne sie. Der orange Knopf ersetzt die
      GANZE Konfiguration - zwei Farben ohne Erklaerung sind hier zu wenig. -->
 <div class="sm-legende">
@@ -2305,15 +2389,20 @@ function fbOrdnerSetzen(sel) {
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<?= fb_eingaben_hinweis('mqtt') ?>
 <div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $fb_cfg['mqtt_ein'] ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.EIN')) ?></label>
+  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= fb_eingabe_an('mqtt', 'mqtt_ein', $fb_cfg['mqtt_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_MQTT_EIN') ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_thema"><?= fb_e(fb_t('MQTT.THEMA')) ?></label>
-  <input data-role="none" type="text" id="fb_thema" name="mqtt_topic" value="<?= fb_e($fb_cfg['mqtt_topic']) ?>">
+  <input data-role="none" type="text" id="fb_thema" name="mqtt_topic" value="<?= fb_e(fb_eingabe('mqtt', 'mqtt_topic', $fb_cfg['mqtt_topic'])) ?>"<?= fb_markierung('mqtt', 'mqtt_topic') ?>>
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('mqtt_topic')) ?></span>
   <p class="sm-hilfe"><?= fb_t('MQTT.THEMA_HILFE') ?></p>
+</div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="sonne_teilen" value="1"<?= fb_eingabe_an('mqtt', 'sonne_teilen', $fb_cfg['sonne_teilen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.S1_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('MQTT.S1_HILFE') ?></p>
 </div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
@@ -2344,6 +2433,24 @@ function fbOrdnerSetzen(sel) {
 </table>
 </div>
 <p class="sm-hilfe"><?= fb_t('MQTT.KUERZEL_HILFE') ?></p>
+
+<?php /* Sonne-1 (Verbesserungsbau 01.10.2026): die Haus-Themen - dieselbe
+       Liste, die fb_sonne_nachrichten() sendet (fb_sonne_themen()). */ ?>
+<h3><?= fb_e(fb_t('MQTT.S1_H')) ?></h3>
+<div class="<?= !empty($fb_cfg['sonne_teilen']) ? 'sm-hinweis' : 'sm-step' ?>"><?= fb_t(!empty($fb_cfg['sonne_teilen'])
+    ? (!empty($fb_cfg['mqtt_ein']) ? 'MQTT.S1_AN' : 'MQTT.S1_AN_OHNE_MQTT') : 'MQTT.S1_AUS') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= fb_e(fb_t('MQTT.SP_THEMA')) ?></th>
+    <th><?= fb_e(fb_t('MQTT.SP_BEDEUTUNG')) ?></th>
+    <th><?= fb_e(fb_t('MQTT.SP_RETAIN')) ?></th></tr>
+<?php foreach (fb_sonne_themen() as $fb_k => $fb_schl) { ?>
+<tr><td><span class="sm-mono"><?= fb_e($fb_k) ?></span></td>
+    <td><?= fb_t($fb_schl) ?></td>
+    <td><?= fb_e(fb_t('MQTT.RETAIN_NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
 
 <!-- Dieser Wert traegt Auszeichnung (<span class='sm-mono'>) und geht deshalb
      ROH hinaus. Durch fb_e() gejagt las der Bediener die Auszeichnung
@@ -2513,6 +2620,11 @@ $fb_adressen = array(
 
 <h3><?= fb_e(fb_t('LOX.H_BAUSTEINE')) ?></h3>
 <div class="sm-breit"><?= fb_t('LOX.BAUSTEINE') ?></div>
+<?php /* b1 (Verbesserungsbau 01.10.2026): dieselbe Verknuepfung als Bild -
+       statisches SVG aus fb_bausteine_svg(), keine Bibliothek, kein Skript. */ ?>
+<h3><?= fb_e(fb_t('LOX.SB_H')) ?></h3>
+<div class="sm-breit" id="fb_schaubild"><?= fb_bausteine_svg() ?></div>
+<p class="sm-hilfe"><?= fb_t('LOX.SB_ERKLAERUNG') ?></p>
 <div class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_ERL') ?></div>
 
 <h3><?= fb_e(fb_t('LOX.H_GEGENPROBE')) ?></h3>

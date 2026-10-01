@@ -285,6 +285,40 @@ function fb_pruefzeile($frage, $zustand = null, $antwort = '')
  * Nicht bestanden heisst hier NICHT "kaputt": der Weg ueber den
  * Ablageordner steht davon unberuehrt offen und kennt keine Grenze.
  */
+/**
+ * Sonne-1 (Verbesserungsbau 01.10.2026): was geht mit dem letzten Stand unter
+ * haus/sonne/ hinaus - und stimmt die Liste im Reiter MQTT mit der Sendeliste
+ * ueberein (beide Richtungen)? Ob ein Abnehmer die Themen liest, misst diese
+ * Zeile nicht; sie bleibt deshalb auch im Gutfall grau ([ -- ]).
+ * Rueckgabe array(null|false, Text).
+ */
+function fb_probe_sonne1()
+{
+    $cfg = fb_config(false);
+    if (empty($cfg['sonne_teilen'])) { return array(null, fb_klartext('TEST.A_SONNE1_AUS')); }
+    if (empty($cfg['mqtt_ein']))     { return array(false, fb_klartext('TEST.A_SONNE1_OHNE_MQTT')); }
+    $stand = fb_stand();
+    $m = fb_sonne_nachrichten($cfg, $stand);
+    if (!$m) { return array(false, fb_klartext('TEST.A_SONNE1_OHNE_SONNE')); }
+    $fa = fb_sonne_fassaden($cfg, $stand);
+    $soll = array();
+    foreach (array_keys(fb_sonne_themen()) as $t) {
+        if (strpos($t, '<azimut>') === false) { $soll[] = $t; continue; }
+        foreach (array_keys($fa) as $az) { $soll[] = str_replace('<azimut>', (string) $az, $t); }
+    }
+    $ist = array_keys($m);
+    sort($soll); sort($ist);
+    if (array_diff($soll, $ist) || array_diff($ist, $soll)) {
+        return array(false, sprintf(fb_klartext('TEST.P_MQTT_ABW'),
+            fb_liste_kurz(array_diff($soll, $ist)), fb_liste_kurz(array_diff($ist, $soll))));
+    }
+    $teile = array();
+    foreach ($fa as $az => $d) { $teile[] = $az . '=' . (int) $d['wirkt']; }
+    return array(null, sprintf(fb_klartext('TEST.A_SONNE1_AN'), count($m),
+        $m[fb_sonne_stamm() . '/azimut'], $m[fb_sonne_stamm() . '/elevation'],
+        $teile ? implode(', ', $teile) : '-'));
+}
+
 function fb_probe_upload()
 {
     $g = fb_grenzen();
@@ -703,10 +737,17 @@ function fb_test_selbstpruefung()
     list($ok, $txt) = fb_probe_upload();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_UPLOAD'), $ok, $txt);
 
+    list($ok, $txt) = fb_probe_sonne1();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_SONNE1'), $ok, $txt);
+
     $alter = fb_alter();
+    /* a1 (Verbesserungsbau 01.10.2026): ein Stand aus der Zukunft ist nicht
+     * "noch nie gerechnet", sondern keine Aussage - und das wird gesagt. */
+    $voraus = fb_stand_voraus(fb_stand());
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_LAUF'),
         $alter >= 0 ? ($alter < 900) : false,
-        $alter < 0 ? fb_klartext('TEST.A_LAUF_NIE')
+        $alter < 0 ? ($voraus > 0 ? sprintf(fb_klartext('TEST.A_LAUF_ZUKUNFT'), $voraus)
+                                  : fb_klartext('TEST.A_LAUF_NIE'))
                    : sprintf(fb_klartext('TEST.A_LAUF'), $alter));
 
     /* Der Cron ist die einzige Stelle, die von selbst rechnet, wenn keine

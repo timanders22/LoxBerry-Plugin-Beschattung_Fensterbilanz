@@ -611,6 +611,20 @@ $ort = array(48.2, 11.6);
             strpos(fb_zeile($z_frisch, 900), ';OK=1;') !== false,
             trim(strtok(fb_zeile($z_frisch, 900), "\n")));
 
+    /* --- 8h2. a1 (Verbesserungsbau 01.10.2026): ein Stand aus der Zukunft
+     * ist keine Aussage - ab 5 s Vorlauf OK=0 und HERZ=-1, darunter frisch. */
+    $z_zk = $s_alt; $z_zk['ts'] = time() + 60;
+    $z_nah = $s_alt; $z_nah['ts'] = time() + 3;
+    $zl_zk = fb_zeile($z_zk, 900);
+    $zl_nah = fb_zeile($z_nah, 900);
+    $pruefe('Stand 60 s aus der Zukunft meldet OK=0 und HERZ=-1',
+            strpos($zl_zk, ';OK=0;') !== false && preg_match('/;HERZ=-1(;|\n)/', $zl_zk) === 1
+            && strpos($zl_zk, 'WOZIBESCHATTEN=0') !== false,
+            trim(strtok($zl_zk, "\n")));
+    $pruefe('Stand 3 s aus der Zukunft gilt als frisch (Toleranz 5 s)',
+            strpos($zl_nah, ';OK=1;') !== false,
+            trim(strtok($zl_nah, "\n")));
+
     /* --- 8i. Der Verschattungshorizont mit deutschem Dezimalkomma. */
     list($p_komma, $u_komma) = fb_horizont_lesen('80,5:22,5');
     $pruefe('Dezimalkomma ergibt EINEN Punkt und keinen erfundenen',

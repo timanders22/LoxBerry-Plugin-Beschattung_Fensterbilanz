@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.11
+Version 0.12.12
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -147,15 +147,38 @@ Zurückbehalten (retained) geht seit 0.12.11 nur `fenster_anzahl` (eine
 Einstellung). Alles andere geht flüchtig hinaus, auch `bericht` (ein
 Tageswert) und die Urteile je Fenster (siehe unten).
 
+**Sonnenstand für andere Plugins (Sonne-1), ab Werk aus.** Mit dem Haken
+*Sonnenstand und „Sonne wirkt je Fassade“ unter haus/sonne/ senden* im Reiter
+*MQTT* gehen in jedem Lauf zusätzlich, **ohne Präfix** und **flüchtig**, hinaus:
+
+    haus/sonne/azimut                  Grad von Nord im Uhrzeigersinn, 2 Nachkommastellen
+    haus/sonne/elevation               Sonnenhöhe mit Refraktion, Grad (nachts negativ)
+    haus/sonne/fassaden                Ausrichtungen der aktiven Fenster, z. B. 90,180,270 (- ohne)
+    haus/sonne/fassade/<azimut>/wirkt  1 = direkte Sonne erreicht ein Fenster dieser Fassade
+    haus/sonne/ts                      Zeitpunkt der Rechnung (Unix-Sekunden), als letztes
+
+Quelle ist die Fensterbilanz selbst; gedacht ist das für den
+Beschattungswächter, der den Sonnenstand dann nicht zweimal rechnet. „Wirkt“
+ist reine Geometrie (vor der Glasebene, über dem Horizont, nicht hinter dem
+Verschattungshorizont, Dachüberstand verschattet nicht ganz) — ob Wolken
+davor sind, misst der Abnehmer selbst. Ohne Standort oder mit ausgeschaltetem
+MQTT geht nichts hinaus. Nichts davon ist zurückbehalten, es bleibt also auch
+nichts im Broker stehen, wenn der Haken wieder aus ist.
+
 **Über HTTP**, tokengeschützt, mit denselben Werten:
 
     /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=status
     /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=json
-    /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=fenster&kuerzel=<K>
+    /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=fenster&k=<K>
     /plugins/fensterbilanz/index.php?token=<TOKEN>&selftest=1
 
 Auch die abfragenden Aufrufe verlangen ein Wortzeichen: in der Antwort stehen
 Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.
+
+Ein Stand, dessen Zeitstempel mehr als **5 Sekunden in der Zukunft** liegt
+(die Uhr des LoxBerry ist zurückgesprungen), ist keine Aussage: die
+Statuszeile trägt dann `OK=0`, alle Urteile 0 und `HERZ=-1`, und der nächste
+Lauf rechnet sofort neu.
 
 ---
 
@@ -206,6 +229,12 @@ Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.
 4. **Selbstprüfung** im Reiter *Test*. Sie beantwortet ohne Loxone, ob die
    Einrichtung trägt — von der Sprachdatei über den eigenen Endpunkt bis zum
    Rechenkern.
+
+Beanstandet ein Formular eine Eingabe, wird **nichts** gespeichert, auch nicht
+die übrigen Felder; die eingetippten Werte stehen danach wieder im Formular,
+das beanstandete Feld ist rot umrandet. *Einstellungen sichern* warnt gelb,
+wenn ein gespeicherter Wert das Zurückspielen der eigenen Sicherung nicht
+bestehen würde, und liefert die Datei trotzdem vollständig.
 
 Zum Prüfen der Einrichtung gibt es Bilder statt Zahlenkolonnen:
 
@@ -343,6 +372,25 @@ Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
 beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
 Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
 länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
+
+## Fassung 0.12.12
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an
+Attrappen unter PHP 7.4, 8.3 und 8.5; nicht am Gerät. Der Lernbestand blieb in
+jeder Probe byte-gleich.
+
+* Ein Stand mehr als 5 s aus der Zukunft (Uhrsprung) gilt als keine Aussage
+  (`OK=0`, `HERZ=-1`) und wird sofort neu gerechnet.
+* Reiter Loxone zeigt ein Schaubild der Bausteine #2–#8.
+* **Neu, ab Werk aus: Sonnenstand für andere Plugins.** Unter `haus/sonne/` gehen
+  Azimut, Elevation und je Fassade „Sonne wirkt“ hinaus (flüchtig), wenn
+  „Werte über MQTT senden“ an ist.
+* **Bei einer Beanstandung wird nichts gespeichert** – auch nicht die übrigen
+  Felder (bis 0.12.11 wurde der Rest gespeichert, auch zurechtgerückte Kürzel und
+  Namen). Die eingetippten Werte kommen markiert zurück. „Einstellungen sichern“
+  warnt, wenn die eigene Sicherung beim Zurückspielen abgewiesen würde.
+* Berichtigt: Die Adresse je Fenster heißt `&aktion=fenster&k=<K>`.
 
 ## Fassung 0.12.11 — Sicherung geprüft, ehrliche Werte, Lernbestand geschützt
 

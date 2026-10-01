@@ -98,6 +98,13 @@ define('FB_FENSTER', 30);
  * als fuenf Minuten sind es nicht. Dieselbe Schranke gilt fuer Messwerte
  * (fb_messwert) und seit 0.12.7 auch fuer den eigenen Stand. */
 if (!defined('FB_UHRSPRUNG')) { define('FB_UHRSPRUNG', 300); }
+/* a1 (Verbesserungsbau 01.10.2026): fuer den EIGENEN Stand gilt eine
+ * engere Schranke. Beide Stempel stammen von derselben Uhr - der Lauf
+ * schreibt ts, der Endpunkt liest time() -, ein Vorlauf von mehr als ein
+ * paar Sekunden ist also ein Uhrsprung und keine Laufzeit im Netz. Ein
+ * solcher Stand ist KEINE AUSSAGE (OK=0), nicht "frisch". 5 s wie
+ * Pumpenwacht 1.0.5 (pw_felder(), in WSL rund 1 s Ruecksprung gemessen). */
+if (!defined('FB_ZUKUNFT_TOLERANZ')) { define('FB_ZUKUNFT_TOLERANZ', 5); }
 /* Punkte der Strahlungsreihe. Muss die groesste einstellbare
  * Glaettungsdauer bei minuetlicher Meldung tragen (3600 s). */
 if (!defined('FB_REIHE_MAX')) { define('FB_REIHE_MAX', 60); }
@@ -452,6 +459,12 @@ function fb_vorgaben()
          * Kein Schalter, keine Wirkung auf die Rechnung - nur ein Vermerk
          * (Bauart BatterieBMS 0.9.30). */
         'mqtt_praefix_alt' => '',
+        /* Sonne-1 (Verbesserungsbau 01.10.2026, D): Sonnenstand und "Sonne
+         * wirkt je Fassade" fuer andere Plugins (Beschattungswaechter) unter
+         * haus/sonne/, fluechtig. AB WERK AUS - das Verhalten einer
+         * eingerichteten Anlage aendert sich durch das Update nicht. Wirkt
+         * nur mit mqtt_ein. Siehe fb_sonne_nachrichten(). */
+        'sonne_teilen'   => 0,
     );
 }
 
@@ -789,7 +802,7 @@ function fb_fenster_zahlfelder()
 function fb_haken_felder()
 {
     return array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe',
-                 'lernen_ein', 'mqtt_ein');
+                 'lernen_ein', 'mqtt_ein', 'sonne_teilen');
 }
 
 function fb_haken_ok($w)
@@ -1004,6 +1017,7 @@ function fb_config_richten($cfg)
                                       array('isotrop', 'hdkr'), true)
                              ? (string) $cfg['himmelsmodell'] : 'isotrop';
     $cfg['mqtt_ein']       = empty($cfg['mqtt_ein']) ? 0 : 1;
+    $cfg['sonne_teilen']   = empty($cfg['sonne_teilen']) ? 0 : 1;   // Sonne-1
     $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower(is_string($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''));
     /* M9 (Durchgang 30.09.2026): doppelte Schraegstriche zusammenziehen wie
      * fb_mqtt_thema() beim Senden - sonst zeigte die Oberflaeche haus//fb/...,
@@ -1283,6 +1297,169 @@ function fb_einmal_schreiben($daten)
     return fb_json_schreiben($p['datadir'] . '/einmalmeldung.json', $daten, 0600);
 }
 
+/* ==================================================================
+ * X-2 (Verbesserungsbau 01.10.2026; Regeln/04 "Nach einer Beanstandung
+ * stehen die eingetippten Werte wieder im Formular")
+ *
+ * Nur nach einer Beanstandung, nur das eine Formular und nur seine Felder.
+ * Array-Felder der Tabellen heissen "<name>.<schluessel>" (f_azimut.3,
+ * r_qm.wohnen). Geheimnisse haben in diesen Formularen kein Feld.
+ * ================================================================== */
+
+/** Die Felder je Formular: array(text => [...], haken => [...], zeilen => bool). */
+function fb_eingabe_felder($form)
+{
+    $felder = array(
+        'modell' => array(
+            'text'  => array_merge(array_keys(fb_zahlfelder()), array('himmelsmodell')),
+            'haken' => array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe', 'lernen_ein'),
+        ),
+        'fenster' => array(
+            'text'  => array('f_kuerzel', 'f_name', 'f_azimut', 'f_neigung', 'f_flaeche', 'f_gwert',
+                             'f_raum', 'f_traegheit', 'f_horizont', 'f_dach_t', 'f_dach_h', 'f_fh',
+                             'f_blend_h', 'f_blend_w'),
+            'haken' => array('f_aktiv', 'f_raumwerte', 'f_daemmen'),
+        ),
+        'raeume' => array('text' => array('r_qm'), 'haken' => array()),
+        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen')),
+        'rechner' => array(
+            'text'  => array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite'),
+            'haken' => array('h_ersetzen'),
+        ),
+    );
+    return isset($felder[$form]) ? $felder[$form] : null;
+}
+
+/** Ist $wert als mitreisende Eingabe brauchbar (Text, UTF-8, hoechstens 256 Byte)? */
+function fb_eingabe_brauchbar($wert)
+{
+    return is_string($wert) && strlen($wert) <= 256 && preg_match('//u', $wert) === 1;
+}
+
+/** Ist $schluessel ein Feld des Formulars $form ("name" oder "name.zeile")? */
+function fb_eingabe_schluessel_ok($form, $schluessel)
+{
+    $f = fb_eingabe_felder($form);
+    if ($f === null || !is_string($schluessel)) { return false; }
+    if ($form === 'fenster') {
+        if (preg_match('/^([a-z_]+)\.([0-9]{1,2})\z/', $schluessel, $m) !== 1) { return false; }
+        return (int) $m[2] < FB_FENSTER && in_array($m[1], array_merge($f['text'], $f['haken']), true);
+    }
+    if ($form === 'raeume') {
+        return preg_match('/^r_qm\.[a-z0-9_]{1,20}\z/', $schluessel) === 1;
+    }
+    return in_array($schluessel, array_merge($f['text'], $f['haken']), true);
+}
+
+/**
+ * Die eingetippten Werte eines Formulars aus $_POST, fuer die Einmalmeldung.
+ * Ein Wert, der kein gueltiges UTF-8 ist oder laenger als 256 Byte, reist
+ * nicht mit - das Feld zeigt dann den gespeicherten Stand.
+ */
+function fb_eingaben_sammeln($form, $beanstandet)
+{
+    $f = fb_eingabe_felder($form);
+    if ($f === null) { return null; }
+    $werte = array();
+    if ($form === 'fenster') {
+        for ($i = 0; $i < FB_FENSTER; $i++) {
+            foreach ($f['text'] as $n) {
+                $a = isset($_POST[$n]) && is_array($_POST[$n]) ? $_POST[$n] : array();
+                if (isset($a[$i]) && fb_eingabe_brauchbar($a[$i])) { $werte[$n . '.' . $i] = $a[$i]; }
+            }
+            foreach ($f['haken'] as $n) {
+                $a = isset($_POST[$n]) && is_array($_POST[$n]) ? $_POST[$n] : array();
+                $werte[$n . '.' . $i] = !empty($a[$i]) ? '1' : '';
+            }
+        }
+    } elseif ($form === 'raeume') {
+        $a = isset($_POST['r_qm']) && is_array($_POST['r_qm']) ? $_POST['r_qm'] : array();
+        $n = 0;
+        foreach ($a as $r => $q) {
+            if (++$n > 60) { break; }
+            $s = 'r_qm.' . (string) $r;
+            if (fb_eingabe_schluessel_ok('raeume', $s) && fb_eingabe_brauchbar($q)) { $werte[$s] = $q; }
+        }
+    } else {
+        foreach ($f['text'] as $n) {
+            if (isset($_POST[$n]) && fb_eingabe_brauchbar($_POST[$n])) { $werte[$n] = $_POST[$n]; }
+        }
+        foreach ($f['haken'] as $n) { $werte[$n] = !empty($_POST[$n]) ? '1' : ''; }
+    }
+    $bean = array();
+    foreach ($beanstandet as $b) {
+        if (fb_eingabe_schluessel_ok($form, (string) $b)) { $bean[] = (string) $b; }
+    }
+    return array('form' => $form, 'werte' => $werte, 'beanstandet' => array_values(array_unique($bean)));
+}
+
+/** Die Eingaben aus der Einmalmeldung annehmen (nur bekannte Felder, nur Text). */
+function fb_eingaben_setzen($roh = null)
+{
+    static $ein = array('form' => '', 'werte' => array(), 'beanstandet' => array());
+    if ($roh === null) { return $ein; }
+    if (!is_array($roh) || !isset($roh['form']) || !is_string($roh['form'])
+        || fb_eingabe_felder($roh['form']) === null) {
+        return $ein;
+    }
+    $werte = array();
+    if (isset($roh['werte']) && is_array($roh['werte'])) {
+        foreach ($roh['werte'] as $k => $v) {
+            if (fb_eingabe_schluessel_ok($roh['form'], (string) $k) && fb_eingabe_brauchbar($v)) {
+                $werte[(string) $k] = $v;
+            }
+        }
+    }
+    $bean = array();
+    if (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) {
+        foreach ($roh['beanstandet'] as $b) {
+            if (is_string($b) && fb_eingabe_schluessel_ok($roh['form'], $b)) { $bean[] = $b; }
+        }
+    }
+    if ($bean || $werte) {
+        $ein = array('form' => $roh['form'], 'werte' => $werte, 'beanstandet' => $bean);
+    }
+    return $ein;
+}
+
+/** Welches Formular zeigt gerade Eingaben ('' = keines)? */
+function fb_eingaben_aktiv()
+{
+    $ein = fb_eingaben_setzen();
+    return $ein['form'];
+}
+
+/** Wert eines Textfelds: die Eingabe nach einer Beanstandung, sonst der gespeicherte. */
+function fb_eingabe($form, $feld, $gespeichert)
+{
+    $ein = fb_eingaben_setzen();
+    if ($ein['form'] === $form && array_key_exists($feld, $ein['werte'])) { return $ein['werte'][$feld]; }
+    return $gespeichert;
+}
+
+/** Haken: nach einer Beanstandung der abgeschickte Stand, sonst der gespeicherte. */
+function fb_eingabe_an($form, $feld, $gespeichert)
+{
+    $ein = fb_eingaben_setzen();
+    if ($ein['form'] === $form && array_key_exists($feld, $ein['werte'])) { return $ein['werte'][$feld] === '1'; }
+    return (bool) $gespeichert;
+}
+
+/** Das beanstandete Feld wird rot umrandet (Klasse sm-beanstandet). */
+function fb_markierung($form, $feld)
+{
+    $ein = fb_eingaben_setzen();
+    return ($ein['form'] === $form && in_array($feld, $ein['beanstandet'], true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
+/** Der Satz ueber dem Formular, dessen Eingaben gerade zurueckgekommen sind. */
+function fb_eingaben_hinweis($form)
+{
+    return fb_eingaben_aktiv() === $form
+        ? '<div class="sm-warnung">' . fb_t('ALLG.EINGABEN_ZURUECK') . '</div>' : '';
+}
+
 function fb_einmal_lesen()
 {
     $f = fb_paths()['datadir'] . '/einmalmeldung.json';
@@ -1298,6 +1475,9 @@ function fb_einmal_lesen()
         }
     }
     $aus['ausgabe'] = isset($d['ausgabe']) && is_string($d['ausgabe']) ? $d['ausgabe'] : '';
+    /* X-2: die Eingaben eines beanstandeten Formulars - geprueft wird beim
+     * Annehmen (fb_eingaben_setzen()). */
+    $aus['eingaben'] = (isset($d['eingaben']) && is_array($d['eingaben'])) ? $d['eingaben'] : null;
     $aus['formular'] = array();
     if (isset($d['formular']) && is_array($d['formular'])) {
         foreach ($d['formular'] as $k => $v) {
@@ -1564,8 +1744,24 @@ function fb_alter()
     $s = fb_stand();
     if (!isset($s['ts']) || (int) $s['ts'] <= 0) { return -1; }
     $alter = time() - (int) $s['ts'];
-    if ($alter < -FB_UHRSPRUNG) { return -1; }
+    /* a1 (Verbesserungsbau 01.10.2026): ab FB_ZUKUNFT_TOLERANZ (5 s) Vorlauf
+     * ist der Stand keine Aussage - bis 0.12.12 erst ab 300 s. Wie weit er
+     * voraus ist, sagt fb_stand_voraus(). */
+    if ($alter < -FB_ZUKUNFT_TOLERANZ) { return -1; }
     return max(0, $alter);
+}
+
+/**
+ * a1 (Verbesserungsbau 01.10.2026): wie viele Sekunden liegt der Stand in der
+ * Zukunft - 0, wenn er es nicht (oder nur innerhalb der Toleranz von
+ * FB_ZUKUNFT_TOLERANZ) tut. Ein solcher Stand gilt als "keine Aussage":
+ * fb_zeile() liefert OK=0, der Reiter Test und die Kachel nennen den Vorlauf.
+ */
+function fb_stand_voraus($stand)
+{
+    if (!is_array($stand) || !isset($stand['ts']) || (int) $stand['ts'] <= 0) { return 0; }
+    $roh = time() - (int) $stand['ts'];
+    return ($roh < -FB_ZUKUNFT_TOLERANZ) ? -$roh : 0;
 }
 
 function fb_log($text)
@@ -2313,6 +2509,21 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
             . 'falsch - dann stimmt auch der Tageswechsel der Bilanz nicht.',
             date('Y-m-d H:i:s', (int) $vorher['ts']), -$abstand));
         $vorher = array();
+        $abstand = null;
+    }
+    /* a1 (Verbesserungsbau 01.10.2026): liegt der Stand mehr als
+     * FB_ZUKUNFT_TOLERANZ (5 s) in der Zukunft, gilt er am Endpunkt als keine
+     * Aussage (fb_zeile(): OK=0). Dann wird SOFORT neu gerechnet, nicht erst,
+     * wenn die Uhr den Stempel eingeholt hat - bis 0.12.12 hielt die
+     * Rechentaktbremse einen Stand bis 300 s voraus fest. Der vorige Stand
+     * bleibt fuer die Hysterese erhalten (verworfen wird er wie bisher erst
+     * ab FB_UHRSPRUNG, Block darueber). */
+    if ($abstand !== null && $abstand < -FB_ZUKUNFT_TOLERANZ) {
+        fb_log_wenn_neu('zukunft', sprintf(
+            'Der gespeicherte Stand liegt %d Sekunden in der Zukunft (%s) - er gilt '
+            . 'als keine Aussage (OK=0) und wird sofort neu gerechnet. Kehrt das '
+            . 'wieder, springt die Uhr des LoxBerry.',
+            -$abstand, date('Y-m-d H:i:s', (int) $vorher['ts'])));
         $abstand = null;
     }
     if (!$erzwingen && $abstand !== null
@@ -3431,6 +3642,20 @@ function fb_mqtt_senden($cfg, $stand)
             if ($retain) { $zurueckbehalten++; }
         }
     }
+    /* Sonne-1 (Verbesserungsbau 01.10.2026, D, ab Werk aus): Sonnenstand und
+     * "Sonne wirkt je Fassade" unter haus/sonne/, OHNE Praefix, immer
+     * FLUECHTIG (publish) - ein Messwert mit Zeitbezug. Ohne Standort ist die
+     * Liste leer, und es geht nichts hinaus. Gleicher Abstand wie oben. */
+    $sonne_n = 0;
+    if (!empty($cfg['sonne_teilen'])) {
+        foreach (fb_sonne_nachrichten($cfg, $stand) as $t => $v) {
+            $msg = 'publish ' . fb_mqtt_thema($t) . ' ' . fb_mqtt_wert_saeubern($v);
+            if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
+            if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']) !== false) {
+                $sonne_n++;
+            }
+        }
+    }
     /* M6: Reste, die zu keinem Thema dieses Laufs gehoeren (entfernte
      * Fenster, abgeschaltete Zweige) - leere retain-Nutzlast, kein Wert
      * dahinter. Sie stehen unter keinem Eingang, den das Plugin noch
@@ -3450,8 +3675,104 @@ function fb_mqtt_senden($cfg, $stand)
     fb_log_wenn_neu('mqtt_zahl', $gesendet . ' von ' . count($nachrichten)
         . ' Werten an das Gateway gesendet (Port ' . $z['udpport'] . '), davon '
         . $zurueckbehalten . ' zurueckbehalten'
-        . ($geraeumt > 0 ? ', dazu ' . $geraeumt . ' Altwert(e) mit leerer Nutzlast' : '') . '.');
+        . ($geraeumt > 0 ? ', dazu ' . $geraeumt . ' Altwert(e) mit leerer Nutzlast' : '')
+        . ($sonne_n > 0 ? ', dazu ' . $sonne_n . ' fluechtig unter haus/sonne/ (Sonne-1)' : '') . '.');
     return $gesendet;
+}
+
+/* ==================================================================
+ * Sonne-1 (Verbesserungsbau 01.10.2026, D, ab Werk aus)
+ *
+ * Die Fensterbilanz rechnet den Sonnenstand ohnehin. Andere Plugins - zuerst
+ * der Beschattungswaechter - sollen ihn nicht ein zweites Mal rechnen,
+ * sondern lesen: Azimut, Elevation und je Fassade, ob die direkte Sonne
+ * gerade ein Fenster dieser Fassade erreicht. Kopplung nur ueber MQTT, nie
+ * ueber Dateien (vb_RAHMEN.md, D-Punkte).
+ * ================================================================== */
+
+/** Der Themenstamm - fest, ohne Praefix der Linie (Haus-Themen, Regeln/07). */
+function fb_sonne_stamm() { return 'haus/sonne'; }
+
+/**
+ * Die Themen fuer die Tabelle im Reiter MQTT - dieselben Namen, die
+ * fb_sonne_nachrichten() sendet (<azimut> steht fuer jede Fassade).
+ */
+function fb_sonne_themen()
+{
+    $s = fb_sonne_stamm();
+    return array(
+        $s . '/azimut'                 => 'MQTT.S1_T_AZIMUT',
+        $s . '/elevation'              => 'MQTT.S1_T_ELEVATION',
+        $s . '/fassaden'               => 'MQTT.S1_T_FASSADEN',
+        $s . '/fassade/<azimut>/wirkt' => 'MQTT.S1_T_WIRKT',
+        $s . '/ts'                     => 'MQTT.S1_T_TS',
+    );
+}
+
+/**
+ * Je Fassade: wirkt die direkte Sonne gerade? Eine Fassade ist die Menge der
+ * AKTIVEN Fenster mit Kuerzel und gleicher Ausrichtung (Azimut in ganzen
+ * Grad, 0-359). Sie "wirkt", sobald mindestens eines ihrer Fenster direkte
+ * Sonne bekommt - dieselben drei Bedingungen, die fb_rechnen() fuer den
+ * direkten Anteil stellt: die Sonne steht vor der Glasebene (cos > 0) und
+ * ueber dem Horizont, nicht hinter dem eingetragenen Verschattungshorizont,
+ * und der Dachueberstand verschattet das Fenster nicht ganz. Die Wolken
+ * zaehlen NICHT: das ist reine Geometrie zum Zeitpunkt des Standes - ob es
+ * gerade hell genug ist, misst der Abnehmer selbst (etwa sonne_min im
+ * Beschattungswaechter).
+ *
+ * Rueckgabe: array(<azimut> => array('wirkt' => 0|1, 'fenster' => Kuerzel[])),
+ * nach Azimut sortiert; leer ohne Sonnenstand (kein Standort).
+ */
+function fb_sonne_fassaden($cfg, $stand)
+{
+    if (!is_array($stand) || !isset($stand['sonne_hoehe'], $stand['ts']) || (int) $stand['ts'] <= 0) {
+        return array();
+    }
+    $s = fb_sonnenstand((int) $stand['ts'], $cfg['breite'], $cfg['laenge']);
+    $aus = array();
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+        if (!is_array($f) || !isset($f['kuerzel']) || (string) $f['kuerzel'] === '' || empty($f['aktiv'])) {
+            continue;
+        }
+        $az = (((int) $f['azimut']) % 360 + 360) % 360;
+        $cos = fb_cos_einfall($s['azimut'], $s['hoehe_geo'], $f['azimut'], $f['neigung']);
+        list($punkte, ) = fb_horizont_lesen($f['horizont']);
+        $hindernis = count($punkte) > 0 ? fb_horizont_hoehe($punkte, $s['azimut']) : -90.0;
+        $dach = fb_dach_anteil($s['hoehe_geo'], $s['azimut'], $f['azimut'], $f['dach_tiefe'],
+                               $f['dach_hoehe'], $f['fenster_hoehe'], $f['neigung']);
+        $wirkt = ($cos > 0.0 && $s['hoehe'] > 0.0 && $s['hoehe_geo'] > $hindernis && $dach < 0.999) ? 1 : 0;
+        if (!isset($aus[$az])) { $aus[$az] = array('wirkt' => 0, 'fenster' => array()); }
+        $aus[$az]['fenster'][] = (string) $f['kuerzel'];
+        if ($wirkt) { $aus[$az]['wirkt'] = 1; }
+    }
+    ksort($aus);
+    return $aus;
+}
+
+/**
+ * Die Nachrichten von Sonne-1 fuer DIESEN Stand, volle Themen => Wert, in
+ * Sendereihenfolge (ts zuletzt: wer ts sieht, hat den Satz davor).
+ * Leer ohne Sonnenstand - dann geht nichts hinaus, keine erfundene 0.
+ */
+function fb_sonne_nachrichten($cfg, $stand)
+{
+    if (!is_array($stand) || !isset($stand['sonne_hoehe'], $stand['sonne_azimut'], $stand['ts'])
+        || (int) $stand['ts'] <= 0) {
+        return array();
+    }
+    $s = fb_sonne_stamm();
+    $fa = fb_sonne_fassaden($cfg, $stand);
+    $m = array(
+        $s . '/azimut'    => round((float) $stand['sonne_azimut'], 2),
+        $s . '/elevation' => round((float) $stand['sonne_hoehe'], 2),
+        $s . '/fassaden'  => $fa ? implode(',', array_keys($fa)) : '-',
+    );
+    foreach ($fa as $az => $d) {
+        $m[$s . '/fassade/' . $az . '/wirkt'] = (int) $d['wirkt'];
+    }
+    $m[$s . '/ts'] = (int) $stand['ts'];
+    return $m;
 }
 
 /* ==================================================================
@@ -4018,7 +4339,8 @@ function fb_zeile($stand, $hoechstalter = null)
     $alter = -1;
     if (isset($stand['ts']) && (int) $stand['ts'] > 0) {
         $roh = time() - (int) $stand['ts'];
-        $alter = ($roh < -FB_UHRSPRUNG) ? -1 : max(0, $roh);
+        /* a1 (Verbesserungsbau 01.10.2026): Toleranz 5 s statt 300 s. */
+        $alter = ($roh < -FB_ZUKUNFT_TOLERANZ) ? -1 : max(0, $roh);
     }
     $herz = $alter < 0 ? -1 : (int) floor($alter / 60);
     if ($f === null) {
@@ -4058,11 +4380,16 @@ function fb_zeile($stand, $hoechstalter = null)
      * galt allein hoechstalter (bis 86400): ein zwei Stunden alter Stand ging
      * mit OK=1 und BESCHATTEN=1 hinaus (gemessen, Code-Pruefer Nr. 7). */
     $grenze = min((int) $hoechstalter, 3 * FB_TAKT);
-    if ($alter > $grenze) {
+    /* a1 (Verbesserungsbau 01.10.2026): ein Alter von -1 - Stand mehr als
+     * FB_ZUKUNFT_TOLERANZ in der Zukunft oder ohne Stempel - ist KEINE
+     * AUSSAGE und geht wie ein veralteter Stand hinaus (OK=0, Urteile 0,
+     * HERZ=-1). Bis 0.12.12 stand hier nur "$alter > $grenze"; -1 ist nie
+     * groesser, und ein Stand aus 2036 ging mit OK=1 und BESCHATTEN=1 hinaus. */
+    if ($alter < 0 || $alter > $grenze) {
         $o = 'FENSTERBILANZ';
         foreach (fb_summenfelder($cfg) as $feld => $info) {
             if ($feld === 'HERZ')          { $o .= ';HERZ=' . $herz; }
-            elseif ($feld === 'TS')        { $o .= ';TS=' . (int) $stand['ts']; }
+            elseif ($feld === 'TS')        { $o .= ';TS=' . (isset($stand['ts']) ? (int) $stand['ts'] : 0); }
             elseif ($feld === 'FENSTER')   { $o .= ';FENSTER=' . (isset($f['FENSTER']) ? (int) $f['FENSTER'] : 0); }
             elseif ($feld === 'STRAHLUNG') { $o .= ';STRAHLUNG=-1'; }
             else                           { $o .= ';' . $feld . '=0'; }
@@ -5410,6 +5737,125 @@ function fb_horizont_svg($f, $cfg, $jetzt = null, $breite = 640, $hoehe = 220)
     return $o;
 }
 
+/* ==================================================================
+ * b1 (Verbesserungsbau 01.10.2026): das Schaubild der Baustein-Liste
+ * ================================================================== */
+
+/**
+ * Die Verbindungen der Baustein-Liste (Reiter Loxone, Schritt 6) - EINE Quelle
+ * fuer das Bild und fuer jede Probe, die es nachzaehlt.
+ *
+ * Je Kante: array(von, nach, invertiert). Die Knoten heissen wie die
+ * Nummern der Tabelle ('2' ... '8'); 'ts', 'ok', 'beschatten' und 'freigabe'
+ * sind die Eingaenge von aussen. Die zwei invertierten Eingaenge sind der
+ * Kern der Liste: FB_OK geht NEGIERT ins ODER #4, und #4 geht NEGIERT ins
+ * UND #6. Wer einen davon verliert, gibt die Beschattung nur frei, solange
+ * das Plugin ausgefallen ist (Befund O6, Durchgang 30.09.2026).
+ */
+function fb_bausteine_kanten()
+{
+    return array(
+        array('ts', '2', false),
+        array('2', '3', false),
+        array('3', '4', false),
+        array('ok', '4', true),
+        array('4', '5', false),
+        array('4', '6', true),
+        array('beschatten', '6', false),
+        array('6', '7', false),
+        array('freigabe', '7', false),
+        array('7', '8', false),
+    );
+}
+
+/**
+ * Die Baustein-Logik #2 bis #8 als SVG - statisch, ohne Bibliothek, ohne
+ * Skript. Beschriftung aus der Sprachdatei ([LOX] SB_*, "|" trennt zwei
+ * Zeilen), maskiert ueber fb_x(). Ein Kreis am Eingang heisst "invertiert".
+ */
+function fb_bausteine_svg()
+{
+    /* Knoten: x, y, Breite, Hoehe, Schluessel, Art (ein = Eingang von aussen). */
+    $k = array(
+        'ts'         => array(10, 20, 150, 40, 'LOX.SB_TS', 'ein'),
+        '2'          => array(190, 20, 130, 40, 'LOX.SB_2', 'bs'),
+        '3'          => array(350, 20, 130, 40, 'LOX.SB_3', 'bs'),
+        'ok'         => array(10, 95, 150, 40, 'LOX.SB_OK', 'ein'),
+        '4'          => array(515, 55, 150, 45, 'LOX.SB_4', 'bs'),
+        '5'          => array(700, 5, 150, 40, 'LOX.SB_5', 'opt'),
+        'beschatten' => array(10, 175, 150, 40, 'LOX.SB_BESCHATTEN', 'ein'),
+        '6'          => array(515, 165, 150, 45, 'LOX.SB_6', 'bs'),
+        'freigabe'   => array(10, 245, 150, 40, 'LOX.SB_FREIGABE', 'ein'),
+        '7'          => array(700, 190, 150, 45, 'LOX.SB_7', 'bs'),
+        '8'          => array(700, 270, 150, 45, 'LOX.SB_8', 'ziel'),
+    );
+    /* Linienzuege je Kante: Stuetzpunkte, der letzte liegt AM Rand des Ziels;
+     * bei einem invertierten Eingang sitzt davor der Kreis. */
+    $wege = array(
+        'ts-2'         => array(array(160, 40), array(190, 40)),
+        '2-3'          => array(array(320, 40), array(350, 40)),
+        '3-4'          => array(array(480, 40), array(497, 40), array(497, 68), array(515, 68)),
+        'ok-4'         => array(array(160, 115), array(490, 115), array(490, 88), array(507, 88)),
+        '4-5'          => array(array(665, 70), array(682, 70), array(682, 25), array(700, 25)),
+        '4-6'          => array(array(590, 100), array(590, 157)),
+        'beschatten-6' => array(array(160, 195), array(515, 195)),
+        '6-7'          => array(array(665, 187), array(682, 187), array(682, 205), array(700, 205)),
+        'freigabe-7'   => array(array(160, 265), array(690, 265), array(690, 222), array(700, 222)),
+        '7-8'          => array(array(775, 235), array(775, 270)),
+    );
+    /* Nicht fb_klartext(): das dekodiert VOR strip_tags, und aus
+     * "&lt;Praefix&gt;" wuerde ein Tag, das verschwindet. Hier erst die
+     * Auszeichnung weg, dann die Entitaeten auf, dann fb_x(). */
+    $txt = function ($schl) {
+        return trim(html_entity_decode(strip_tags(fb_t($schl)), ENT_QUOTES, 'UTF-8'));
+    };
+    $farbe = array('ein' => array('#eef3e6', '#6dac20'), 'bs' => array('#ffffff', '#546e7a'),
+                   'opt' => array('#fafafa', '#9e9e9e'), 'ziel' => array('#fdf4ec', '#e0620d'));
+    $o = '<svg viewBox="0 0 860 325" width="100%" style="max-width:860px" '
+       . 'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="'
+       . fb_x($txt('LOX.SB_TITEL')) . '">';
+    $o .= '<defs><marker id="fbSbPfeil" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+        . 'markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#546e7a"/></marker></defs>';
+    foreach ($k as $name => $b) {
+        list($x, $y, $w, $h, $schl, $art) = $b;
+        $o .= '<rect data-knoten="' . fb_x($name) . '" x="' . $x . '" y="' . $y . '" width="' . $w
+            . '" height="' . $h . '" rx="6" fill="' . $farbe[$art][0] . '" stroke="' . $farbe[$art][1]
+            . '" stroke-width="1.5"' . ($art === 'opt' ? ' stroke-dasharray="4 3"' : '') . '/>';
+        $zeilen = explode('|', $txt($schl));
+        $n = count($zeilen);
+        foreach ($zeilen as $i => $z) {
+            $ty = $y + $h / 2.0 + ($i - ($n - 1) / 2.0) * 14 + 4;
+            $o .= '<text x="' . ($x + $w / 2) . '" y="' . round($ty, 1) . '" font-size="11" '
+                . 'text-anchor="middle" fill="#333"' . ($i === 0 && $art !== 'ein' ? ' font-weight="bold"' : '')
+                . '>' . fb_x(trim($z)) . '</text>';
+        }
+    }
+    foreach (fb_bausteine_kanten() as $kante) {
+        list($von, $nach, $nicht) = $kante;
+        $id = $von . '-' . $nach;
+        if (!isset($wege[$id])) { continue; }
+        $pkt = array();
+        foreach ($wege[$id] as $p) { $pkt[] = $p[0] . ',' . $p[1]; }
+        $o .= '<polyline data-kante="' . fb_x($id) . '"' . ($nicht ? ' data-nicht="1"' : '')
+            . ' points="' . implode(' ', $pkt) . '" fill="none" stroke="#546e7a" stroke-width="1.6"'
+            . ($nicht ? '' : ' marker-end="url(#fbSbPfeil)"') . '/>';
+        if ($nicht) {
+            /* Der Kreis sitzt zwischen dem letzten Stuetzpunkt und dem Ziel. */
+            $ende = $wege[$id][count($wege[$id]) - 1];
+            $vor = $wege[$id][count($wege[$id]) - 2];
+            $cx = $ende[0] + ($ende[0] > $vor[0] ? 4 : ($ende[0] < $vor[0] ? -4 : 0));
+            $cy = $ende[1] + ($ende[1] > $vor[1] ? 4 : ($ende[1] < $vor[1] ? -4 : 0));
+            $o .= '<circle data-nicht-an="' . fb_x($id) . '" cx="' . $cx . '" cy="' . $cy
+                . '" r="4" fill="#ffffff" stroke="#b00000" stroke-width="2"/>';
+            $o .= '<text x="' . ($cx + ($ende[0] === $vor[0] ? 10 : -30)) . '" y="'
+                . ($cy + ($ende[0] === $vor[0] ? -8 : -8)) . '" font-size="10" fill="#b00000" '
+                . 'font-weight="bold">' . fb_x($txt('LOX.SB_NICHT')) . '</text>';
+        }
+    }
+    $o .= '</svg>';
+    return $o;
+}
+
 /**
  * Einen Text ueber MQTT senden - fuer den Tagesbericht.
  *
@@ -5537,8 +5983,12 @@ function fb_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function fb_sicherung_lesen($roh)
+function fb_sicherung_lesen($roh, &$namen = null)
 {
+    /* X-3 (Verbesserungsbau 01.10.2026): $namen sammelt die NAMEN der
+     * beanstandeten Schluessel - nie Werte - fuer die Warnung beim Sichern
+     * (fb_rueckspiel_altwerte()). Das Zurueckspielen selbst aendert sich nicht. */
+    $namen = array();
     /* C1 (Durchgang 30.09.2026): Rueckgabe traegt ein viertes Feld,
      * array('token_leer' => bool, 'uebergangen' => Liste). Jeder Wert wird mit
      * denselben Regeln geprueft wie im Formular (fb_sicherung_wert()); bis
@@ -5551,6 +6001,7 @@ function fb_sicherung_lesen($roh)
     $info = array('token_leer' => false, 'uebergangen' => array());
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
+        $namen[] = '-';
         return array(null, array(fb_t('EINST.SICH_KEIN_JSON')), 0, $info);
     }
     /* O18: traegt die Datei den Kopf, den der Sichern-Knopf DIESER Linie
@@ -5580,11 +6031,14 @@ function fb_sicherung_lesen($roh)
              * wurde hier UND dort maskiert (gemessen, Oberflaeche-Pruefer
              * Nr. 19). */
             $mangel[] = sprintf(fb_t('EINST.SICH_FREMD'), $k);
+            $namen[] = $k;
             continue;
         }
-        $wm = fb_sicherung_wert($k, $w);
+        $n_k = array();
+        $wm = fb_sicherung_wert($k, $w, $n_k);
         if ($wm) {
             foreach ($wm as $z) { $mangel[] = $z; }
+            foreach ($n_k ? $n_k : array($k) as $nk) { $namen[] = $nk; }
             continue;
         }
         /* Ein LEERES Wortzeichen heisst "keines gesichert" - der Aufrufer
@@ -5598,13 +6052,18 @@ function fb_sicherung_lesen($roh)
         if ((int) $neu['schwelle_aus'] >= (int) $neu['schwelle_ein']) {
             $mangel[] = sprintf(fb_t('FEHLER.SCHWELLEN'),
                                 (int) $neu['schwelle_aus'], (int) $neu['schwelle_ein']);
+            $namen[] = 'schwelle_ein';
+            $namen[] = 'schwelle_aus';
         }
         if ((int) $neu['gewicht_raum'] + (int) $neu['gewicht_tag'] === 0) {
             $mangel[] = fb_t('FEHLER.GEWICHTE_NULL');
+            $namen[] = 'gewicht_raum';
+            $namen[] = 'gewicht_tag';
         }
     }
     if ($anzahl === 0) {
         $mangel[] = fb_t('EINST.SICH_LEER');
+        $namen[] = '-';
     }
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
      *
@@ -5633,8 +6092,43 @@ function fb_sicherung_lesen($roh)
     if ($fehlend) {
         $mangel[] = sprintf(fb_t('EINST.SICH_FEHLEND'), count($fehlend),
             implode(', ', $fehlend));
+        foreach ($fehlend as $fk) { $namen[] = $fk; }
     }
+    $namen = array_values(array_unique($namen));
     return array($mangel ? null : $neu, $mangel, $anzahl, $info);
+}
+
+/**
+ * X-3 (Verbesserungsbau 01.10.2026): die Sicherung, wie "Einstellungen
+ * sichern" sie liefert - ein lesbarer Kopf (_hinweis, _plugin, _stand) und die
+ * volle Konfiguration samt Wortzeichen. Eine Quelle fuer den Knopf und fuer
+ * fb_rueckspiel_altwerte().
+ */
+function fb_sicherung_bauen()
+{
+    return array_merge(array(
+        '_hinweis' => fb_klartext('EINST.SICH_KOPF'),
+        '_plugin'  => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
+        /* KEINE Fassungsnummer - siehe den Handler fb_sichern. */
+        '_stand'   => date('Y-m-d H:i:s'),
+    ), fb_config());
+}
+
+/**
+ * X-3 (Verbesserungsbau 01.10.2026): wuerde die EIGENE Sicherung beim
+ * Zurueckspielen abgewiesen? Sie geht durch DIESELBE Pruefung wie das
+ * Zurueckspielen (fb_sicherung_lesen()). Rueckgabe: die Namen der Schluessel
+ * mit Mangel (leer = besteht) - nie Werte. Der Name traegt bewusst kein
+ * "sicherung" (Kettenwerkzeug, siehe BAUBERICHT).
+ */
+function fb_rueckspiel_altwerte($aus = null)
+{
+    if (!is_array($aus)) { $aus = fb_sicherung_bauen(); }
+    $js = json_encode($aus, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) { return array('-'); }
+    $namen = array();
+    list($neu, , , ) = fb_sicherung_lesen($js, $namen);
+    return $neu === null ? $namen : array();
 }
 
 /**
@@ -5644,15 +6138,19 @@ function fb_sicherung_lesen($roh)
  */
 function fb_sicherung_freiwillig()
 {
-    return array('mqtt_praefix_alt');
+    /* Sonne-1 (Verbesserungsbau 01.10.2026): 'sonne_teilen' kennen Sicherungen
+     * bis 0.12.12 nicht. Fehlt er, gilt die Vorgabe 0 (aus) - die harmlose
+     * Richtung, eine eingerichtete Anlage aendert dadurch nichts. */
+    return array('mqtt_praefix_alt', 'sonne_teilen');
 }
 
 /**
  * Einen Wert der Sicherung pruefen - mit denselben Regeln wie das Formular.
  * Rueckgabe: Liste der Beanstandungen (leer = gueltig).
  */
-function fb_sicherung_wert($k, $w)
+function fb_sicherung_wert($k, $w, &$namen = null)
 {
+    if (!is_array($namen)) { $namen = array(); }     // X-3: Namen, nie Werte
     $zf = fb_zahlfelder();
     if (isset($zf[$k])) {
         list(, $grund) = fb_zahl_pruefen($w, $zf[$k][0], $zf[$k][1], $zf[$k][2]);
@@ -5678,17 +6176,19 @@ function fb_sicherung_wert($k, $w)
             foreach ($w as $r => $q) {
                 if (preg_match('/^[a-z0-9_]{1,20}\z/', (string) $r) !== 1) {
                     $m[] = sprintf(fb_t('EINST.SICH_W_TEXT'), $k . '.' . fb_sich_zeigen($r));
+                    $namen[] = $k;
                     continue;
                 }
                 list(, $grund) = fb_zahl_pruefen($q, 0.1, 1000.0, 1);
                 if ($grund !== '') {
+                    $namen[] = $k . '.' . $r;
                     $m[] = fb_sich_zahlmeldung($k . '.' . $r, $q, $grund,
                                                array(0.1, 1000, 1, 'EINST.L_RAUMFLAECHE'));
                 }
             }
             return $m;
         case 'fenster':
-            return fb_sicherung_fenster($w);
+            return fb_sicherung_fenster($w, $namen);
     }
     return array();
 }
@@ -5713,12 +6213,14 @@ function fb_sich_zahlmeldung($k, $w, $grund, $feld)
  * unbekannte werden beanstandet. Ein doppeltes Kuerzel wird beanstandet wie
  * im Formular - bis 0.12.10 leerte fb_config_richten() es still.
  */
-function fb_sicherung_fenster($w)
+function fb_sicherung_fenster($w, &$namen = null)
 {
-    if (!is_array($w)) { return array(sprintf(fb_t('EINST.SICH_W_LISTE'), 'fenster')); }
+    if (!is_array($namen)) { $namen = array(); }     // X-3: Namen, nie Werte
+    if (!is_array($w)) { $namen[] = 'fenster'; return array(sprintf(fb_t('EINST.SICH_W_LISTE'), 'fenster')); }
     $m = array();
     if (count($w) > FB_FENSTER) {
         $m[] = sprintf(fb_t('EINST.SICH_W_ZUVIELE'), count($w), FB_FENSTER);
+        $namen[] = 'fenster';
     }
     $vorgabe = fb_fenster_vorgabe();
     $zf = fb_fenster_zahlfelder();
@@ -5727,11 +6229,13 @@ function fb_sicherung_fenster($w)
         if (!is_int($i) || $i < 0 || $i >= FB_FENSTER) {
             $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), 0,
                            sprintf(fb_t('EINST.SICH_FREMD'), 'fenster.' . fb_sich_zeigen($i)));
+            $namen[] = 'fenster';
             continue;
         }
         $nr = $i + 1;
         if (!is_array($f)) {
             $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), $nr, sprintf(fb_t('EINST.SICH_W_LISTE'), 'fenster'));
+            $namen[] = 'fenster.' . $nr;
             continue;
         }
         foreach ($f as $fk => $fw) {
@@ -5756,12 +6260,13 @@ function fb_sicherung_fenster($w)
                 // name, horizont: Text ohne Steuer- und Anfuehrungszeichen
                 $z = sprintf(fb_t('EINST.SICH_W_TEXT'), $fk);
             }
-            if ($z !== '') { $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), $nr, $z); }
+            if ($z !== '') { $m[] = sprintf(fb_t('EINST.SICH_W_ZEILE'), $nr, $z); $namen[] = 'fenster.' . $nr . '.' . $fk; }
         }
         if (isset($f['kuerzel']) && is_string($f['kuerzel']) && $f['kuerzel'] !== '') {
             $gross = strtoupper($f['kuerzel']);
             if (isset($gesehen[$gross])) {
                 $m[] = sprintf(fb_t('EINST.SICH_W_DOPPELT'), $nr, $f['kuerzel'], $gesehen[$gross]);
+                $namen[] = 'fenster.' . $nr . '.kuerzel';
             } else {
                 $gesehen[$gross] = $nr;
             }
