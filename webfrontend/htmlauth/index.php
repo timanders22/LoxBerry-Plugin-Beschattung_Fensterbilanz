@@ -1587,6 +1587,7 @@ window.addEventListener('resize', fbRollbalken);
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $fb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= fb_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= fb_e(fb_t('EINST.H_LAGE')) ?></h2>
 <div class="sm-step"><?= fb_t('EINST.LAGE_ERKLAERUNG') ?></div>

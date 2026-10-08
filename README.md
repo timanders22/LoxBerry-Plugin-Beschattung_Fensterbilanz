@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.12
+Version 0.12.13
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,14 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.13
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen, vor „Wie es gerade steht“.
+* Die Statuskacheln über den Reitern stehen schon und bleiben unverändert.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ---
 
