@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.13
+Version 0.12.14
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,17 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.14
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: `I1 = Ausgang von #3, I2 = FB_OK (negiert)` statt „Ausgang von #3 und der
+  invertierte FB_OK“, `Ausgang der einzigen Quelle (#4)` an der Benachrichtigung, `AutoShade = Ausgang
+  von #7` an der AutoJalousie, an den Statusbausteinen `V1 = …`. Was aus der eigenen Anlage kommt
+  (aktuelle Zeit, bisheriger Freigabeweg), bleibt in Worten. Gleiche Bausteine, gleiche Verbindungen.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.12.13
 
