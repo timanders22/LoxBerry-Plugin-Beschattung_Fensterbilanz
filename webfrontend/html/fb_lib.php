@@ -5746,8 +5746,10 @@ function fb_horizont_svg($f, $cfg, $jetzt = null, $breite = 640, $hoehe = 220)
  * fuer das Bild und fuer jede Probe, die es nachzaehlt.
  *
  * Je Kante: array(von, nach, invertiert). Die Knoten heissen wie die
- * Nummern der Tabelle ('2' ... '8'); 'ts', 'ok', 'beschatten' und 'freigabe'
- * sind die Eingaenge von aussen. Die zwei invertierten Eingaenge sind der
+ * Nummern der Tabelle ('3' ... '8'); 'herz', 'ok', 'beschatten' und 'freigabe'
+ * sind die Eingaenge von aussen. Welle Bild 4 (0.12.15): die Liste ist die des
+ * Musterprojekts - FB_HERZ geht direkt an den Schwellwertschalter #3; bis 0.12.14
+ * rechnete eine Formel #2 das Alter aus FB_TS ('ts' -> '2' -> '3'). Die zwei invertierten Eingaenge sind der
  * Kern der Liste: FB_OK geht NEGIERT ins ODER #4, und #4 geht NEGIERT ins
  * UND #6. Wer einen davon verliert, gibt die Beschattung nur frei, solange
  * das Plugin ausgefallen ist (Befund O6, Durchgang 30.09.2026).
@@ -5755,8 +5757,7 @@ function fb_horizont_svg($f, $cfg, $jetzt = null, $breite = 640, $hoehe = 220)
 function fb_bausteine_kanten()
 {
     return array(
-        array('ts', '2', false),
-        array('2', '3', false),
+        array('herz', '3', false),
         array('3', '4', false),
         array('ok', '4', true),
         array('4', '5', false),
@@ -5769,7 +5770,7 @@ function fb_bausteine_kanten()
 }
 
 /**
- * Die Baustein-Logik #2 bis #8 als SVG - statisch, ohne Bibliothek, ohne
+ * Die Baustein-Logik #3 bis #8 als SVG - statisch, ohne Bibliothek, ohne
  * Skript. Beschriftung aus der Sprachdatei ([LOX] SB_*, "|" trennt zwei
  * Zeilen), maskiert ueber fb_x(). Ein Kreis am Eingang heisst "invertiert".
  */
@@ -5777,12 +5778,11 @@ function fb_bausteine_svg()
 {
     /* Knoten: x, y, Breite, Hoehe, Schluessel, Art (ein = Eingang von aussen). */
     $k = array(
-        'ts'         => array(10, 20, 150, 40, 'LOX.SB_TS', 'ein'),
-        '2'          => array(190, 20, 130, 40, 'LOX.SB_2', 'bs'),
-        '3'          => array(350, 20, 130, 40, 'LOX.SB_3', 'bs'),
+        'herz'       => array(10, 20, 150, 40, 'LOX.SB_HERZ', 'ein'),
+        '3'          => array(190, 20, 290, 40, 'LOX.SB_3', 'bs'),
         'ok'         => array(10, 95, 150, 40, 'LOX.SB_OK', 'ein'),
         '4'          => array(515, 55, 150, 45, 'LOX.SB_4', 'bs'),
-        '5'          => array(700, 5, 150, 40, 'LOX.SB_5', 'opt'),
+        '5'          => array(700, 5, 150, 40, 'LOX.SB_5', 'bs'),
         'beschatten' => array(10, 175, 150, 40, 'LOX.SB_BESCHATTEN', 'ein'),
         '6'          => array(515, 165, 150, 45, 'LOX.SB_6', 'bs'),
         'freigabe'   => array(10, 245, 150, 40, 'LOX.SB_FREIGABE', 'ein'),
@@ -5792,8 +5792,7 @@ function fb_bausteine_svg()
     /* Linienzuege je Kante: Stuetzpunkte, der letzte liegt AM Rand des Ziels;
      * bei einem invertierten Eingang sitzt davor der Kreis. */
     $wege = array(
-        'ts-2'         => array(array(160, 40), array(190, 40)),
-        '2-3'          => array(array(320, 40), array(350, 40)),
+        'herz-3'       => array(array(160, 40), array(190, 40)),
         '3-4'          => array(array(480, 40), array(497, 40), array(497, 68), array(515, 68)),
         'ok-4'         => array(array(160, 115), array(490, 115), array(490, 88), array(507, 88)),
         '4-5'          => array(array(665, 70), array(682, 70), array(682, 25), array(700, 25)),

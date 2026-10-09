@@ -1465,6 +1465,10 @@ if ($fb_rahmen) {
    wortgleich aus der Referenzimplementierung uebernommen. */
 .sm-log { background: #1e1e1e; color: #ddd; font-family: monospace; font-size: 0.82em;
   padding: 10px; border-radius: 6px; max-height: 460px; overflow: auto; white-space: pre-wrap; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <script>
 /* Jeder breiten Tabelle einen Rollbalken NACH OBEN geben.
@@ -2626,7 +2630,14 @@ $fb_adressen = array(
 <h3><?= fb_e(fb_t('LOX.SB_H')) ?></h3>
 <div class="sm-breit" id="fb_schaubild"><?= fb_bausteine_svg() ?></div>
 <p class="sm-hilfe"><?= fb_t('LOX.SB_ERKLAERUNG') ?></p>
-<div class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_ERL') ?></div>
+<?php /* Welle Bild 4 (0.12.15): die Liste ist die im LoxBerry-Plugins Musterprojekt in
+       Loxone Config gebaute (Musterprojekt/baustein_listen.txt, Abschnitt Fensterbilanz). */ ?>
+<div class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_HERZ') ?> <?= fb_t('LOX.BAUSTEINE_ERL') ?> <?= fb_t('LOX.BAUSTEINE_STATISTIK') ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= fb_e(fb_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= fb_e(fb_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= fb_t('LOX.MUSTERPROJEKT') ?></p>
 
 <h3><?= fb_e(fb_t('LOX.H_GEGENPROBE')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.GEGENPROBE_TEXT') ?></div>

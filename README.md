@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.14
+Version 0.12.15
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,26 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.15
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Baustein-Liste ist die dort in Loxone Config gebaute.
+
+* Unter der Baustein-Liste steht das Bild der Seite „Fensterbilanz“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste neu (9 statt 12 Zeilen):** eine Zeile = ein Baustein, nur die Hauptvariante, so
+  wie im Musterprojekt gebaut und verbunden. #1 ist der virtuelle HTTP-Eingang aus der Vorlage. Die
+  Ausfallerkennung ist ein Schwellwertschalter direkt an `FB_HERZ` (#3, Ein 15 / Aus 10 Minuten);
+  über MQTT, wo `FB_HERZ` immer 0 ist, rechnet man das Alter wie bisher mit einer Formel aus der
+  Loxone-Zeit und `FB_TS` – das steht jetzt als Hinweis unter der Tabelle. Die Statistik ist kein
+  eigener Baustein, sondern eine Eigenschaft der Eingänge `FB_<kuerzel>_URTEIL` und
+  `FB_<kuerzel>_WATT` (Hinweis). Der virtuelle Ausgang „Fensterbilanz Messwerte“ kommt aus der
+  Vorlage in Schritt 3 und steht nicht mehr in der Liste. Die Kette #4, #6, #7, #8 (zwei negierte
+  Eingänge, AutoShade) ist unverändert.
+* Das Schaubild unter der Liste zeigt jetzt #3 bis #8 mit `FB_HERZ` am Schwellwertschalter.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.12.14
 
@@ -248,6 +268,10 @@ Lauf rechnet sofort neu.
 4. **Selbstprüfung** im Reiter *Test*. Sie beantwortet ohne Loxone, ob die
    Einrichtung trägt — von der Sprachdatei über den eigenen Endpunkt bis zum
    Rechenkern.
+
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
+der Seite „Fensterbilanz“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen (Fenster „Wohnzimmer“, Kürzel `WZ`).
 
 Beanstandet ein Formular eine Eingabe, wird **nichts** gespeichert, auch nicht
 die übrigen Felder; die eingetippten Werte stehen danach wieder im Formular,
