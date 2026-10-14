@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.16
+Version 0.12.17
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,28 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.17
+
+**Verhaltensänderung: der Stellungsvergleich wertet nur noch, wenn das Plugin etwas verlangt.**
+
+* Bisher verglich das Plugin die gemeldete Stellung allein mit „beschatten“. Ein geschlossener
+  Rollladen ohne Beschattungswunsch – jede Nacht, bei Blendung, von Hand – galt als „passt nicht“:
+  nach der Frist stand er im Protokoll, in `FB_NICHT_GEFAHREN` und im Reiter Test als Abweichung.
+  **Nachts gibt es diesen Fehlalarm nicht mehr.**
+* Verlangt ist ein geschlossener Rollladen jetzt, wenn `beschatten` = 1 **oder** `daemmen` = 1 ist
+  (Nachtdämmung eingeschaltet und für das Fenster gewählt). Dann ist `GEFAHREN` 1 (zu) oder 0 (nicht
+  zu); Frist, Meldung und Zählung wie bisher. Neu gewertet wird damit auch die Nachtdämmung: bleibt
+  ein Fenster, das gedämmt werden soll, über die Frist offen, wird es gemeldet.
+* Ist nichts verlangt, steht `GEFAHREN` auf −1, die Abweichungszeit beginnt von vorn, gemeldet und
+  gezählt wird nichts. **−1 heißt jetzt auch „nichts verlangt“**, nicht mehr nur „keine Rückmeldung“
+  (Stellung unbekannt oder „Stellung auswerten“ aus). Der Wertebereich bleibt −1 bis 1; Vorlagen,
+  Namen und MinVal/MaxVal sind unverändert, ein neuer Import ist nicht nötig.
+* Reiter Einbindung in Loxone: #26 und #31 der ersten Liste und #8 der dritten Liste wortgleich aus
+  dem Musterprojekt. Wer den Status „Rollladen Wohnzimmer“ (#31) schon angelegt hat, trägt die Zeilen
+  `V1 = -1` und `V1 = 0` (ohne V3) neu ein. Hinweise, Hilfe, die Beschreibungen im Reiter MQTT und
+  der Text zu „Stellung auswerten“ beschreiben die neue Regel.
+* Selbsttest: sieben neue Fälle. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.12.16
 
@@ -160,7 +182,7 @@ Fenster zu ist:
 | --- | --- |
 | `BLENDUNG` | tief stehende Sonne blendet — auch im Januar, wenn die Wärme willkommen ist |
 | `DAEMMEN` | nachts kalt, der Tag will Wärme: der geschlossene Rollladen ist Wärmeschutz |
-| `GEFAHREN` | hat Loxone die Forderung überhaupt umgesetzt? |
+| `GEFAHREN` | hat Loxone die Forderung überhaupt umgesetzt? Gewertet nur, wenn Beschattung oder Nachtdämmung verlangt ist; −1 = keine Aussage |
 
 ---
 

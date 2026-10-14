@@ -2331,10 +2331,27 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
          * Erst jetzt, wo das Urteil feststeht, laesst sich sagen, ob Loxone
          * getan hat, was das Plugin verlangt. Gemeldet wird erst nach einer
          * Frist: ein Rollladen braucht seine Zeit, und der AutoJalousie hat
-         * seine eigene Verzoegerung. -1 heisst "keine Rueckmeldung". */
+         * seine eigene Verzoegerung.
+         *
+         * GEWERTET WIRD NUR EINE FORDERUNG (0.12.17, 14.10.2026). Verlangt
+         * ist ein geschlossener Rollladen, wenn beschatten = 1 ODER
+         * daemmen = 1 ist. 'daemmen' steht oben schon fest und ist nur 1,
+         * wenn die Nachtdaemmung eingeschaltet ist und fuer dieses Fenster
+         * gilt. Bis 0.12.16 hiess es hier gefahren = (beschatten === zu):
+         * ein Rollladen, der ohne Forderung zu war - jede Nacht, bei
+         * Blendung, von Hand -, galt nach der Frist als "passt nicht", stand
+         * im Protokoll und in NICHT_GEFAHREN; ein offener Rollladen bei
+         * verlangter Nachtdaemmung galt als "passt". Ist nichts verlangt,
+         * gibt es keine Aussage (-1), die Abweichungszeit beginnt von vorn,
+         * gemeldet und gezaehlt wird nichts.
+         *
+         * -1 heisst damit: Stellung unbekannt, "Stellung auswerten" aus,
+         * oder nichts verlangt. Der Wertebereich bleibt -1..1. */
         if (!empty($cfg['stellung_ein']) && $e['stellung'] >= 0) {
             $zu = ((int) $e['stellung'] >= (int) $cfg['stellung_zu']) ? 1 : 0;
-            $e['gefahren'] = ($e['beschatten'] === $zu) ? 1 : 0;
+            $verlangt = ((int) $e['beschatten'] === 1 || (int) $e['daemmen'] === 1);
+            $e['gefahren'] = $verlangt ? $zu : -1;
+            if (!$verlangt) { $e['abweicht_seit'] = 0; }
             if ($e['gefahren'] === 0) {
                 /* Seit wann weicht es ab? Der Zeitpunkt kommt aus dem
                  * vorigen Stand und wandert mit, solange die Abweichung
@@ -3846,9 +3863,10 @@ function fb_felder($cfg = null)
         $f['DAEMMEN'] = array('', 0, 1, 'FB_FELD.DAEMMEN');
     }
     if (!empty($cfg['stellung_ein'])) {
-        /* -1 heisst "keine Rueckmeldung" und ist etwas anderes als 0
-         * ("steht falsch"). Deshalb MinVal -1 - sonst machte Loxone aus dem
-         * einen stillschweigend das andere. */
+        /* -1 heisst "keine Aussage" - keine Rueckmeldung oder (seit 0.12.17)
+         * nichts verlangt, weder Beschattung noch Nachtdaemmung - und ist
+         * etwas anderes als 0 ("steht falsch"). Deshalb MinVal -1 - sonst
+         * machte Loxone aus dem einen stillschweigend das andere. */
         $f['GEFAHREN'] = array('', -1, 1, 'FB_FELD.GEFAHREN');
     }
     return $f;

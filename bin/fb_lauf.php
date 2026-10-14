@@ -1390,6 +1390,91 @@ $ort = array(48.2, 11.6);
             (int) $s_st0['fenster']['1']['gefahren'] === -1,
             'gefahren=' . $s_st0['fenster']['1']['gefahren']);
 
+    /* --- 7a. Gewertet wird nur eine Forderung (0.12.17) ---
+     * Verlangt ist ein geschlossener Rollladen bei beschatten = 1 ODER
+     * daemmen = 1. Ohne Forderung: -1, nichts gemeldet, nichts gezaehlt,
+     * abweicht_seit 0. Bis 0.12.16 galt ein ohne Forderung geschlossener
+     * Rollladen jede Nacht als "passt nicht", und die Nachtdaemmung wurde
+     * nicht gewertet. */
+    $sv = function ($s) {
+        $e = $s['fenster']['1'];
+        return 'beschatten=' . $e['beschatten'] . ' daemmen=' . $e['daemmen']
+             . ' stellung=' . $e['stellung'] . ' gefahren=' . $e['gefahren']
+             . ' gemeldet=' . (empty($e['gemeldet']) ? 0 : 1)
+             . ' abweicht_seit=' . (isset($e['abweicht_seit']) ? (int) $e['abweicht_seit'] : 0)
+             . ' nicht_gefahren=' . (int) $s['nicht_gefahren'];
+    };
+    $mit_stellung = function ($mess, $t, $stellung) {
+        foreach ($mess as $k => $v) { $mess[$k]['t'] = $t; }
+        $mess['stellung.wozi'] = array('v' => $stellung, 't' => $t);
+        return $mess;
+    };
+    $cfg_sd = $cfg_dm;                      // Nachtdaemmung an (5 Grad), Stellung an
+    $cfg_sd['stellung_ein'] = 1; $cfg_sd['stellung_zu'] = 70; $cfg_sd['stellung_frist'] = 900;
+    $cfg_sd = fb_config_richten($cfg_sd);
+
+    // a) nichts verlangt (Nacht, Daemmung aus), Rollladen zu, ueber die Frist
+    $s_a1 = fb_rechnen($cfg_st, $mit_stellung($mess_dm, $t_nacht2, 100), $t_nacht2, array());
+    $s_a2 = fb_rechnen($cfg_st, $mit_stellung($mess_dm, $t_nacht2 + 1000, 100), $t_nacht2 + 1000, $s_a1);
+    $e_a = $s_a2['fenster']['1'];
+    $pruefe('Stellung a: nichts verlangt, Rollladen zu - keine Aussage, nichts gemeldet',
+            (int) $e_a['beschatten'] === 0 && (int) $e_a['daemmen'] === 0
+            && (int) $e_a['gefahren'] === -1 && empty($e_a['gemeldet'])
+            && empty($e_a['abweicht_seit']) && (int) $s_a2['nicht_gefahren'] === 0,
+            $sv($s_a2));
+
+    // b) Beschattung verlangt, Rollladen offen, nach der Frist (Stand s_st2 oben)
+    $e_b = $s_st2['fenster']['1'];
+    $pruefe('Stellung b: Beschattung verlangt, offen, nach der Frist - 0, gemeldet, gezaehlt',
+            (int) $e_b['beschatten'] === 1 && (int) $e_b['gefahren'] === 0
+            && !empty($e_b['gemeldet']) && (int) $s_st2['nicht_gefahren'] === 1,
+            $sv($s_st2));
+
+    // c) Nachtdaemmung verlangt, Rollladen offen, nach der Frist
+    $s_c1 = fb_rechnen($cfg_sd, $mit_stellung($mess_dm, $t_nacht2, 0), $t_nacht2, array());
+    $s_c2 = fb_rechnen($cfg_sd, $mit_stellung($mess_dm, $t_nacht2 + 1000, 0), $t_nacht2 + 1000, $s_c1);
+    $e_c = $s_c2['fenster']['1'];
+    $pruefe('Stellung c: Nachtdaemmung verlangt, offen, nach der Frist - 0, gemeldet, gezaehlt',
+            (int) $e_c['beschatten'] === 0 && (int) $e_c['daemmen'] === 1
+            && (int) $e_c['gefahren'] === 0 && !empty($e_c['gemeldet'])
+            && (int) $s_c2['nicht_gefahren'] === 1,
+            $sv($s_c2));
+
+    // d) Nachtdaemmung verlangt, Rollladen zu
+    $s_d = fb_rechnen($cfg_sd, $mit_stellung($mess_dm, $t_nacht2, 100), $t_nacht2, array());
+    $pruefe('Stellung d: Nachtdaemmung verlangt, Rollladen zu - 1',
+            (int) $s_d['fenster']['1']['daemmen'] === 1
+            && (int) $s_d['fenster']['1']['gefahren'] === 1 && (int) $s_d['nicht_gefahren'] === 0,
+            $sv($s_d));
+
+    // e) Wechsel von "verlangt, abweichend" (s_st1 oben) auf "nicht verlangt"
+    $s_e2 = fb_rechnen($cfg_st, $mit_stellung($mess_dm, $t_nacht2, 100), $t_nacht2, $s_st1);
+    $e_e = $s_e2['fenster']['1'];
+    $pruefe('Stellung e: Wechsel auf nicht verlangt setzt die Abweichungszeit zurueck',
+            (int) $s_st1['fenster']['1']['gefahren'] === 0
+            && (int) $s_st1['fenster']['1']['abweicht_seit'] === $t0
+            && (int) $e_e['gefahren'] === -1 && empty($e_e['abweicht_seit'])
+            && empty($e_e['gemeldet']) && (int) $s_e2['nicht_gefahren'] === 0,
+            $sv($s_e2));
+
+    // e2) am naechsten Morgen wieder verlangt und offen: die Frist beginnt von vorn
+    $t_morgen = $t0 + 86400;
+    $s_e3 = fb_rechnen($cfg_st, $mit_stellung($mess_august, $t_morgen, 0), $t_morgen, $s_e2);
+    $e_e3 = $s_e3['fenster']['1'];
+    $pruefe('Stellung e2: wieder verlangt - die Frist beginnt von vorn',
+            (int) $e_e3['beschatten'] === 1 && (int) $e_e3['gefahren'] === 0
+            && isset($e_e3['abweicht_seit']) && (int) $e_e3['abweicht_seit'] === $t_morgen
+            && empty($e_e3['gemeldet']) && (int) $s_e3['nicht_gefahren'] === 0,
+            $sv($s_e3));
+
+    // f) Stellung unbekannt (Auswertung an, nichts gemeldet), Beschattung verlangt
+    $s_f = fb_rechnen($cfg_st, $mess_august, $t0, array());
+    $pruefe('Stellung f: Stellung unbekannt - weiter -1',
+            (int) $s_f['fenster']['1']['beschatten'] === 1
+            && (int) $s_f['fenster']['1']['stellung'] === -1
+            && (int) $s_f['fenster']['1']['gefahren'] === -1 && (int) $s_f['nicht_gefahren'] === 0,
+            $sv($s_f));
+
     /* --- 2. Die Fensterliste aus einer Projektdatei ---
      *
      * Das Pruefstueck ist hier absichtlich klein und selbstgebaut: es prueft
