@@ -4270,6 +4270,27 @@ function fb_vorlage()
  * hereinkommen. Ohne sie muesste der Anwender je Wert einen Ausgang von
  * Hand anlegen; bei 25 Fenstern in 15 Raeumen sind das ueber dreissig.
  */
+/**
+ * Das Format eines Messwerts im Befehl der Ausgangs-Vorlage - EINE Quelle fuer
+ * fb_vorlage_out() und die Tabelle im Reiter (Schritt 3, Spalte "Befehl bei EIN").
+ *
+ * 0.12.16 (Entwurf Welle 12 fb, Entscheidung 4 vom 13./14.10.2026): Temperaturen
+ * mit einer Nachkommastelle. Bis 0.12.15 ging jede Groesse mit <v.0> hinaus, und
+ * Loxone rundete 24,6 Grad auf 25 - bei 2 K Spreizung des Raumteils ein Viertel
+ * des Bereichs. Temperatur heisst: Einheit 'C' in fb_messgroessen() (prognose,
+ * prognose1, aussen) sowie ist.<raum> und grenze.<raum>. Strahlung, PV-Prognose und
+ * Stellung bleiben ganzzahlig. fb_messwert_setzen() nahm Nachkommastellen (Punkt
+ * oder Komma) schon vorher an - nur die Vorlage aendert sich; wer sie frueher
+ * importiert hat, erzeugt und importiert sie neu.
+ */
+function fb_vorlage_format($name)
+{
+    $art = strpos($name, '.') === false ? $name : substr($name, 0, strpos($name, '.'));
+    if ($art === 'ist' || $art === 'grenze') { return '<v.1>'; }
+    $gr = fb_messgroessen();
+    return (isset($gr[$art]) && $gr[$art][1] === 'C') ? '<v.1>' : '<v.0>';
+}
+
 function fb_vorlage_out()
 {
     $basis = fb_melde_basis();
@@ -4278,7 +4299,7 @@ function fb_vorlage_out()
         $cmds[] = array(
             'title'   => 'FB_SET_' . strtoupper($name),
             'comment' => fb_kachel($info[2]),       // O13, die Einheit haengt Loxone an
-            'cmd'     => $basis . $name . '&v=<v.0>',
+            'cmd'     => $basis . $name . '&v=' . fb_vorlage_format($name),
         );
     }
     /* Die Rueckmeldung der Stellung - je Fenster ein Ausgang, und nur wenn
@@ -4290,7 +4311,8 @@ function fb_vorlage_out()
             $cmds[] = array(
                 'title'   => 'FB_SET_STELLUNG_' . strtoupper($f['kuerzel']),
                 'comment' => fb_kachel('FB_MESS.STELLUNG', fb_kachel_vorsatz($f, 'FB_MESS.STELLUNG')),
-                'cmd'     => $basis . 'stellung.' . strtolower($f['kuerzel']) . '&v=<v.0>',
+                'cmd'     => $basis . 'stellung.' . strtolower($f['kuerzel']) . '&v='
+                       . fb_vorlage_format('stellung.' . strtolower($f['kuerzel'])),
             );
         }
     }
@@ -4304,12 +4326,12 @@ function fb_vorlage_out()
         $cmds[] = array(
             'title'   => 'FB_SET_IST_' . strtoupper($raum),
             'comment' => fb_kachel('FB_MESS.RAUM_IST', $raum),
-            'cmd'     => $basis . 'ist.' . $raum . '&v=<v.0>',
+            'cmd'     => $basis . 'ist.' . $raum . '&v=' . fb_vorlage_format('ist.' . $raum),
         );
         $cmds[] = array(
             'title'   => 'FB_SET_GRENZE_' . strtoupper($raum),
             'comment' => fb_kachel('FB_MESS.RAUM_GRENZE', $raum),
-            'cmd'     => $basis . 'grenze.' . $raum . '&v=<v.0>',
+            'cmd'     => $basis . 'grenze.' . $raum . '&v=' . fb_vorlage_format('grenze.' . $raum),
         );
     }
     return array('VQ_FENSTERBILANZ.xml', fb_xml_virtual_out(array(
@@ -5746,10 +5768,17 @@ function fb_horizont_svg($f, $cfg, $jetzt = null, $breite = 640, $hoehe = 220)
  * fuer das Bild und fuer jede Probe, die es nachzaehlt.
  *
  * Je Kante: array(von, nach, invertiert). Die Knoten heissen wie die
- * Nummern der Tabelle ('3' ... '8'); 'herz', 'ok', 'beschatten' und 'freigabe'
- * sind die Eingaenge von aussen. Welle Bild 4 (0.12.15): die Liste ist die des
- * Musterprojekts - FB_HERZ geht direkt an den Schwellwertschalter #3; bis 0.12.14
- * rechnete eine Formel #2 das Alter aus FB_TS ('ts' -> '2' -> '3'). Die zwei invertierten Eingaenge sind der
+ * Nummern der Tabelle ('3' ... '22'); 'herz', 'ts', 'ok', 'beschatten', 'zusatz',
+ * 'freigabe' und 'daemmen' sind die Eingaenge von aussen. Welle Bild 4 (0.12.15): die
+ * Liste ist die des Musterprojekts - FB_HERZ geht direkt an den Schwellwertschalter #3;
+ * bis 0.12.14 rechnete eine Formel #2 das Alter aus FB_TS ('ts' -> '2' -> '3').
+ * Welle Bild 12 FB (0.12.16, Entwurf Welle 12 fb, Entscheidung 6): erste Seite der
+ * Vollausstattung - #4 bekommt I1 von #19 (#3 ODER Abrufwaechter #16-#18 auf FB_TS)
+ * statt von #3; #7 bekommt I2 von #15 (Vorausschau #10/#11 und Blendung #12/#13 ueber
+ * #14, an dessen I2 der bisherige Freigabeweg haengt); #8 EndDown (Config Cc) kommt
+ * von der Nachtdaemmung #20-#22. Die Kaesten '15' und '22' fassen #11-#15 bzw.
+ * #21/#22 zusammen; deren invertierte Eingaenge (#4 an #11, #13, #21) nennt der Text
+ * unter dem Bild. Die zwei invertierten Eingaenge sind der
  * Kern der Liste: FB_OK geht NEGIERT ins ODER #4, und #4 geht NEGIERT ins
  * UND #6. Wer einen davon verliert, gibt die Beschattung nur frei, solange
  * das Plugin ausgefallen ist (Befund O6, Durchgang 30.09.2026).
@@ -5758,19 +5787,26 @@ function fb_bausteine_kanten()
 {
     return array(
         array('herz', '3', false),
-        array('3', '4', false),
+        array('ts', '18', false),
+        array('3', '19', false),
+        array('18', '19', false),
+        array('19', '4', false),
         array('ok', '4', true),
         array('4', '5', false),
         array('4', '6', true),
         array('beschatten', '6', false),
         array('6', '7', false),
-        array('freigabe', '7', false),
+        array('zusatz', '15', false),
+        array('freigabe', '15', false),
+        array('15', '7', false),
         array('7', '8', false),
+        array('daemmen', '22', false),
+        array('22', '8', false),
     );
 }
 
 /**
- * Die Baustein-Logik #3 bis #8 als SVG - statisch, ohne Bibliothek, ohne
+ * Die Baustein-Logik #3 bis #22 als SVG - statisch, ohne Bibliothek, ohne
  * Skript. Beschriftung aus der Sprachdatei ([LOX] SB_*, "|" trennt zwei
  * Zeilen), maskiert ueber fb_x(). Ein Kreis am Eingang heisst "invertiert".
  */
@@ -5778,29 +5814,43 @@ function fb_bausteine_svg()
 {
     /* Knoten: x, y, Breite, Hoehe, Schluessel, Art (ein = Eingang von aussen). */
     $k = array(
-        'herz'       => array(10, 20, 150, 40, 'LOX.SB_HERZ', 'ein'),
-        '3'          => array(190, 20, 290, 40, 'LOX.SB_3', 'bs'),
-        'ok'         => array(10, 95, 150, 40, 'LOX.SB_OK', 'ein'),
-        '4'          => array(515, 55, 150, 45, 'LOX.SB_4', 'bs'),
-        '5'          => array(700, 5, 150, 40, 'LOX.SB_5', 'bs'),
-        'beschatten' => array(10, 175, 150, 40, 'LOX.SB_BESCHATTEN', 'ein'),
-        '6'          => array(515, 165, 150, 45, 'LOX.SB_6', 'bs'),
-        'freigabe'   => array(10, 245, 150, 40, 'LOX.SB_FREIGABE', 'ein'),
-        '7'          => array(700, 190, 150, 45, 'LOX.SB_7', 'bs'),
-        '8'          => array(700, 270, 150, 45, 'LOX.SB_8', 'ziel'),
+        'herz'       => array(10, 10, 150, 36, 'LOX.SB_HERZ', 'ein'),
+        '3'          => array(190, 10, 150, 36, 'LOX.SB_3', 'bs'),
+        'ts'         => array(10, 56, 150, 36, 'LOX.SB_TS', 'ein'),
+        '18'         => array(190, 56, 150, 36, 'LOX.SB_18', 'bs'),
+        '19'         => array(370, 18, 120, 66, 'LOX.SB_19', 'bs'),
+        'ok'         => array(10, 110, 150, 36, 'LOX.SB_OK', 'ein'),
+        '4'          => array(515, 30, 160, 50, 'LOX.SB_4', 'bs'),
+        '5'          => array(700, 0, 150, 36, 'LOX.SB_5', 'bs'),
+        'beschatten' => array(10, 165, 150, 36, 'LOX.SB_BESCHATTEN', 'ein'),
+        '6'          => array(515, 160, 150, 45, 'LOX.SB_6', 'bs'),
+        '7'          => array(700, 175, 150, 45, 'LOX.SB_7', 'bs'),
+        'zusatz'     => array(10, 225, 150, 36, 'LOX.SB_ZUSATZ', 'ein'),
+        '15'         => array(190, 225, 290, 45, 'LOX.SB_15', 'bs'),
+        'freigabe'   => array(10, 285, 150, 36, 'LOX.SB_FREIGABE', 'ein'),
+        '8'          => array(700, 260, 150, 45, 'LOX.SB_8', 'ziel'),
+        'daemmen'    => array(10, 345, 150, 36, 'LOX.SB_DAEMMEN', 'ein'),
+        '22'         => array(190, 340, 290, 45, 'LOX.SB_22', 'bs'),
     );
     /* Linienzuege je Kante: Stuetzpunkte, der letzte liegt AM Rand des Ziels;
      * bei einem invertierten Eingang sitzt davor der Kreis. */
     $wege = array(
-        'herz-3'       => array(array(160, 40), array(190, 40)),
-        '3-4'          => array(array(480, 40), array(497, 40), array(497, 68), array(515, 68)),
-        'ok-4'         => array(array(160, 115), array(490, 115), array(490, 88), array(507, 88)),
-        '4-5'          => array(array(665, 70), array(682, 70), array(682, 25), array(700, 25)),
-        '4-6'          => array(array(590, 100), array(590, 157)),
-        'beschatten-6' => array(array(160, 195), array(515, 195)),
-        '6-7'          => array(array(665, 187), array(682, 187), array(682, 205), array(700, 205)),
-        'freigabe-7'   => array(array(160, 265), array(690, 265), array(690, 222), array(700, 222)),
-        '7-8'          => array(array(775, 235), array(775, 270)),
+        'herz-3'       => array(array(160, 28), array(190, 28)),
+        'ts-18'        => array(array(160, 74), array(190, 74)),
+        '3-19'         => array(array(340, 28), array(370, 28)),
+        '18-19'        => array(array(340, 74), array(370, 74)),
+        '19-4'         => array(array(490, 40), array(515, 40)),
+        'ok-4'         => array(array(160, 128), array(495, 128), array(495, 70), array(507, 70)),
+        '4-5'          => array(array(675, 45), array(688, 45), array(688, 18), array(700, 18)),
+        '4-6'          => array(array(590, 80), array(590, 152)),
+        'beschatten-6' => array(array(160, 183), array(515, 183)),
+        '6-7'          => array(array(665, 190), array(700, 190)),
+        'zusatz-15'    => array(array(160, 243), array(190, 243)),
+        'freigabe-15'  => array(array(160, 303), array(335, 303), array(335, 270)),
+        '15-7'         => array(array(480, 247), array(690, 247), array(690, 210), array(700, 210)),
+        '7-8'          => array(array(775, 220), array(775, 260)),
+        'daemmen-22'   => array(array(160, 363), array(190, 363)),
+        '22-8'         => array(array(480, 363), array(775, 363), array(775, 305)),
     );
     /* Nicht fb_klartext(): das dekodiert VOR strip_tags, und aus
      * "&lt;Praefix&gt;" wuerde ein Tag, das verschwindet. Hier erst die
@@ -5810,7 +5860,7 @@ function fb_bausteine_svg()
     };
     $farbe = array('ein' => array('#eef3e6', '#6dac20'), 'bs' => array('#ffffff', '#546e7a'),
                    'opt' => array('#fafafa', '#9e9e9e'), 'ziel' => array('#fdf4ec', '#e0620d'));
-    $o = '<svg viewBox="0 0 860 325" width="100%" style="max-width:860px" '
+    $o = '<svg viewBox="0 0 860 390" width="100%" style="max-width:860px" '
        . 'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="'
        . fb_x($txt('LOX.SB_TITEL')) . '">';
     $o .= '<defs><marker id="fbSbPfeil" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '

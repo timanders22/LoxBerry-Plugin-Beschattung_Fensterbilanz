@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.15
+Version 0.12.16
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,36 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.16
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit drei Bildern und
+Schritt-für-Schritt-Anleitung.
+
+* **Reiter Einbindung in Loxone, Schritt 6:** drei Baustein-Listen statt einer (79 statt 9 Zeilen) –
+  „Freigabe, Nachtdämmung und Rollladen-Kontrolle“ (Freigabe mit Vorausschau und Blendung,
+  Abrufwächter auf `FB_TS`, Nachtdämmung schließt über `EndDown`/Cc, Stellung zurück an das Plugin,
+  Meldung „Rollladen folgt nicht“), „Messwerte an das Plugin“ (Strahlung, Tageshöchstwerte, Außen-,
+  Raumtemperatur, Beschattungsgrenze und PV-Prognose im Sendetakt: Impulsgeber 300 s und Formel
+  `I1+I2/100`) und „Werte und Meldungen“ (alle übrigen Werte, Begründungssatz und Tagesbericht als
+  Virtuelle Texteingänge, Meldung „Strahlungsgeber auffällig“) –, je mit Kasten „So übernehmen Sie
+  diese Seite“, Hinweisen und dem Bild der Seite aus dem Musterprojekt. Die Tabellen zeigen das
+  Beispielfenster des Musterprojekts (Kürzel `WZ`, Name Wohnzimmer, Raum `wohnzimmer`). Das Schaubild
+  unter der ersten Liste zeigt die neue Kette.
+* **Vorlage „Fensterbilanz Messwerte“:** die fünf Temperaturen (`prognose`, `prognose1`, `aussen`,
+  `ist.<raum>`, `grenze.<raum>`) gehen mit einer Nachkommastelle hinaus (`<v.1>` statt `<v.0>`);
+  Strahlung, PV-Prognose und Stellung bleiben ganzzahlig. Bisher rundete Loxone 24,6 °C auf 25. **Neue
+  Vorlage = neuer Import:** Vorlage im Reiter neu erzeugen, den alten Virtuellen Ausgang in Loxone
+  Config löschen und neu importieren. Das Plugin nahm Nachkommastellen schon vorher an.
+* **Textberichtigungen:** #1 nennt die Vorlage aus Schritt 4 (nicht 3); #2 und #9 tragen ihre
+  Statuszeilen, #5 den Meldetext; #7 nennt den Weg über #14/#15; #8 nennt Himmelsrichtung, Cc und Pos.
+  Der Blendschutz-Text im Reiter Einstellungen sagt jetzt, wohin der Wert in Loxone gehört: an einen
+  eigenen ODER-Zweig vor Sps, nicht an So (So schaltet die Automatik für den Tag ab). Der Hinweis zur
+  Statistik nennt `FB_WZ_URTEIL` und `FB_WZ_WATT`; Schritt 3 und die Hilfe nennen den Sendetakt.
+* Der Stellungsvergleich des Plugins ist unverändert: `FB_NICHT_GEFAHREN` und das Protokoll zählen
+  weiter auch nachts geschlossene Rollläden; die Meldung in Loxone fragt deshalb zusätzlich
+  `FB_WZ_BESCHATTEN`.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.12.15
 
@@ -154,6 +184,11 @@ Loxone*.
 Was nicht eingeschaltet ist, wird auch nicht verlangt und erzeugt in Loxone
 keinen einzigen Eingang.
 
+Die Temperaturen gehen mit einer Nachkommastelle hinaus (`<v.1>`), Strahlung, PV-Prognose und
+Stellung ganzzahlig. Loxone sendet einen Virtuellen Ausgang nur bei Wertänderung – deshalb gehört
+ein Sendetakt dazu (Impulsgeber 300 s und Formel `I1+I2/100`, Reiter *Einbindung in Loxone*,
+Schritt 6), sonst veraltet ein ruhiger Wert nach dem Höchstalter.
+
 **Fail closed:** fehlt ein nötiger Wert oder ist er älter als das eingestellte
 Höchstalter, wird nicht geraten. Urteil 0, Beschatten 0, `FB_OK` auf 0 — und in
 Loxone greift wieder die eigene Freigabe des `AutoJalousie`. Dasselbe gilt für
@@ -269,9 +304,10 @@ Lauf rechnet sofort neu.
    Einrichtung trägt — von der Sprachdatei über den eigenen Endpunkt bis zum
    Rechenkern.
 
-Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
-der Seite „Fensterbilanz“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
-einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen (Fenster „Wohnzimmer“, Kürzel `WZ`).
+Die Bausteine der drei Baustein-Listen aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
+den Seiten „Fensterbilanz“, „Fensterbilanz Messwerte“ und „Fensterbilanz Werte“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), einer gemeinsamen Projektdatei
+mit allen Plugin-Seiten und Vorlagen (Fenster „Wohnzimmer“, Kürzel `WZ`, Raum `wohnzimmer`).
 
 Beanstandet ein Formular eine Eingabe, wird **nichts** gespeichert, auch nicht
 die übrigen Felder; die eingetippten Werte stehen danach wieder im Formular,

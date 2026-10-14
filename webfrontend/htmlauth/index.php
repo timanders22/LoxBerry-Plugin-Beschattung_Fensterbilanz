@@ -1469,6 +1469,11 @@ if ($fb_rahmen) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 12 FB (0.12.16): Abschnitte, Schritte und Hinweise je Baustein-Liste. */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 <script>
 /* Jeder breiten Tabelle einen Rollbalken NACH OBEN geben.
@@ -2494,7 +2499,7 @@ if ($fb_alt_w) { ?>
 $fb_basis = fb_e(fb_melde_basis());
 foreach (fb_messgroessen() as $fb_name => $fb_info) { ?>
 <tr><td><span class="sm-mono">FB_SET_<?= fb_e(strtoupper($fb_name)) ?></span></td>
-    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_name) ?>&amp;v=&lt;v.0&gt;</span></td>
+    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_name) ?>&amp;v=<?= fb_e(fb_vorlage_format($fb_name)) ?></span></td>
     <td><?= fb_e(fb_t($fb_info[2])) ?><?= $fb_info[0] ? '' : ' (' . fb_e(fb_t('LOX.OPTIONAL')) . ')' ?></td>
     <td><?php if (isset($fb_messwerte[$fb_name]['t'])) {
             echo fb_e(sprintf(fb_t('LOX.VOR_SEKUNDEN'),
@@ -2512,7 +2517,7 @@ foreach (array_keys($fb_raeume) as $fb_raum) {
     foreach (array('ist' => 'FB_MESS.RAUM_IST', 'grenze' => 'FB_MESS.RAUM_GRENZE') as $fb_art => $fb_schl) {
         $fb_schluessel = $fb_art . '.' . $fb_raum; ?>
 <tr><td><span class="sm-mono">FB_SET_<?= fb_e(strtoupper($fb_art)) ?>_<?= fb_e(strtoupper($fb_raum)) ?></span></td>
-    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_schluessel) ?>&amp;v=&lt;v.0&gt;</span></td>
+    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_schluessel) ?>&amp;v=<?= fb_e(fb_vorlage_format($fb_schluessel)) ?></span></td>
     <td><?= fb_e(fb_t($fb_schl)) ?>: <?= fb_e($fb_raum) ?></td>
     <td><?php if (isset($fb_messwerte[$fb_schluessel]['t'])) {
             echo fb_e(sprintf(fb_t('LOX.VOR_SEKUNDEN'),
@@ -2529,7 +2534,7 @@ if (!empty($fb_cfg['stellung_ein'])) {
         if ($fb_f['kuerzel'] === '') { continue; }
         $fb_schluessel = 'stellung.' . strtolower($fb_f['kuerzel']); ?>
 <tr><td><span class="sm-mono">FB_SET_STELLUNG_<?= fb_e(strtoupper($fb_f['kuerzel'])) ?></span></td>
-    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_schluessel) ?>&amp;v=&lt;v.0&gt;</span></td>
+    <td><span class="sm-mono"><?= $fb_basis . fb_e($fb_schluessel) ?>&amp;v=<?= fb_e(fb_vorlage_format($fb_schluessel)) ?></span></td>
     <td><?= fb_e(fb_t('FB_MESS.STELLUNG')) ?>: <?= fb_e($fb_f['kuerzel']) ?>
         (<?= fb_e(fb_t('LOX.OPTIONAL')) ?>)</td>
     <td><?php if (isset($fb_messwerte[$fb_schluessel]['t'])) {
@@ -2624,20 +2629,57 @@ $fb_adressen = array(
 <div class="sm-step"><?= fb_t('LOX.AUSFALL_TEXT') ?></div>
 
 <h3><?= fb_e(fb_t('LOX.H_BAUSTEINE')) ?></h3>
-<div class="sm-breit"><?= fb_t('LOX.BAUSTEINE') ?></div>
-<?php /* b1 (Verbesserungsbau 01.10.2026): dieselbe Verknuepfung als Bild -
-       statisches SVG aus fb_bausteine_svg(), keine Bibliothek, kein Skript. */ ?>
-<h3><?= fb_e(fb_t('LOX.SB_H')) ?></h3>
+<?php /* Welle Bild 12 FB (0.12.16; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
+       Maximum leicht uebernehmen koennen; Entwurf Welle 12 fb, Entscheidungen 1-16 wie empfohlen):
+       drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit
+       leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "Fensterbilanz" 31,
+       "Fensterbilanz Messwerte" 23, "Fensterbilanz Werte" 25 Zeilen, wortgleich mit dem Beispielfenster
+       WZ/Wohnzimmer/wohnzimmer). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite",
+       Tabelle (ein HTML-Wert je Sprache wie seit 0.12.15), Hinweise, auf der ersten Seite das
+       Schaubild, Bild, Link - alle immer sichtbar. Bis 0.12.15 stand hier eine Tabelle mit 9 Zeilen. */
+$fb_bs_seiten = array(
+    array('kopf' => 'LOX.SEITE1_H', 'seite' => 'Fensterbilanz', 'bild' => 'einbindung_loxone.png', 'tabelle' => 'LOX.BAUSTEINE',
+          'schaubild' => true,
+          'schritte' => array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8', 'LOX.SEITE1_S9', 'LOX.SEITE1_S10'),
+          'hinweise' => array('LOX.BAUSTEINE_HERZ', 'LOX.BAUSTEINE_ERL', 'LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5')),
+    array('kopf' => 'LOX.SEITE2_H', 'seite' => 'Fensterbilanz Messwerte', 'bild' => 'einbindung_loxone_messwerte.png', 'tabelle' => 'LOX.BAUSTEINE_MESSWERTE',
+          'schaubild' => false,
+          'schritte' => array('LOX.SEITE2_S1', 'LOX.SEITE2_S2', 'LOX.SEITE2_S3', 'LOX.SEITE2_S4', 'LOX.SEITE2_S5', 'LOX.SEITE2_S6'),
+          'hinweise' => array('LOX.SEITE2_N1', 'LOX.SEITE2_N2', 'LOX.SEITE2_N3')),
+    array('kopf' => 'LOX.SEITE3_H', 'seite' => 'Fensterbilanz Werte', 'bild' => 'einbindung_loxone_werte.png', 'tabelle' => 'LOX.BAUSTEINE_WERTE',
+          'schaubild' => false,
+          'schritte' => array('LOX.SEITE3_S1', 'LOX.SEITE3_S2', 'LOX.SEITE3_S3', 'LOX.SEITE3_S4'),
+          'hinweise' => array('LOX.BAUSTEINE_STATISTIK', 'LOX.SEITE3_N1')),
+); ?>
+<p class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_VORTEXT') ?></p>
+<?php foreach ($fb_bs_seiten as $fb_bs) { ?>
+<h4 class="sm-h4"><?= fb_e(fb_t($fb_bs['kopf'])) ?></h4>
+<div class="sm-hinweis"><b><?= fb_e(fb_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($fb_bs['schritte'] as $fb_bs_x) { ?>
+<li><?= fb_t($fb_bs_x) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit"><?= fb_t($fb_bs['tabelle']) ?></div>
+<div class="sm-warnung"><b><?= fb_e(fb_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($fb_bs['hinweise'] as $fb_bs_x) { ?>
+<li><?= fb_t($fb_bs_x) ?></li>
+<?php } ?>
+</ul></div>
+<?php if ($fb_bs['schaubild']) {
+    /* b1 (Verbesserungsbau 01.10.2026): dieselbe Verknuepfung als Bild - statisches SVG aus
+       fb_bausteine_svg(), keine Bibliothek, kein Skript. Seit 0.12.16 unter der ersten Tabelle. */ ?>
+<p class="sm-hilfe"><b><?= fb_e(fb_t('LOX.SB_H')) ?></b></p>
 <div class="sm-breit" id="fb_schaubild"><?= fb_bausteine_svg() ?></div>
 <p class="sm-hilfe"><?= fb_t('LOX.SB_ERKLAERUNG') ?></p>
-<?php /* Welle Bild 4 (0.12.15): die Liste ist die im LoxBerry-Plugins Musterprojekt in
-       Loxone Config gebaute (Musterprojekt/baustein_listen.txt, Abschnitt Fensterbilanz). */ ?>
-<div class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_HERZ') ?> <?= fb_t('LOX.BAUSTEINE_ERL') ?> <?= fb_t('LOX.BAUSTEINE_STATISTIK') ?></div>
+<?php } ?>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= fb_e(fb_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= fb_e(fb_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= fb_e($fb_bs['bild']) ?>" alt="<?= fb_e(fb_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= fb_e(sprintf(fb_t('LOX.BILD_UNTERSCHRIFT'), $fb_bs['seite'])) ?></figcaption>
 </figure>
 <p class="sm-hilfe"><?= fb_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 
 <h3><?= fb_e(fb_t('LOX.H_GEGENPROBE')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.GEGENPROBE_TEXT') ?></div>
