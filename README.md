@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.17
+Version 0.12.18
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,14 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.18
+
+**Einbindung in Loxone:** Eingang En der Analogwertvalidierung (#18 „Abruf Fensterbilanz steht“ auf der Seite
+„Fensterbilanz“) nicht negieren (Hinweis in Schritt 7 des Kastens und neues Bild). Config legt den Eingang
+negiert an; die Konstante 1 (#17) kam dann als 0 an, und ohne diese Korrektur löste die Ausfallmeldung nie
+aus. Wer die Seite schon gebaut hat: im Eigenschaftsfenster der Analogwertvalidierung unter Parameter den
+Haken bei „En“ entfernen. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.12.17
 
