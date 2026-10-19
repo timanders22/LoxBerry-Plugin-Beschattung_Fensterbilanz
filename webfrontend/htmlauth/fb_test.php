@@ -791,6 +791,15 @@ function fb_test_selbstpruefung()
     list($ok, $txt) = fb_mqtt_kongruent();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_MQTT_THEMEN'), $ok, $txt);
 
+    /* Gruppe 3 / MQTT (0.12.19): die Namenstabelle (Reiter Einbindung, Schritt 3) gegen die Themenliste, die das
+     * Senden speist - und die Lage der Befehlsbruecke, gemessen wie im Waechter. */
+    list($nt_n, $nt_tab, $nt_send) = fb_mqtt_namen_pruefen($cfg);
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_NAMEN'), !$nt_tab && !$nt_send,
+        (!$nt_tab && !$nt_send) ? sprintf(fb_klartext('TEST.A_NAMEN_OK'), $nt_n)
+            : sprintf(fb_klartext('TEST.A_NAMEN_ABW'), fb_liste_kurz($nt_tab), fb_liste_kurz($nt_send)));
+    list($ok, $txt) = fb_bruecke_lage();
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_BRUECKE'), $ok, $txt);
+
     /* --- Die Neuerungen der 0.10.0, jede mit ihrem eigenen Zustand --- */
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_VORSCHAU'),
         (int) $cfg['vorschau'] > 0 ? true : null,

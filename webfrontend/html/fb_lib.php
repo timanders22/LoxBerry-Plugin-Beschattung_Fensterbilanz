@@ -450,6 +450,10 @@ function fb_vorgaben()
 
         'mqtt_ein'       => 1,
         'mqtt_topic'     => 'fenster',
+        /* Gruppe 3 / MQTT (0.12.19, Entwurf fb E11): Haken "Befehle ueber MQTT annehmen" der gemeinsamen
+         * Befehlsbruecke - die Messwerte aus Loxone kommen damit ueber MQTT herein. AB WERK AUS (Hausstandard,
+         * gemeinsam E13); einen zweiten Haken gibt es nicht, weil kein Befehl etwas schaltet. */
+        'befehle_mqtt_ein' => 0,
         'aktionstoken'   => '',
         /* M4 (Durchgang 30.09.2026): das zuletzt verlassene Themenpraefix.
          * Beim Praefixwechsel werden die zurueckbehaltenen Themen darunter
@@ -802,7 +806,7 @@ function fb_fenster_zahlfelder()
 function fb_haken_felder()
 {
     return array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe',
-                 'lernen_ein', 'mqtt_ein', 'sonne_teilen');
+                 'lernen_ein', 'mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein');
 }
 
 function fb_haken_ok($w)
@@ -1017,6 +1021,7 @@ function fb_config_richten($cfg)
                                       array('isotrop', 'hdkr'), true)
                              ? (string) $cfg['himmelsmodell'] : 'isotrop';
     $cfg['mqtt_ein']       = empty($cfg['mqtt_ein']) ? 0 : 1;
+    $cfg['befehle_mqtt_ein'] = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;   // Gruppe 3 / MQTT
     $cfg['sonne_teilen']   = empty($cfg['sonne_teilen']) ? 0 : 1;   // Sonne-1
     $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower(is_string($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''));
     /* M9 (Durchgang 30.09.2026): doppelte Schraegstriche zusammenziehen wie
@@ -1321,7 +1326,7 @@ function fb_eingabe_felder($form)
             'haken' => array('f_aktiv', 'f_raumwerte', 'f_daemmen'),
         ),
         'raeume' => array('text' => array('r_qm'), 'haken' => array()),
-        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen')),
+        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein')),
         'rechner' => array(
             'text'  => array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite'),
             'haken' => array('h_ersetzen'),
@@ -2856,7 +2861,9 @@ function fb_mqtt_tabelle()
         'fluechtig'           => array('herz', 'ts', 'strahlung', 'sonne_hoehe', 'sonne_azimut',
                                        'ok', 'saison', 'wh_tag',
                                        'beschatten_anzahl', 'beschatten30_anzahl', 'blendung_anzahl',
-                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung', 'bericht'),
+                                       'daemmen_anzahl', 'nicht_gefahren', 'pv_abweichung', 'bericht',
+                                       /* Gruppe 3 / MQTT (0.12.19): das Lebenszeichen, nie retained. */
+                                       'status/ok', 'status/ts', 'status/zaehler'),
         'fluechtig_je_fenster' => array('watt', 'glas', 'wh',
                                        'urteil', 'beschatten', 'grund', 'begruendung', 'urteil30',
                                        'beschatten30', 'blendung', 'daemmen', 'gefahren'),
@@ -3410,6 +3417,11 @@ function fb_mqtt_themen()
         '<kuerzel>/glas'        => 'FB_MQTT.F_GLAS',
         '<kuerzel>/wh'          => 'FB_MQTT.F_WH',
         '<kuerzel>/begruendung' => 'FB_MQTT.F_BEGRUENDUNG',
+        /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.2 a): das Lebenszeichen nach Regeln/07 - in jedem Lauf,
+         * nie retained (fb_mqtt_tabelle()). ok, herz und ts oben bleiben fuer bestehende Anlagen (E14). */
+        'status/ok'             => 'FB_MQTT.STATUS_OK',
+        'status/ts'             => 'FB_MQTT.STATUS_TS',
+        'status/zaehler'        => 'FB_MQTT.STATUS_ZAEHLER',
     );
     $cfg = fb_config(false);
     if ((int) $cfg['vorschau'] > 0) {
@@ -3473,13 +3485,13 @@ function fb_saison_gerechnet($stand)
 /** M3: die Themen, die in diesem Stand nicht gerechnet wurden und deshalb fehlen. */
 function fb_mqtt_ungerechnet($stand)
 {
-    $u = array();
-    if (!isset($stand['sonne_hoehe'])) { $u[] = 'sonne_hoehe'; $u[] = 'sonne_azimut'; }
-    if (!fb_saison_gerechnet($stand)) { $u[] = 'saison'; }
-    return $u;
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3, ENTSCHEIDUNGEN Gruppe 3): seit 0.12.19 gehen sonne_hoehe und
+     * saison ohne Rechnung mit -999, sonne_azimut mit -1 hinaus (fb_mqtt_nachrichten()) - es fehlt kein Thema
+     * mehr. Die Funktion bleibt fuer die Kongruenzprobe (fb_mqtt_kongruent()). */
+    return array();
 }
 
-function fb_mqtt_nachrichten($cfg, $stand)
+function fb_mqtt_nachrichten($cfg, $stand, $zaehler = null)
 {
     $m = array(
         'ok'                => isset($stand['ok']) ? (int) $stand['ok'] : 0,
@@ -3497,13 +3509,19 @@ function fb_mqtt_nachrichten($cfg, $stand)
         'fenster_anzahl'    => fb_fenster_zahl($cfg),
         'beschatten_anzahl' => isset($stand['beschatten_anzahl']) ? (int) $stand['beschatten_anzahl'] : 0,
     );
-    /* M3: was nicht gerechnet wurde, geht nicht hinaus - keine erfundene 0.
-     * Sonnenhoehe 0 hiesse Horizont, saison 0 "neutral" (MQTT-Pruefer B3). */
+    /* M3: was nicht gerechnet wurde, ist keine erfundene 0 - Sonnenhoehe 0 hiesse Horizont, saison 0
+     * "neutral" (MQTT-Pruefer B3). Bis 0.12.18 ging es deshalb gar nicht hinaus, und in Loxone blieb der
+     * letzte Wert stehen. Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3, E7; ENTSCHEIDUNGEN Gruppe 3 "fehlende Werte
+     * mit Vorzeichen senden -999"): sonne_hoehe und saison -999 (-1 Grad ist ein echter Sonnenstand, -1 ein
+     * echter Waermebedarf), sonne_azimut -1 (Bereich 0 ... 360) - dieselben Zahlen wie die Statuszeile. */
     if (isset($stand['sonne_hoehe'])) {
         $m['sonne_hoehe']  = $stand['sonne_hoehe'];
-        $m['sonne_azimut'] = isset($stand['sonne_azimut']) ? $stand['sonne_azimut'] : 0;
+        $m['sonne_azimut'] = isset($stand['sonne_azimut']) ? $stand['sonne_azimut'] : -1;
+    } else {
+        $m['sonne_hoehe']  = -999;
+        $m['sonne_azimut'] = -1;
     }
-    if (fb_saison_gerechnet($stand)) { $m['saison'] = (int) $stand['saison']; }
+    $m['saison'] = fb_saison_gerechnet($stand) ? (int) $stand['saison'] : -999;
     $m['strahlung'] = isset($stand['strahlung']) ? $stand['strahlung'] : -1;
     $m['wh_tag']    = isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0;
     /* Welche Zweige es gibt, entscheidet DIESELBE Funktion, die auch die
@@ -3561,6 +3579,12 @@ function fb_mqtt_nachrichten($cfg, $stand)
         if (isset($themen['<kuerzel>/daemmen']))  { $m[$k . '/daemmen']  = (int) $e['daemmen']; }
         if (isset($themen['<kuerzel>/gefahren'])) { $m[$k . '/gefahren'] = (int) $e['gefahren']; }
     }
+    /* Gruppe 3 / MQTT (0.12.19): das Lebenszeichen als letztes. $zaehler kommt von fb_mqtt_senden()
+     * (fb_lebenszeichen_naechster()); ohne Angabe - Kongruenzprobe, Reiter - steht der gespeicherte. */
+    foreach (fb_lebenszeichen_nachrichten($cfg, $stand,
+                 $zaehler === null ? fb_lebenszeichen_lesen() : $zaehler) as $lk => $lv) {
+        $m[$lk] = $lv;
+    }
     return $m;
 }
 
@@ -3587,7 +3611,15 @@ function fb_mqtt_senden($cfg, $stand)
         return 0;
     }
     $praefix = (string) $cfg['mqtt_topic'];
-    $nachrichten = fb_mqtt_nachrichten($cfg, $stand);
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.2 a): der Zaehler des Lebenszeichens eins weiter. Laesst er sich
+     * nicht schreiben, geht kein Lebenszeichen hinaus (kein erfundener Zaehler) - Loxone meldet es dann. */
+    $zaehler = fb_lebenszeichen_naechster();
+    $nachrichten = fb_mqtt_nachrichten($cfg, $stand, $zaehler === null ? 0 : $zaehler);
+    if ($zaehler === null) {
+        unset($nachrichten['status/ok'], $nachrichten['status/ts'], $nachrichten['status/zaehler']);
+        fb_log_wenn_neu('lebenszeichen', 'Lebenszeichen: der Zaehler liess sich nicht schreiben ('
+            . fb_paths()['datadir'] . '/lebenszeichen.json) - es geht keines hinaus.');
+    }
     /* DIE ALTWERTE AUS 0.12.9 ABRAEUMEN.
      *
      * Die Themen aus fb_mqtt_tabelle()['altlast*'] gehen seit 0.12.10
@@ -3893,9 +3925,12 @@ function fb_summenfelder($cfg = null)
         'BESCHATTEN' => array('',      0,   99,         'FB_FELD.S_BESCHATTEN'),
         /* O16: das Gradzeichen statt des deutschen Worts - es steht in der
          * Tabelle beider Sprachen und als Unit in der Vorlage. */
-        'SONNE_H'    => array('°', -90,  90,         'FB_FELD.SONNE_H'),
-        'SONNE_AZ'   => array('°',  0,   360,        'FB_FELD.SONNE_AZ'),
-        'SAISON'     => array('',     -100, 100,        'FB_FELD.SAISON'),
+        /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3 d): ohne Standort bzw. ohne Rechnung -999 (SONNE_H,
+         * SAISON) und -1 (SONNE_AZ) - die Untergrenze traegt sie, sonst kappte Loxone still. Bestehende
+         * HTTP-Eingaenge mit altem MinVal kappen -999 auf -90 bzw. -100 (README). */
+        'SONNE_H'    => array('°', -999, 90,         'FB_FELD.SONNE_H'),
+        'SONNE_AZ'   => array('°',  -1,  360,        'FB_FELD.SONNE_AZ'),
+        'SAISON'     => array('',     -999, 100,        'FB_FELD.SAISON'),
         /* 1600 wie die Annahmegrenze in fb_messgroessen(). Bis 0.12.6
          * standen hier 1400, waehrend der Endpunkt bis 1600 annahm - und
          * Loxone kappt still auf MaxVal. Zwei Grenzen fuer dieselbe
@@ -3941,9 +3976,10 @@ function fb_felderwerte($stand, $cfg = null)
          * aus), nicht als erfundene 0. */
         'FENSTER'    => fb_fenster_zahl($cfg),
         'BESCHATTEN' => isset($stand['beschatten_anzahl']) ? (int) $stand['beschatten_anzahl'] : 0,
-        'SONNE_H'    => isset($stand['sonne_hoehe']) ? round($stand['sonne_hoehe'], 1) : '-',
-        'SONNE_AZ'   => isset($stand['sonne_azimut']) ? round($stand['sonne_azimut'], 1) : '-',
-        'SAISON'     => fb_saison_gerechnet($stand) ? (int) $stand['saison'] : '-',
+        /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3 a/b): -999 bzw. -1 statt '-', dieselben Zahlen wie MQTT. */
+        'SONNE_H'    => isset($stand['sonne_hoehe']) ? round($stand['sonne_hoehe'], 1) : -999,
+        'SONNE_AZ'   => isset($stand['sonne_azimut']) ? round($stand['sonne_azimut'], 1) : -1,
+        'SAISON'     => fb_saison_gerechnet($stand) ? (int) $stand['saison'] : -999,
         'STRAHLUNG'  => isset($stand['strahlung']) ? $stand['strahlung'] : -1,
         'TS'         => isset($stand['ts']) ? (int) $stand['ts'] : 0,
         'WH_TAG'     => isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0,
@@ -4391,6 +4427,9 @@ function fb_zeile($stand, $hoechstalter = null)
         foreach (array_keys(fb_summenfelder(fb_config(false))) as $feld) {
             if ($feld === 'HERZ')           { $o .= ';HERZ=-1'; }
             elseif ($feld === 'STRAHLUNG')  { $o .= ';STRAHLUNG=-1'; }
+            /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3 c): keine erfundene 0 (Horizont, "ausgeglichen"). */
+            elseif ($feld === 'SONNE_H' || $feld === 'SAISON') { $o .= ';' . $feld . '=-999'; }
+            elseif ($feld === 'SONNE_AZ')   { $o .= ';SONNE_AZ=-1'; }
             else                            { $o .= ';' . $feld . '=0'; }
         }
         return $o . "\n";
@@ -4419,19 +4458,23 @@ function fb_zeile($stand, $hoechstalter = null)
      * Messwert-Hoechstalter darf sie enger machen, nie weiter. Bis 0.12.10
      * galt allein hoechstalter (bis 86400): ein zwei Stunden alter Stand ging
      * mit OK=1 und BESCHATTEN=1 hinaus (gemessen, Code-Pruefer Nr. 7). */
-    $grenze = min((int) $hoechstalter, 3 * FB_TAKT);
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb E6): die Grenze steht seit 0.12.19 in fb_status_alter_gilt() -
+     * dieselbe Funktion gibt <praefix>/status/ok ihre Altersgrenze (eine Wahrheit fuer HTTP und MQTT). */
     /* a1 (Verbesserungsbau 01.10.2026): ein Alter von -1 - Stand mehr als
      * FB_ZUKUNFT_TOLERANZ in der Zukunft oder ohne Stempel - ist KEINE
      * AUSSAGE und geht wie ein veralteter Stand hinaus (OK=0, Urteile 0,
      * HERZ=-1). Bis 0.12.12 stand hier nur "$alter > $grenze"; -1 ist nie
      * groesser, und ein Stand aus 2036 ging mit OK=1 und BESCHATTEN=1 hinaus. */
-    if ($alter < 0 || $alter > $grenze) {
+    if (!fb_status_alter_gilt($stand, $hoechstalter)) {
         $o = 'FENSTERBILANZ';
         foreach (fb_summenfelder($cfg) as $feld => $info) {
             if ($feld === 'HERZ')          { $o .= ';HERZ=' . $herz; }
             elseif ($feld === 'TS')        { $o .= ';TS=' . (isset($stand['ts']) ? (int) $stand['ts'] : 0); }
             elseif ($feld === 'FENSTER')   { $o .= ';FENSTER=' . (isset($f['FENSTER']) ? (int) $f['FENSTER'] : 0); }
             elseif ($feld === 'STRAHLUNG') { $o .= ';STRAHLUNG=-1'; }
+            /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.3 c): keine erfundene 0 (Horizont, "ausgeglichen"). */
+            elseif ($feld === 'SONNE_H' || $feld === 'SAISON') { $o .= ';' . $feld . '=-999'; }
+            elseif ($feld === 'SONNE_AZ')  { $o .= ';SONNE_AZ=-1'; }
             else                           { $o .= ';' . $feld . '=0'; }
         }
         $o .= "\n";
@@ -5803,12 +5846,12 @@ function fb_horizont_svg($f, $cfg, $jetzt = null, $breite = 640, $hoehe = 220)
  */
 function fb_bausteine_kanten()
 {
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 9): #3 (Schwellwertschalter an FB_HERZ) und #19 (ODER) entfallen; der
+     * Ausgang E der Analogwertvalidierung #18 am Lebenszeichen geht direkt an #4 (und an den Status #2, der nicht im
+     * Schaubild steht). */
     return array(
-        array('herz', '3', false),
         array('ts', '18', false),
-        array('3', '19', false),
-        array('18', '19', false),
-        array('19', '4', false),
+        array('18', '4', false),
         array('ok', '4', true),
         array('4', '5', false),
         array('4', '6', true),
@@ -5832,11 +5875,8 @@ function fb_bausteine_svg()
 {
     /* Knoten: x, y, Breite, Hoehe, Schluessel, Art (ein = Eingang von aussen). */
     $k = array(
-        'herz'       => array(10, 10, 150, 36, 'LOX.SB_HERZ', 'ein'),
-        '3'          => array(190, 10, 150, 36, 'LOX.SB_3', 'bs'),
         'ts'         => array(10, 56, 150, 36, 'LOX.SB_TS', 'ein'),
         '18'         => array(190, 56, 150, 36, 'LOX.SB_18', 'bs'),
-        '19'         => array(370, 18, 120, 66, 'LOX.SB_19', 'bs'),
         'ok'         => array(10, 110, 150, 36, 'LOX.SB_OK', 'ein'),
         '4'          => array(515, 30, 160, 50, 'LOX.SB_4', 'bs'),
         '5'          => array(700, 0, 150, 36, 'LOX.SB_5', 'bs'),
@@ -5853,11 +5893,9 @@ function fb_bausteine_svg()
     /* Linienzuege je Kante: Stuetzpunkte, der letzte liegt AM Rand des Ziels;
      * bei einem invertierten Eingang sitzt davor der Kreis. */
     $wege = array(
-        'herz-3'       => array(array(160, 28), array(190, 28)),
         'ts-18'        => array(array(160, 74), array(190, 74)),
-        '3-19'         => array(array(340, 28), array(370, 28)),
-        '18-19'        => array(array(340, 74), array(370, 74)),
-        '19-4'         => array(array(490, 40), array(515, 40)),
+        /* Gruppe 3 / MQTT (0.12.19): #18 direkt an #4, an der Kante ok-4 (senkrecht bei x 495) vorbei. */
+        '18-4'         => array(array(340, 74), array(480, 74), array(480, 45), array(515, 45)),
         'ok-4'         => array(array(160, 128), array(495, 128), array(495, 70), array(507, 70)),
         '4-5'          => array(array(675, 45), array(688, 45), array(688, 18), array(700, 18)),
         '4-6'          => array(array(590, 80), array(590, 152)),
@@ -6208,7 +6246,9 @@ function fb_sicherung_freiwillig()
     /* Sonne-1 (Verbesserungsbau 01.10.2026): 'sonne_teilen' kennen Sicherungen
      * bis 0.12.12 nicht. Fehlt er, gilt die Vorgabe 0 (aus) - die harmlose
      * Richtung, eine eingerichtete Anlage aendert dadurch nichts. */
-    return array('mqtt_praefix_alt', 'sonne_teilen');
+    /* Gruppe 3 / MQTT (0.12.19): 'befehle_mqtt_ein' kennen Sicherungen bis 0.12.18 nicht. Fehlt er, gilt die
+     * Vorgabe 0 (aus) - die harmlose Richtung, der HTTP-Weg einer eingerichteten Anlage bleibt unberuehrt. */
+    return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein');
 }
 
 /**
@@ -6340,4 +6380,448 @@ function fb_sicherung_fenster($w, &$namen = null)
         }
     }
     return $m;
+}
+
+/* ==================================================================
+ * Gruppe 3 / MQTT (0.12.19; Musterprojekt/entwurf_gruppe3_fb.txt, ENTSCHEIDUNGEN_GRUPPE3_MQTT.md Punkt 3)
+ *
+ * Werte gehen ueber das MQTT-Gateway in einfache Virtuelle Eingaenge (Name = Name, den das Gateway vergibt), nicht
+ * mehr in eine Importvorlage (Nachtrag 2 Gruppe 1, Regeln/07 R2_078). Die Messwerte aus Loxone kommen ueber die
+ * gemeinsame Befehlsbruecke (bin/befehlsbruecke.php, Tabelle bin/befehle_zuordnung.php) an DIESELBE Funktion wie der
+ * HTTP-Endpunkt (fb_melden_ausfuehren()). Der HTTP-Weg bleibt fuer bestehende Anlagen unveraendert.
+ * Neu dazu das Lebenszeichen <praefix>/status/ok|ts|zaehler in jedem Lauf (fb_mqtt_senden()) und in jedem
+ * Cron-Lauf, der nicht rechnet (bin/fb_lauf.php -> fb_lebenszeichen_senden()).
+ * ================================================================== */
+
+/**
+ * Einen Messwert annehmen und, wenn der Rechentakt es erlaubt, rechnen - der Rumpf des Endpunkts
+ * (webfrontend/html/index.php, aktion=melden) bis 0.12.19, unveraendert herausgezogen, damit HTTP-Weg und
+ * Befehlsbruecke dieselbe Pruefung durchlaufen (Entwurf fb 3.2). $name kommt klein geschrieben (der Endpunkt
+ * schreibt ihn klein, die Bruecke bildet ihn aus kleinen Ebenen), $quelle 'http' oder 'mqtt' (nur fuer die Lesbarkeit
+ * des Aufrufs; geprueft wird gleich). Schreibt nie nach config/ (fb_config(false), fb_lauf(false, false)).
+ * Rueckgabe array(ok, Grund, gerechnet): Grund 'AKTUALISIERUNG' waehrend einer Aktualisierung (nichts angenommen),
+ * sonst der Grund aus fb_messwert_setzen() (NAME_UNBEKANNT, WERT_AUSSERHALB ...), bei Erfolg 'OK'.
+ */
+function fb_melden_ausfuehren($name, $wert, $quelle = 'http', $cfg = null)
+{
+    if (fb_upgrade_laeuft()) {
+        return array(false, 'AKTUALISIERUNG', false);
+    }
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    list($ok, $grund) = fb_messwert_setzen($name, $wert, $cfg);
+    if (!$ok) {
+        return array(false, $grund, false);
+    }
+    /* Nach der Annahme rechnen - aber nur, wenn der Rechentakt es erlaubt. Loxone schickt bei einem Wetterwechsel
+     * ein Dutzend Werte in derselben Sekunde los; ohne den Mindestabstand rechnete das Plugin ein Dutzend Mal und
+     * schickte ein Dutzend MQTT-Salven. */
+    list($gerechnet, ) = fb_lauf(false, false);   // legt nichts an
+    return array(true, 'OK', (bool) $gerechnet);
+}
+
+/**
+ * Gilt der Stand nach seinem Alter? Dieselbe Grenze wie seit 0.12.11 in fb_zeile() (C4): hoechstens das Dreifache
+ * des Takts (900 s), das Messwert-Hoechstalter darf sie enger machen. Ein Stand mehr als FB_ZUKUNFT_TOLERANZ in der
+ * Zukunft oder ohne Stempel gilt nicht (a1). EINE Funktion fuer die Statuszeile (HTTP) und status/ok (MQTT).
+ */
+function fb_status_alter_gilt($stand, $hoechstalter)
+{
+    if (!is_array($stand) || !isset($stand['ts']) || (int) $stand['ts'] <= 0) { return false; }
+    $roh = time() - (int) $stand['ts'];
+    if ($roh < -FB_ZUKUNFT_TOLERANZ) { return false; }
+    return max(0, $roh) <= min((int) $hoechstalter, 3 * FB_TAKT);
+}
+
+/**
+ * <praefix>/status/ok (Entwurf fb 2.2 a, E6): dieselbe Frage wie OK der Statuszeile - der Stand sagt ok (alle
+ * Pflicht-Messwerte frisch, mindestens ein Fenster) UND er gilt nach seinem Alter. Rueckgabe 1 oder 0.
+ */
+function fb_status_ok($stand, $hoechstalter)
+{
+    return (is_array($stand) && !empty($stand['ok']) && fb_status_alter_gilt($stand, $hoechstalter)) ? 1 : 0;
+}
+
+/** Der Zaehler des Lebenszeichens, nur gelesen (Reiter Test, Kongruenzprobe); -1, solange es keinen gibt. */
+function fb_lebenszeichen_lesen()
+{
+    $d = fb_json_lesen(fb_paths()['datadir'] . '/lebenszeichen.json');
+    return (isset($d['zaehler']) && is_int($d['zaehler']) && $d['zaehler'] >= 0 && $d['zaehler'] <= 999)
+        ? $d['zaehler'] : -1;
+}
+
+/**
+ * Den Zaehler des Lebenszeichens eins weiter (0 ... 999, dann wieder 0) und zurueckgeben - unter einer EIGENEN
+ * Sperre (lebenszeichen.lock), nicht lauf.lock: sonst blockierte der Cron einen Lauf aus dem Endpunkt (Entwurf fb
+ * 2.2 a). Rueckgabe null, wenn der Datenordner nicht anzulegen oder die Datei nicht zu schreiben ist - dann geht kein
+ * Lebenszeichen hinaus, und Loxone meldet es (Analogwertvalidierung), statt einen erfundenen Zaehler zu sehen.
+ */
+function fb_lebenszeichen_naechster()
+{
+    $p = fb_paths();
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) { return null; }
+    $fp = @fopen($p['datadir'] . '/lebenszeichen.lock', 'c+');
+    if ($fp !== false) { @flock($fp, LOCK_EX); }
+    $d = fb_json_lesen($p['datadir'] . '/lebenszeichen.json');
+    $n = (isset($d['zaehler']) && is_int($d['zaehler']) && $d['zaehler'] >= 0 && $d['zaehler'] <= 999)
+        ? ($d['zaehler'] + 1) % 1000 : 0;
+    $ok = fb_json_schreiben($p['datadir'] . '/lebenszeichen.json', array('zaehler' => $n, 'ts' => time()), 0644);
+    if ($fp !== false) { @flock($fp, LOCK_UN); fclose($fp); }
+    return $ok ? $n : null;
+}
+
+/**
+ * Nur das Lebenszeichen senden (status/ok, status/ts, status/zaehler) - fuer den Cron-Lauf, der wegen des
+ * Rechentakts oder einer belegten Sperre NICHT rechnet (bin/fb_lauf.php; Entwurf fb 2.2 a, E5). Damit kommt es
+ * spaetestens alle 300 s, auch wenn der Rechentakt groesser eingestellt ist. Gleiche UDP-Form wie fb_mqtt_senden(),
+ * nie retained. Rueckgabe: Zahl der gesendeten Datagramme.
+ */
+function fb_lebenszeichen_senden($cfg, $stand)
+{
+    if (empty($cfg['mqtt_ein'])) { return 0; }
+    $z = fb_mqtt_zustand();
+    if ($z['udpport'] < 1 || $z['udpport'] > 65535 || !function_exists('socket_create')) { return 0; }
+    $zaehler = fb_lebenszeichen_naechster();
+    if ($zaehler === null) {
+        fb_log_wenn_neu('lebenszeichen', 'Lebenszeichen: der Zaehler liess sich nicht schreiben ('
+            . fb_paths()['datadir'] . '/lebenszeichen.json) - es geht keines hinaus.');
+        return 0;
+    }
+    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+    if (!$s) { return 0; }
+    $praefix = (string) $cfg['mqtt_topic'];
+    $n = 0;
+    $erste = true;
+    foreach (fb_lebenszeichen_nachrichten($cfg, $stand, $zaehler) as $k => $v) {
+        $msg = 'publish ' . fb_mqtt_thema($praefix . '/' . $k) . ' ' . fb_mqtt_wert_saeubern($v);
+        if ($erste) { $erste = false; } else { usleep(FB_MQTT_ABSTAND); }
+        if (@socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']) !== false) { $n++; }
+    }
+    socket_close($s);
+    return $n;
+}
+
+/** Die drei Themen des Lebenszeichens - EINE Quelle fuer fb_mqtt_nachrichten() und fb_lebenszeichen_senden(). */
+function fb_lebenszeichen_nachrichten($cfg, $stand, $zaehler)
+{
+    return array(
+        'status/ok'      => fb_status_ok($stand, isset($cfg['hoechstalter']) ? (int) $cfg['hoechstalter'] : 900),
+        'status/ts'      => time(),
+        'status/zaehler' => (int) $zaehler,
+    );
+}
+
+/**
+ * Der Name, den das MQTT-Gateway (V1 und V2) dem Thema <praefix>/<thema> gibt: "/", Leerzeichen und "%" werden "_"
+ * (Regeln/07, Gedaechtnis mqtt-gateway-v2-verhalten); gebaut aus fb_mqtt_thema() wie beim Senden. Das Kuerzel behaelt
+ * seine Schreibweise: fenster/WZ/urteil -> fenster_WZ_urteil.
+ */
+function fb_mqtt_gateway_name($thema, $cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    return str_replace(array('/', ' ', '%'), '_', fb_mqtt_thema((string) $cfg['mqtt_topic'] . '/' . $thema));
+}
+
+/**
+ * Die Namenstabelle (Entwurf fb 2.4) - EINE Liste fuer die Namenstabelle (Reiter Einbindung, Schritt 3), die
+ * Hakenliste fuer Gateway V2 (Schritt 2) und die Selbstpruefung. Welche Zweige es gibt, entscheidet fb_mqtt_themen()
+ * (dieselbe Funktion, die Senden und Reiter MQTT speist); hier steht nur die Reihenfolge und die Bedeutung.
+ * Je Eintrag array('thema' (ohne Praefix, Kuerzel eingesetzt), 'name' (Gateway), 'bedeutung' (Sprachschluessel),
+ * 'bereich', 'art' zahl|text, 'gruppe' global|fenster|bestand, 'fenster' (Name oder ''), 'haken' (V2-Hakenliste),
+ * 'quelle' dienst|bruecke, 'muster' (steht auf einer Seite des Musterprojekts)).
+ * Musterprojekt mit einem Fenster und allen Zweigen: 16 + 12 = 28 Haken, 27 davon auf den Seiten (status/befehle
+ * wahlweise). "Bestand" (ok, herz, ts, status/ts) geht weiter hinaus, steht aber nicht in der Hakenliste.
+ */
+function fb_mqtt_namen($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    $themen = fb_mqtt_themen_fuer($cfg);
+    $summe = fb_summenfelder($cfg);
+    $felder = fb_felder($cfg);
+    $bereich = function ($info) {
+        return $info[1] . ' … ' . $info[2] . ($info[0] !== '' ? ' ' . $info[0] : '');
+    };
+    $aus = array();
+    $neu = function ($thema, $schl, $ber, $art, $gruppe, $fenster, $quelle) use (&$aus, $cfg) {
+        $aus[] = array('thema' => $thema, 'name' => fb_mqtt_gateway_name($thema, $cfg), 'bedeutung' => $schl,
+                       'bereich' => $ber, 'art' => $art, 'gruppe' => $gruppe, 'fenster' => $fenster,
+                       'haken' => $gruppe !== 'bestand', 'quelle' => $quelle,
+                       'muster' => $gruppe !== 'bestand' && $quelle !== 'bruecke');
+    };
+    $neu('status/ok', 'FB_MQTT.STATUS_OK', '0/1', 'zahl', 'global', '', 'dienst');
+    $neu('status/zaehler', 'FB_MQTT.STATUS_ZAEHLER', '0 … 999', 'zahl', 'global', '', 'dienst');
+    $neu('status/befehle', 'FB_MQTT.STATUS_BEFEHLE', '1 / 0 / -1', 'zahl', 'global', '', 'bruecke');
+    /* Thema => Feld der Statuszeile (fb_summenfelder()), aus dem Einheit und Bereich kommen - eine Quelle mit der
+     * HTTP-Vorlage. */
+    foreach (array('fenster_anzahl' => 'FENSTER', 'beschatten_anzahl' => 'BESCHATTEN',
+                   'beschatten30_anzahl' => 'BESCHATTEN30', 'blendung_anzahl' => 'BLENDUNG',
+                   'daemmen_anzahl' => 'DAEMMEN', 'nicht_gefahren' => 'NICHT_GEFAHREN',
+                   'sonne_hoehe' => 'SONNE_H', 'sonne_azimut' => 'SONNE_AZ', 'saison' => 'SAISON',
+                   'strahlung' => 'STRAHLUNG', 'wh_tag' => 'WH_TAG', 'pv_abweichung' => 'PV_ABW') as $t => $feld) {
+        if (!isset($themen[$t])) { continue; }
+        $neu($t, $themen[$t], isset($summe[$feld]) ? $bereich($summe[$feld]) : '', 'zahl', 'global', '', 'dienst');
+    }
+    if (isset($themen['bericht'])) {
+        $neu('bericht', $themen['bericht'], 'Text, „-“ ohne', 'text', 'global', '', 'dienst');
+    }
+    $je = array('urteil' => 'URTEIL', 'beschatten' => 'BESCHATTEN', 'grund' => 'GRUND', 'watt' => 'WATT',
+                'glas' => 'GLAS', 'wh' => 'WH', 'urteil30' => 'URTEIL30', 'beschatten30' => 'BESCHATTEN30',
+                'blendung' => 'BLENDUNG', 'daemmen' => 'DAEMMEN', 'gefahren' => 'GEFAHREN');
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+        $k = (is_array($f) && isset($f['kuerzel'])) ? (string) $f['kuerzel'] : '';
+        if ($k === '') { continue; }
+        $wer = trim((string) $f['name']) !== '' ? trim((string) $f['name']) : $k;
+        foreach ($je as $t => $feld) {
+            if (!isset($themen['<kuerzel>/' . $t])) { continue; }
+            $neu($k . '/' . $t, $themen['<kuerzel>/' . $t], isset($felder[$feld]) ? $bereich($felder[$feld]) : '',
+                 'zahl', 'fenster', $wer, 'dienst');
+        }
+        if (isset($themen['<kuerzel>/begruendung'])) {
+            $neu($k . '/begruendung', $themen['<kuerzel>/begruendung'], 'Text, „-“ ohne', 'text', 'fenster', $wer,
+                 'dienst');
+        }
+    }
+    foreach (array('ok' => '0/1', 'herz' => '-1 … 43200 min', 'ts' => 's', 'status/ts' => 's') as $t => $ber) {
+        if (!isset($themen[$t])) { continue; }
+        $neu($t, $themen[$t], $ber, 'zahl', 'bestand', '', 'dienst');
+    }
+    return $aus;
+}
+
+/**
+ * fb_mqtt_themen() fuer eine BESTIMMTE Konfiguration: dieselbe Liste, aber die Zweige nach $cfg statt nach der
+ * gespeicherten Konfiguration (fb_mqtt_themen() liest fb_config(false)). Fuer die Namenstabelle und den Selbsttest.
+ */
+function fb_mqtt_themen_fuer($cfg)
+{
+    $t = fb_mqtt_themen();
+    foreach (array('beschatten30_anzahl', '<kuerzel>/urteil30', '<kuerzel>/beschatten30', 'blendung_anzahl',
+                   '<kuerzel>/blendung', 'daemmen_anzahl', '<kuerzel>/daemmen', 'nicht_gefahren',
+                   '<kuerzel>/gefahren', 'pv_abweichung', 'bericht') as $weg) {
+        unset($t[$weg]);
+    }
+    if ((int) $cfg['vorschau'] > 0) {
+        $t['beschatten30_anzahl']  = 'FB_MQTT.BESCHATTEN30';
+        $t['<kuerzel>/urteil30']     = 'FB_MQTT.F_URTEIL30';
+        $t['<kuerzel>/beschatten30'] = 'FB_MQTT.F_BESCHATTEN30';
+    }
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $fe) {
+        if (is_array($fe) && (int) $fe['blend_hoehe'] > 0) {
+            $t['blendung_anzahl'] = 'FB_MQTT.BLENDUNG';
+            $t['<kuerzel>/blendung'] = 'FB_MQTT.F_BLENDUNG';
+            break;
+        }
+    }
+    if (!empty($cfg['daemmen_ein'])) {
+        $t['daemmen_anzahl'] = 'FB_MQTT.DAEMMEN';
+        $t['<kuerzel>/daemmen'] = 'FB_MQTT.F_DAEMMEN';
+    }
+    if (!empty($cfg['stellung_ein'])) {
+        $t['nicht_gefahren'] = 'FB_MQTT.NICHT_GEFAHREN';
+        $t['<kuerzel>/gefahren'] = 'FB_MQTT.F_GEFAHREN';
+    }
+    if (!empty($cfg['pv_gegenprobe'])) { $t['pv_abweichung'] = 'FB_MQTT.PV_ABW'; }
+    if (!empty($cfg['bericht_ein']))   { $t['bericht'] = 'FB_MQTT.BERICHT'; }
+    return $t;
+}
+
+/**
+ * Selbstpruefung "Namenstabelle" (Entwurf fb 2.4, Gegenstueck zu fb_mqtt_kongruent()): jeder Name der Tabelle gehoert
+ * zu einem Thema der Themenliste (fb_mqtt_themen_fuer(), dieselbe Quelle wie das Senden), und jedes Thema der Liste
+ * steht in der Tabelle - je eingerichtetem Fenster eingesetzt. status/befehle sendet die Bruecke und zaehlt nicht.
+ * Rueckgabe array(Zahl der Namen, nur in der Tabelle[], nur in der Themenliste[]).
+ */
+function fb_mqtt_namen_pruefen($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    $namen = fb_mqtt_namen($cfg);
+    $soll = array();
+    foreach (fb_mqtt_themen_fuer($cfg) as $thema => $schl) {
+        if (strpos($thema, '<kuerzel>') === false) { $soll[] = $thema; continue; }
+        foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+            if (is_array($f) && isset($f['kuerzel']) && (string) $f['kuerzel'] !== '') {
+                $soll[] = str_replace('<kuerzel>', (string) $f['kuerzel'], $thema);
+            }
+        }
+    }
+    $ist = array();
+    foreach ($namen as $e) {
+        if ($e['quelle'] === 'dienst') { $ist[] = $e['thema']; }
+    }
+    return array(count($namen), array_values(array_diff($ist, $soll)), array_values(array_diff($soll, $ist)));
+}
+
+/**
+ * Die Messwert-Befehle der Bruecke mit konkreten Namen (Entwurf fb 3.3, E13): je Name aus fb_messwertnamen() ein
+ * Befehl <praefix>/befehl/messwert/<groesse> bzw. .../ist/<raum>, .../grenze/<raum>, .../stellung/<kuerzel klein>.
+ * Format aus fb_vorlage_format() (<v.0> ganz, <v.1> mit einer Nachkommastelle) - dieselbe Quelle wie die
+ * HTTP-Vorlage. Titel fest deutsch (Sprachregel 13.10.2026), Form "Fensterbilanz <Messgroesse> (MQTT)".
+ * Rueckgabe: Liste array('messwert' (Name wie im HTTP-Weg), 'befehl' (ohne Praefix), 'thema', 'titel', 'format',
+ * 'kachel' (Sprachschluessel), 'pflicht' (bei dieser Konfiguration noetig)).
+ */
+function fb_befehl_namen($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    $groessen = array('strahlung' => array("Globalstrahlung", 'BEFEHL.K_STRAHLUNG'),
+                      'prognose' => array("Tagesh\u{f6}chstwert heute", 'BEFEHL.K_PROGNOSE'),
+                      'aussen' => array("Au\u{df}entemperatur", 'BEFEHL.K_AUSSEN'),
+                      'prognose1' => array("Tagesh\u{f6}chstwert morgen", 'BEFEHL.K_PROGNOSE1'),
+                      'pv_prognose' => array("PV-Prognose", 'BEFEHL.K_PV'));
+    $pflicht = fb_messgroessen_pflicht($cfg);
+    $aus = array();
+    foreach (fb_messwertnamen($cfg) as $n) {
+        $teile = explode('.', $n, 2);
+        if (count($teile) === 1) {
+            if (!isset($groessen[$n])) { continue; }
+            $befehl = 'messwert/' . $n;
+            $titel = 'Fensterbilanz ' . $groessen[$n][0] . ' (MQTT)';
+            $kachel = $groessen[$n][1];
+            $muss = in_array($n, $pflicht, true);
+        } else {
+            $befehl = 'messwert/' . $teile[0] . '/' . $teile[1];
+            $wort = array('ist' => 'Raumtemperatur', 'grenze' => 'Beschattungsgrenze', 'stellung' => 'Stellung');
+            if (!isset($wort[$teile[0]])) { continue; }
+            /* Im Titel das Kuerzel so, wie es eingerichtet ist (WZ), nicht klein wie im Thema (wz). */
+            $wer = $teile[1];
+            if ($teile[0] === 'stellung') {
+                foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+                    if (is_array($f) && isset($f['kuerzel']) && strtolower((string) $f['kuerzel']) === $teile[1]) {
+                        $wer = (string) $f['kuerzel'];
+                        break;
+                    }
+                }
+            }
+            $titel = 'Fensterbilanz ' . $wort[$teile[0]] . ' ' . $wer . ' (MQTT)';
+            $kachel = 'BEFEHL.K_' . strtoupper($teile[0]);
+            $muss = $teile[0] !== 'stellung';
+        }
+        $aus[] = array('messwert' => $n, 'befehl' => $befehl,
+                       'thema' => fb_mqtt_thema((string) $cfg['mqtt_topic'] . '/befehl/' . $befehl),
+                       'titel' => $titel, 'format' => fb_vorlage_format($n), 'kachel' => $kachel, 'pflicht' => $muss);
+    }
+    return $aus;
+}
+
+/**
+ * Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN; Stammfassung Werkzeuge/gemeinsam/befehlsbruecke.php,
+ * byte-gleich unter bin/). Installiert liegt sie unter bin/plugins/<ordner>/, in einem Arbeitsordner unter bin/ neben
+ * webfrontend/. Rueckgabe true, wenn bb_waechter() danach da ist. Muster bw_bruecke_laden() (Bewaesserung 0.9.44).
+ */
+function fb_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $p = fb_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['bindir'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste()). Rueckgabe array(Liste oder null, Fehlertext). */
+function fb_bruecke_liste()
+{
+    if (!fb_bruecke_laden()) { return array(null, fb_t('BEFEHL.T_NICHT_DA')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(null, $fehler); }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) { return array(null, $fehl[0]); }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/**
+ * Die Bruecke sofort schalten (Reiter MQTT, nach dem Speichern; wie bw_bruecke_schalten()). Soll sie laufen (Haken
+ * "Befehle ueber MQTT annehmen" und MQTT an): befehlsbruecke.sh start - startet nur nach --soll, nie als root, nie
+ * waehrend eines Updates, nie zweimal. Soll sie nicht laufen und laeuft sie: stop. Grund: der Waechter startet nach
+ * einem Start hoechstens alle 600 s neu (Neustart-Bremse der Stammfassung).
+ * Rueckgabe array(rc oder null = nichts zu tun, 'start'|'stop'|'', Ausgabe).
+ */
+function fb_bruecke_schalten($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    if (!fb_bruecke_laden()) { return array(1, '', fb_t('BEFEHL.T_NICHT_DA')); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, '', 'keine LoxBerry-Installation erkannt'); }
+    if (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) { return array(null, '', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/**
+ * Lage der Befehlsbruecke fuer den Reiter Test und den Reiter MQTT (Entwurf gemeinsam 2.11). Gemessen wird das
+ * Erzeugnis wie im Waechter: Dienst laeuft (argumentweise), zustand.json juenger als 180 s, Abo steht.
+ * Rueckgabe array(ok true/false/null, Text) - null heisst "aus" (Haken) und zaehlt nicht als bestanden.
+ */
+function fb_bruecke_lage()
+{
+    if (!fb_bruecke_laden()) { return array(false, fb_t('BEFEHL.T_NICHT_DA')); }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) { return array(null, fb_t('BEFEHL.T_AUS')); }
+    if ($soll !== 0) { return array(false, sprintf(fb_t('BEFEHL.T_DEFEKT'), $grund)); }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(fb_t('BEFEHL.T_LAEUFT'), implode(' ', $pids),
+            is_string($zu['abo']) ? $zu['abo'] : fb_config(false)['mqtt_topic'] . '/befehl/#',
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = isset($zu['letzter']) && is_array($zu['letzter']) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(fb_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . fb_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo' . (is_array($zu) && !empty($zu['fehler']) ? ': ' . $zu['fehler'] : '')));
+    return array(false, sprintf(fb_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/**
+ * Die Vorlage der MQTT-Befehle (Entwurf fb 3.3, E13): eigener Ausgang "Fensterbilanz MQTT-Befehle" an
+ * /dev/udp/<LoxBerry>/<Udpinport>, je Messwert dieser Einrichtung ein analoger Befehl mit Titel aus fb_befehl_namen()
+ * und Befehl bei Analogwert "publish <praefix>/befehl/messwert/... <v.0|v.1>". Gebaut aus fb_messwertnamen() mit den
+ * konkreten Raeumen und Fenstern - bb_vorlage() der Stammfassung legt fuer ein Muster ({raum}) nur einen Kommentar an.
+ * Befehlszeile in der Form von bb_vorlage_befehl() (Analog, SourceValHigh/DestValHigh 10 wie eine Config-Ausfuhr).
+ * Kein Wortzeichen: der Weg ist durch den Haken "Befehle ueber MQTT annehmen" geschuetzt.
+ * Rueckgabe array(Name, Inhalt) oder array(Name, '') (Bruecke nicht ladbar).
+ */
+function fb_vorlage_befehle()
+{
+    list($l) = fb_bruecke_liste();
+    if ($l === null) { return array('VQ_fensterbilanz_mqtt.xml', ''); }
+    $cfg = fb_config(false);
+    $h = fb_host();
+    if (substr_count($h, ':') === 1) { $h = substr($h, 0, strpos($h, ':')); }
+    $bp = bb_pfade();
+    $port = $bp ? bb_broker($bp)['udpin'] : 11884;
+    if (!$bp) {
+        $m = fb_mqtt_zustand();
+        if (!empty($m['udpport'])) { $port = (int) $m['udpport']; }
+    }
+    $x = array('<?xml version="1.0" encoding="utf-8"?>');
+    $x[] = '<VirtualOut HintText="" Title="' . bb_xml('Fensterbilanz MQTT-Befehle') . '" Comment="'
+         . bb_xml(fb_klartext('BEFEHL.VQ_KOPF_KOMMENTAR')) . '" Address="'
+         . bb_xml('/dev/udp/' . $h . '/' . (int) $port) . '" CmdInit="" CloseAfterSend="true" CmdSep="">';
+    $x[] = "\t" . '<Info templateType="3" minVersion="17010727"/>';
+    foreach (fb_befehl_namen($cfg) as $b) {
+        $x[] = bb_vorlage_befehl($b['titel'], fb_kachel($b['kachel']),
+            'publish ' . $b['thema'] . ' ' . $b['format'], '', true);
+    }
+    $x[] = '</VirtualOut>';
+    return array('VQ_fensterbilanz_mqtt.xml', implode("\n", $x) . "\n");
 }

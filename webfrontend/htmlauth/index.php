@@ -196,9 +196,14 @@ if ($fb_post && isset($_POST['auszug_lesen'])) {
 
 if ($fb_post && isset($_POST['vorlage'])) {
     $fb_welche = is_string($_POST['vorlage']) ? $_POST['vorlage'] : '';
-    list($fb_name, $fb_inhalt) = ($fb_welche === 'vq') ? fb_vorlage_out() : fb_vorlage();
+    /* Gruppe 3 / MQTT (0.12.19): vq_mqtt = die Befehle ueber die Befehlsbruecke (fb_vorlage_befehle()). */
+    if ($fb_welche === 'vq_mqtt') {
+        list($fb_name, $fb_inhalt) = fb_vorlage_befehle();
+    } else {
+        list($fb_name, $fb_inhalt) = ($fb_welche === 'vq') ? fb_vorlage_out() : fb_vorlage();
+    }
     if ($fb_inhalt === '') {
-        $fb_fehler[] = fb_t('LOX.FEHLER_VORLAGE');
+        $fb_fehler[] = fb_t($fb_welche === 'vq_mqtt' ? 'BEFEHL.FEHLER_VORLAGE' : 'LOX.FEHLER_VORLAGE');
         $fb_tab = 'tab-loxone';
     } else {
         header('Content-Type: application/x-download');
@@ -1022,6 +1027,8 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
     /* Sonne-1 (Verbesserungsbau 01.10.2026): im selben Formular, ab Werk aus. */
     $fb_cfg['sonne_teilen'] = !empty($_POST['sonne_teilen']) ? 1 : 0;
+    /* Gruppe 3 / MQTT (0.12.19): der Haken der Befehlsbruecke, im selben Formular, ab Werk aus. */
+    $fb_cfg['befehle_mqtt_ein'] = !empty($_POST['befehle_mqtt_ein']) ? 1 : 0;
     /* Gegen den ROHEN Wert pruefen, nicht gegen den gesaeuberten. Sonst
      * wird "haus fenster" beanstandet und "haus\"fenster" stillschweigend
      * zu "hausfenster" - dieselbe Eingabeart, zweierlei Verhalten.
@@ -1075,6 +1082,16 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
         fb_log('MQTT-Einstellungen gespeichert.');
         /* M8: die Abodatei auf das Praefix nachfuehren. */
         fb_abo_datei($fb_cfg['mqtt_topic'], true);
+        /* Gruppe 3 / MQTT (0.12.19): die Befehlsbruecke sofort schalten (fb_bruecke_schalten()) - der Waechter im
+         * Minutentakt startet nach einem Start hoechstens alle 600 s neu. */
+        list($fb_brc, $fb_bart, $fb_baus) = fb_bruecke_schalten($fb_cfg);
+        if ($fb_bart === 'start') {
+            $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_EIN') : sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
+        } elseif ($fb_bart === 'stop') {
+            $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_AUS') : sprintf(fb_t('BEFEHL.M_STOP_FEHL'), $fb_baus);
+        } elseif ($fb_brc === 1) {
+            $fb_meldungen[] = sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
+        }
         /* M4 (Durchgang 30.09.2026): beim Praefixwechsel und beim Abschalten
          * die zurueckbehaltenen Themen unter dem BISHERIGEN Praefix abraeumen
          * und beim Broker nachlesen. Bis 0.12.10 blieben sie stehen, auch
@@ -2414,6 +2431,10 @@ if ($fb_alt_w) { ?>
   <label><input data-role="none" type="checkbox" name="sonne_teilen" value="1"<?= fb_eingabe_an('mqtt', 'sonne_teilen', $fb_cfg['sonne_teilen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.S1_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('MQTT.S1_HILFE') ?></p>
 </div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= fb_eingabe_an('mqtt', 'befehle_mqtt_ein', $fb_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.BEFEHLE_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('MQTT.BEFEHLE_HILFE') ?></p>
+</div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
 </div>
@@ -2421,6 +2442,10 @@ if ($fb_alt_w) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_mqtt" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<?php /* Gruppe 3 / MQTT (0.12.19): die Lage der Befehlsbruecke - gemessen wie im Waechter (fb_bruecke_lage()). */
+list($fb_bl_ok, $fb_bl_txt) = fb_bruecke_lage(); ?>
+<div class="<?= $fb_bl_ok === true ? 'sm-hinweis' : ($fb_bl_ok === null ? 'sm-step' : 'sm-warnung') ?>" id="fb-bruecke-lage"><b><?= fb_e(fb_t('BEFEHL.T_H')) ?>:</b> <?= fb_e($fb_bl_txt) ?></div>
 
 <h3><?= fb_e(fb_t('MQTT.H_THEMEN')) ?></h3>
 <div class="sm-breit">
@@ -2436,12 +2461,13 @@ if ($fb_alt_w) { ?>
      * auch fuer ihn richtig. */
     $fb_ret = fb_mqtt_retained($fb_k); ?>
 <tr><td><span class="sm-mono"><?= fb_e($fb_cfg['mqtt_topic'] . '/' . $fb_k) ?></span></td>
-    <td><?= fb_e(fb_t($fb_schl)) ?></td>
+    <td><?= fb_e(fb_t($fb_schl)) ?><?= in_array($fb_k, array('ok', 'herz', 'ts', 'status/ts'), true) ? ' <span class="sm-hilfe">(' . fb_e(fb_t('MQTT.BESTAND')) . ')</span>' : '' ?></td>
     <td><?= fb_e(fb_t($fb_ret ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
 <tr><td colspan="3" class="sm-hilfe"><?= fb_t('MQTT.RETAIN_ERKLAERUNG') ?></td></tr>
 </table>
 </div>
+<p class="sm-hilfe"><?= fb_e(fb_t('MQTT.BESTAND_H')) ?></p>
 <p class="sm-hilfe"><?= fb_t('MQTT.KUERZEL_HILFE') ?></p>
 
 <?php /* Sonne-1 (Verbesserungsbau 01.10.2026): die Haus-Themen - dieselbe
@@ -2480,13 +2506,217 @@ if ($fb_alt_w) { ?>
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $fb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= fb_e(fb_t('LOX.H')) ?></h2>
-<div class="sm-step"><?= fb_t('LOX.S1') ?></div>
-<div class="sm-step"><?php
-    if ((int) $fb_mqtt['fassung'] >= 2) { echo sprintf(fb_t('LOX.S2_V2'), fb_e($fb_cfg['mqtt_topic']));
-    } elseif ((int) $fb_mqtt['fassung'] === 1) { echo sprintf(fb_t('LOX.S2_V1'), fb_e($fb_cfg['mqtt_topic']));
-    } else { echo sprintf(fb_t('LOX.S2_V1'), fb_e($fb_cfg['mqtt_topic']))
-                  . '<br>' . sprintf(fb_t('LOX.S2_V2'), fb_e($fb_cfg['mqtt_topic']))
-                  . '<br>' . fb_t('MQTT.ABO_UNBEKANNT'); } ?></div>
+<?php
+/* Gruppe 3 / MQTT (0.12.19; Musterprojekt/entwurf_gruppe3_fb.txt 2.5 und 3.3, Nachtrag 2 Gruppe 1): MQTT ist der Weg
+ * des Musterprojekts (Schritte 1-7); der bisherige HTTP-Weg steht unten zugeklappt unter "Bestehende Anlagen". Alle
+ * Namen kommen aus derselben Rechnung wie das Senden (fb_mqtt_gateway_name(), fb_mqtt_themen()); Namenstabelle und
+ * Hakenliste aus fb_mqtt_namen(), die Befehle aus fb_befehl_namen() (Bruecke: bin/befehle_zuordnung.php). */
+$fb_eb_pf = (string) $fb_cfg['mqtt_topic'];
+$fb_eb_gw = isset($fb_mqtt['fassung']) ? (int) $fb_mqtt['fassung'] : 0;
+$fb_eb_nt = fb_mqtt_namen($fb_cfg);
+$fb_eb_bef = fb_befehl_namen($fb_cfg);
+list($fb_eb_bl, $fb_eb_bl_fehl) = fb_bruecke_liste(); ?>
+<div class="sm-step" id="eb-mqtt">
+<h3><?= fb_e(fb_t('LOX.MQ_S1_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= fb_e(fb_t('LOX.MQ_S1_TEXT')) ?></p>
+<?php if (!empty($fb_cfg['mqtt_ein'])) { ?>
+<p class="sm-hilfe" id="eb-mqtt-ein"><?= fb_e(sprintf(fb_t('LOX.MQ_S1_EIN'), $fb_eb_pf)) ?></p>
+<?php } else { ?>
+<div class="sm-warnung" id="eb-mqtt-aus"><b><?= fb_e(fb_t('LOX.MQ_S1_AUS')) ?></b></div>
+<?php } ?>
+</div>
+
+<div class="sm-step" id="eb-gateway">
+<h3><?= fb_e(fb_t('LOX.MQ_S2_TITEL')) ?></h3>
+<?php if ($fb_eb_gw < 2) { ?>
+<div class="sm-warnung"><?= sprintf(fb_t('LOX.S2_V1'), fb_e($fb_eb_pf)) ?></div>
+<?php } ?>
+<?php if ($fb_eb_gw <= 0 || $fb_eb_gw >= 2) {
+    $fb_eb_haken = array();
+    $fb_eb_seite = 0;
+    foreach ($fb_eb_nt as $fb_e3) {
+        if (!$fb_e3['haken']) { continue; }
+        $fb_eb_haken[] = $fb_e3;
+        if ($fb_e3['muster']) { $fb_eb_seite++; }
+    } ?>
+<p class="sm-hilfe" id="eb-v2"><?= sprintf(fb_t('LOX.S2_V2'), fb_e($fb_eb_pf)) ?></p>
+<div class="sm-breit"><table class="sm-tbl" id="eb-hakenliste">
+<tr><th>#</th><th><?= fb_e(fb_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_SEITE')) ?></th></tr>
+<?php foreach ($fb_eb_haken as $fb_hi => $fb_h) { ?>
+<tr><td><?= (int) $fb_hi + 1 ?></td><td><span class="sm-mono"><?= fb_e(fb_mqtt_thema($fb_eb_pf . '/' . $fb_h['thema'])) ?></span></td><td><span class="sm-mono"><?= fb_e($fb_h['name']) ?></span></td><td><?= $fb_h['muster'] ? fb_e(fb_t('LOX.HAKEN_JA')) : '&ndash;' ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= fb_e(sprintf(fb_t('LOX.HAKEN_ZAHL'), count($fb_eb_haken), $fb_eb_seite)) ?> <?= fb_e(fb_t('LOX.HAKEN_RESET')) ?></p>
+<?php } ?>
+<?php if ($fb_eb_gw <= 0) { ?>
+<p class="sm-hilfe"><?= fb_t('MQTT.ABO_UNBEKANNT') ?></p>
+<?php } ?>
+<p class="sm-hilfe" id="eb-reconnect"><?= fb_e(fb_t('LOX.RECONNECT')) ?></p>
+</div>
+
+<?php /* Keine Importvorlage fuer die Werte (Entscheidung des Hausherrn 19.10.2026): je Zahl ein Virtueller Eingang,
+   fuer die Texte ein Virtueller Texteingang, Name exakt (Kopierknopf). Der Kopierknopf braucht kein
+   navigator.clipboard (LoxBerry laeuft ueber http, dort fehlt es): er markiert den Namen in einem Hilfsfeld und
+   kopiert mit execCommand; geht beides nicht, steht danach der Name auf dem Knopf (Muster Bewaesserung 0.9.44). */ ?>
+<div class="sm-step" id="eb-eingaenge">
+<h3><?= fb_e(fb_t('LOX.MQ_S3_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= fb_e(fb_t('LOX.MQ_S3_TEXT')) ?></p>
+<ul class="sm-hilfe">
+<li><?= fb_e(fb_t('LOX.MQ_S3_DIGITAL')) ?></li>
+<li><?= fb_e(fb_t('LOX.MQ_S3_RECHTE')) ?></li>
+<li><?= fb_e(fb_t('LOX.MQ_S3_MUSTER')) ?></li>
+<li><?= fb_e(fb_t('LOX.MQ_S3_FENSTER')) ?></li>
+</ul>
+<?php if (!$fb_liste) { ?>
+<p class="sm-hilfe"><?= fb_e(fb_t('LOX.NT_KEIN_FENSTER')) ?></p>
+<?php } ?>
+<div class="sm-breit"><table class="sm-tbl" id="eb-namen">
+<tr><th><?= fb_e(fb_t('LOX.NT_NAME')) ?></th><th><?= fb_e(fb_t('LOX.NT_BEDEUTUNG')) ?></th><th><?= fb_e(fb_t('LOX.NT_BEREICH')) ?></th><th><?= fb_e(fb_t('LOX.NT_ART')) ?></th></tr>
+<?php foreach ($fb_eb_nt as $fb_ne) { if ($fb_ne['gruppe'] === 'bestand') { continue; } ?>
+<tr><td style="white-space:nowrap"><span class="sm-mono"><?= fb_e($fb_ne['name']) ?></span> <button data-role="none" type="button" class="sm-kopier" data-name="<?= fb_e($fb_ne['name']) ?>" title="<?= fb_e(fb_t('LOX.NT_KOPIEREN')) ?>"><?= fb_e(fb_t('LOX.NT_KOPIEREN')) ?></button></td>
+<td><?= $fb_ne['fenster'] !== '' ? fb_e($fb_ne['fenster']) . ': ' : '' ?><?= fb_e(fb_klartext($fb_ne['bedeutung'])) ?><?php if ($fb_ne['muster']) { ?> <span class="sm-hilfe">(<?= fb_e(fb_t('LOX.NT_SEITE')) ?>)</span><?php } ?></td>
+<td class="sm-hilfe"><?= fb_e($fb_ne['bereich']) ?></td>
+<td><?= fb_e(fb_t($fb_ne['art'] === 'text' ? 'LOX.NT_TEXT' : 'LOX.NT_ZAHL')) ?></td></tr>
+<?php } ?>
+</table></div>
+<details>
+<summary><?= fb_e(fb_t('LOX.NT_BESTAND_TITEL')) ?></summary>
+<p class="sm-hilfe"><?= fb_e(fb_t('LOX.NT_BESTAND_TEXT')) ?></p>
+<div class="sm-breit"><table class="sm-tbl" id="eb-namen-bestand">
+<tr><th><?= fb_e(fb_t('LOX.NT_NAME')) ?></th><th><?= fb_e(fb_t('LOX.NT_BEDEUTUNG')) ?></th><th><?= fb_e(fb_t('LOX.NT_BEREICH')) ?></th></tr>
+<?php foreach ($fb_eb_nt as $fb_ne) { if ($fb_ne['gruppe'] !== 'bestand') { continue; } ?>
+<tr><td><span class="sm-mono"><?= fb_e($fb_ne['name']) ?></span></td><td><?= fb_e(fb_klartext($fb_ne['bedeutung'])) ?></td><td class="sm-hilfe"><?= fb_e($fb_ne['bereich']) ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<script>
+(function () {
+  var knoepfe = document.querySelectorAll('#eb-namen button.sm-kopier');
+  for (var i = 0; i < knoepfe.length; i++) {
+    knoepfe[i].addEventListener('click', function () {
+      var f = document.createElement('textarea');
+      f.value = this.getAttribute('data-name');
+      f.setAttribute('readonly', '');
+      f.style.position = 'absolute'; f.style.left = '-9999px';
+      document.body.appendChild(f);
+      f.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(f);
+      this.textContent = ok ? '✓' : this.getAttribute('data-name');
+    });
+  }
+})();
+</script>
+</div>
+
+<?php /* Schritt 4: die Messwerte ueber die Befehlsbruecke (Entwurf fb 3.3, E13) - je Messwert dieser Einrichtung ein
+   Befehl mit konkretem Namen; Spalte "Zuletzt eingetroffen" aus derselben Ablage wie der HTTP-Weg (messwerte.json):
+   sie zeigt, was angenommen wurde, gleich auf welchem Weg. */ ?>
+<div class="sm-step" id="eb-befehle">
+<h3><?= fb_e(fb_t('BEFEHL.TITEL')) ?></h3>
+<?php if ($fb_eb_bl === null) { ?>
+<div class="sm-warnung"><?= fb_e(sprintf(fb_t('BEFEHL.NICHT_LADBAR'), $fb_eb_bl_fehl)) ?></div>
+<?php } else {
+    $fb_eb_bp = function_exists('bb_pfade') ? bb_pfade() : array();
+    $fb_eb_port = $fb_eb_bp ? bb_broker($fb_eb_bp)['udpin'] : (!empty($fb_mqtt['udpport']) ? (int) $fb_mqtt['udpport'] : 11884); ?>
+<p class="sm-hilfe"><?= fb_e(sprintf(fb_t('BEFEHL.TEXT'), (int) $fb_eb_port)) ?></p>
+<div class="<?= !empty($fb_cfg['befehle_mqtt_ein']) ? 'sm-hinweis' : 'sm-warnung' ?>" id="eb-befehle-haken"><?= fb_e(fb_t(!empty($fb_cfg['befehle_mqtt_ein']) ? 'BEFEHL.HAKEN_AN' : 'BEFEHL.HAKEN_AUS')) ?></div>
+<div class="sm-breit"><table class="sm-tbl" id="eb-befehlsliste">
+<tr><th><?= fb_e(fb_t('BEFEHL.SP_TITEL')) ?></th><th><?= fb_e(fb_t('BEFEHL.SP_BEFEHL')) ?></th><th><?= fb_e(fb_t('BEFEHL.SP_BEDEUTUNG')) ?></th><th><?= fb_e(fb_t('LOX.SP_EINGETROFFEN')) ?></th></tr>
+<?php foreach ($fb_eb_bef as $fb_eb_b) { $fb_eb_mw = $fb_eb_b['messwert']; ?>
+<tr><td><?= fb_e($fb_eb_b['titel']) ?></td>
+<td><span class="sm-mono"><?= fb_e('publish ' . $fb_eb_b['thema'] . ' ' . $fb_eb_b['format']) ?></span></td>
+<td><?= fb_e(fb_klartext($fb_eb_b['kachel'])) ?><?= $fb_eb_b['pflicht'] ? '' : ' (' . fb_e(fb_t('LOX.OPTIONAL')) . ')' ?></td>
+<td><?php if (isset($fb_messwerte[$fb_eb_mw]['t'])) {
+        echo fb_e(sprintf(fb_t('LOX.VOR_SEKUNDEN'), max(0, time() - (int) $fb_messwerte[$fb_eb_mw]['t']),
+             (string) $fb_messwerte[$fb_eb_mw]['v']));
+    } else { echo '<b class="sm-aus">' . fb_e(fb_t('LOX.NIE_EINGETROFFEN')) . '</b>'; } ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= fb_e(fb_t('BEFEHL.SPERRE')) ?></p>
+<p class="sm-hilfe"><?= sprintf(fb_t('BEFEHL.QUITTUNG_H'), fb_e($fb_eb_bl['lebenszeichen'])) ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="vq_mqtt"><?= fb_e(fb_t('BEFEHL.K_VORLAGE')) ?></button>
+  </form>
+</div>
+<p class="sm-hilfe"><?= fb_t('BEFEHL.VORLAGE_H') ?></p>
+<?php } ?>
+</div>
+
+<h3><?= fb_e(fb_t('LOX.H_AUSFALL')) ?></h3>
+<div class="sm-step" id="eb-ausfall"><?= sprintf(fb_t('LOX.AUSFALL_TEXT'), fb_e(fb_mqtt_gateway_name('status/zaehler', $fb_cfg)), fb_e(fb_mqtt_gateway_name('status/ok', $fb_cfg))) ?></div>
+
+<h3><?= fb_e(fb_t('LOX.H_BAUSTEINE')) ?></h3>
+<?php /* Welle Bild 12 FB (0.12.16; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
+       Maximum leicht uebernehmen koennen; Entwurf Welle 12 fb, Entscheidungen 1-16 wie empfohlen):
+       drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit
+       leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "Fensterbilanz" 31,
+       "Fensterbilanz Messwerte" 23, "Fensterbilanz Werte" 25 Zeilen, wortgleich mit dem Beispielfenster
+       WZ/Wohnzimmer/wohnzimmer). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite",
+       Tabelle (ein HTML-Wert je Sprache wie seit 0.12.15), Hinweise, auf der ersten Seite das
+       Schaubild, Bild, Link - alle immer sichtbar. Bis 0.12.15 stand hier eine Tabelle mit 9 Zeilen.
+       Gruppe 3 / MQTT (0.12.19): die Tabellen wortgleich zur Liste vom 19.10.2026 (33, 27, 25 Zeilen; Gateway-Namen
+       statt FB_-Titel, Befehle am Ausgang "LoxBerry MQTT-Gateway"); Kaesten und Hinweise auf den MQTT-Weg (Entwurf
+       fb 2.5 S6); BAUSTEINE_HERZ entfaellt mit #3, SEITE2_S7 und SEITE2_N4 neu. */
+$fb_bs_seiten = array(
+    array('kopf' => 'LOX.SEITE1_H', 'seite' => 'Fensterbilanz', 'bild' => 'einbindung_loxone.png', 'tabelle' => 'LOX.BAUSTEINE',
+          'schaubild' => true,
+          'schritte' => array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8', 'LOX.SEITE1_S9', 'LOX.SEITE1_S10'),
+          'hinweise' => array('LOX.BAUSTEINE_ERL', 'LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5')),
+    array('kopf' => 'LOX.SEITE2_H', 'seite' => 'Fensterbilanz Messwerte', 'bild' => 'einbindung_loxone_messwerte.png', 'tabelle' => 'LOX.BAUSTEINE_MESSWERTE',
+          'schaubild' => false,
+          'schritte' => array('LOX.SEITE2_S1', 'LOX.SEITE2_S2', 'LOX.SEITE2_S3', 'LOX.SEITE2_S4', 'LOX.SEITE2_S5', 'LOX.SEITE2_S6', 'LOX.SEITE2_S7'),
+          'hinweise' => array('LOX.SEITE2_N1', 'LOX.SEITE2_N2', 'LOX.SEITE2_N3', 'LOX.SEITE2_N4')),
+    array('kopf' => 'LOX.SEITE3_H', 'seite' => 'Fensterbilanz Werte', 'bild' => 'einbindung_loxone_werte.png', 'tabelle' => 'LOX.BAUSTEINE_WERTE',
+          'schaubild' => false,
+          'schritte' => array('LOX.SEITE3_S1', 'LOX.SEITE3_S2', 'LOX.SEITE3_S3', 'LOX.SEITE3_S4'),
+          'hinweise' => array('LOX.BAUSTEINE_STATISTIK', 'LOX.SEITE3_N1')),
+); ?>
+<p class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_VORTEXT') ?></p>
+<?php foreach ($fb_bs_seiten as $fb_bs) { ?>
+<h4 class="sm-h4"><?= fb_e(fb_t($fb_bs['kopf'])) ?></h4>
+<div class="sm-hinweis"><b><?= fb_e(fb_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($fb_bs['schritte'] as $fb_bs_x) { ?>
+<li><?= fb_t($fb_bs_x) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit"><?= fb_t($fb_bs['tabelle']) ?></div>
+<div class="sm-warnung"><b><?= fb_e(fb_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($fb_bs['hinweise'] as $fb_bs_x) { ?>
+<li><?= fb_t($fb_bs_x) ?></li>
+<?php } ?>
+</ul></div>
+<?php if ($fb_bs['schaubild']) {
+    /* b1 (Verbesserungsbau 01.10.2026): dieselbe Verknuepfung als Bild - statisches SVG aus
+       fb_bausteine_svg(), keine Bibliothek, kein Skript. Seit 0.12.16 unter der ersten Tabelle. */ ?>
+<p class="sm-hilfe"><b><?= fb_e(fb_t('LOX.SB_H')) ?></b></p>
+<div class="sm-breit" id="fb_schaubild"><?= fb_bausteine_svg() ?></div>
+<p class="sm-hilfe"><?= fb_t('LOX.SB_ERKLAERUNG') ?></p>
+<?php } ?>
+<figure class="sm-bild">
+<img src="<?= fb_e($fb_bs['bild']) ?>" alt="<?= fb_e(fb_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= fb_e(sprintf(fb_t('LOX.BILD_UNTERSCHRIFT'), $fb_bs['seite'])) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= fb_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
+
+<h3><?= fb_e(fb_t('LOX.H_GEGENPROBE')) ?></h3>
+<div class="sm-step" id="eb-gegenprobe"><?= sprintf(fb_t('LOX.GEGENPROBE_TEXT'), fb_e(fb_mqtt_gateway_name('status/zaehler', $fb_cfg))) ?></div>
+
+<?php /* Gruppe 3 / MQTT (0.12.19): der bisherige Weg ueber HTTP, zugeklappt - fuer bestehende Anlagen unveraendert
+   (Messwert-Ausgaenge, Adressen mit Wortzeichen, virtuelle HTTP-Eingaenge, Vorlagen, Wortzeichen). */ ?>
+<details id="eb-http">
+<summary><?= fb_e(fb_t('LOX.HTTP_TITEL')) ?></summary>
+<p class="sm-hilfe"><?= fb_e(fb_t('LOX.HTTP_TEXT')) ?></p>
 
 <h3><?= fb_e(fb_t('LOX.H_MESSWERTE')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.MESSWERTE_TEXT') ?></div>
@@ -2625,64 +2855,8 @@ $fb_adressen = array(
   </form>
 </div>
 
-<h3><?= fb_e(fb_t('LOX.H_AUSFALL')) ?></h3>
-<div class="sm-step"><?= fb_t('LOX.AUSFALL_TEXT') ?></div>
-
-<h3><?= fb_e(fb_t('LOX.H_BAUSTEINE')) ?></h3>
-<?php /* Welle Bild 12 FB (0.12.16; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
-       Maximum leicht uebernehmen koennen; Entwurf Welle 12 fb, Entscheidungen 1-16 wie empfohlen):
-       drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit
-       leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "Fensterbilanz" 31,
-       "Fensterbilanz Messwerte" 23, "Fensterbilanz Werte" 25 Zeilen, wortgleich mit dem Beispielfenster
-       WZ/Wohnzimmer/wohnzimmer). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite",
-       Tabelle (ein HTML-Wert je Sprache wie seit 0.12.15), Hinweise, auf der ersten Seite das
-       Schaubild, Bild, Link - alle immer sichtbar. Bis 0.12.15 stand hier eine Tabelle mit 9 Zeilen. */
-$fb_bs_seiten = array(
-    array('kopf' => 'LOX.SEITE1_H', 'seite' => 'Fensterbilanz', 'bild' => 'einbindung_loxone.png', 'tabelle' => 'LOX.BAUSTEINE',
-          'schaubild' => true,
-          'schritte' => array('LOX.SEITE1_S1', 'LOX.SEITE1_S2', 'LOX.SEITE1_S3', 'LOX.SEITE1_S4', 'LOX.SEITE1_S5', 'LOX.SEITE1_S6', 'LOX.SEITE1_S7', 'LOX.SEITE1_S8', 'LOX.SEITE1_S9', 'LOX.SEITE1_S10'),
-          'hinweise' => array('LOX.BAUSTEINE_HERZ', 'LOX.BAUSTEINE_ERL', 'LOX.SEITE1_N1', 'LOX.SEITE1_N2', 'LOX.SEITE1_N3', 'LOX.SEITE1_N4', 'LOX.SEITE1_N5')),
-    array('kopf' => 'LOX.SEITE2_H', 'seite' => 'Fensterbilanz Messwerte', 'bild' => 'einbindung_loxone_messwerte.png', 'tabelle' => 'LOX.BAUSTEINE_MESSWERTE',
-          'schaubild' => false,
-          'schritte' => array('LOX.SEITE2_S1', 'LOX.SEITE2_S2', 'LOX.SEITE2_S3', 'LOX.SEITE2_S4', 'LOX.SEITE2_S5', 'LOX.SEITE2_S6'),
-          'hinweise' => array('LOX.SEITE2_N1', 'LOX.SEITE2_N2', 'LOX.SEITE2_N3')),
-    array('kopf' => 'LOX.SEITE3_H', 'seite' => 'Fensterbilanz Werte', 'bild' => 'einbindung_loxone_werte.png', 'tabelle' => 'LOX.BAUSTEINE_WERTE',
-          'schaubild' => false,
-          'schritte' => array('LOX.SEITE3_S1', 'LOX.SEITE3_S2', 'LOX.SEITE3_S3', 'LOX.SEITE3_S4'),
-          'hinweise' => array('LOX.BAUSTEINE_STATISTIK', 'LOX.SEITE3_N1')),
-); ?>
-<p class="sm-hilfe"><?= fb_t('LOX.BAUSTEINE_VORTEXT') ?></p>
-<?php foreach ($fb_bs_seiten as $fb_bs) { ?>
-<h4 class="sm-h4"><?= fb_e(fb_t($fb_bs['kopf'])) ?></h4>
-<div class="sm-hinweis"><b><?= fb_e(fb_t('LOX.SCHRITTE_TITEL')) ?></b>
-<ol class="sm-schritte">
-<?php foreach ($fb_bs['schritte'] as $fb_bs_x) { ?>
-<li><?= fb_t($fb_bs_x) ?></li>
-<?php } ?>
-</ol></div>
-<div class="sm-breit"><?= fb_t($fb_bs['tabelle']) ?></div>
-<div class="sm-warnung"><b><?= fb_e(fb_t('LOX.HINWEISE_TITEL')) ?></b>
-<ul class="sm-schritte">
-<?php foreach ($fb_bs['hinweise'] as $fb_bs_x) { ?>
-<li><?= fb_t($fb_bs_x) ?></li>
-<?php } ?>
-</ul></div>
-<?php if ($fb_bs['schaubild']) {
-    /* b1 (Verbesserungsbau 01.10.2026): dieselbe Verknuepfung als Bild - statisches SVG aus
-       fb_bausteine_svg(), keine Bibliothek, kein Skript. Seit 0.12.16 unter der ersten Tabelle. */ ?>
-<p class="sm-hilfe"><b><?= fb_e(fb_t('LOX.SB_H')) ?></b></p>
-<div class="sm-breit" id="fb_schaubild"><?= fb_bausteine_svg() ?></div>
-<p class="sm-hilfe"><?= fb_t('LOX.SB_ERKLAERUNG') ?></p>
-<?php } ?>
-<figure class="sm-bild">
-<img src="<?= fb_e($fb_bs['bild']) ?>" alt="<?= fb_e(fb_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= fb_e(sprintf(fb_t('LOX.BILD_UNTERSCHRIFT'), $fb_bs['seite'])) ?></figcaption>
-</figure>
-<p class="sm-hilfe"><?= fb_t('LOX.MUSTERPROJEKT') ?></p>
-<?php } ?>
-
-<h3><?= fb_e(fb_t('LOX.H_GEGENPROBE')) ?></h3>
-<div class="sm-step"><?= fb_t('LOX.GEGENPROBE_TEXT') ?></div>
+<h3><?= fb_e(fb_t('LOX.HTTP_AUSFALL_H')) ?></h3>
+<div class="sm-step"><?= fb_t('LOX.HTTP_AUSFALL') ?></div>
 
 <h3><?= fb_e(fb_t('LOX.H_TOKEN')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.TOKEN_TEXT') ?></div>
@@ -2696,6 +2870,7 @@ $fb_bs_seiten = array(
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= fb_e(fb_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

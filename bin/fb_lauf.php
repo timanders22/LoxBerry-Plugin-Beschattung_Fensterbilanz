@@ -111,6 +111,12 @@ $fb_erzwingen = in_array('--jetzt', $fb_argumente, true);
 list($fb_gerechnet, $fb_stand, $fb_warum) = fb_lauf($fb_erzwingen);
 
 if (!$fb_gerechnet) {
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.2 a, E5): auch ohne Rechnung das Lebenszeichen (status/ok, status/ts,
+     * status/zaehler) - sonst hinge die Ausfallerkennung in Loxone am einstellbaren Rechentakt (bis 3600 s). Nicht
+     * waehrend einer Aktualisierung. */
+    if ($fb_warum === 'takt' || $fb_warum === 'sperre') {
+        fb_lebenszeichen_senden(fb_config(), $fb_stand);
+    }
     /* C6 (Durchgang 30.09.2026): der wahre Grund. Bis 0.12.10 stand hier auch
      * bei --jetzt "innerhalb des Rechentakts", waehrend die Sperre belegt war
      * (gemessen, Code-Pruefer Nr. 8). */
@@ -1671,6 +1677,94 @@ $ort = array(48.2, 11.6);
     $pruefe('Unlesbarer Stuetzpunkt wird abgewiesen',
             count($punkte) === 2 && count($unlesbar) === 1,
             count($punkte) . ' gute, ' . count($unlesbar) . ' schlechte');
+
+    /* --- G3. Gruppe 3 / MQTT (0.12.19): -999/-1, status/ok, Gateway-Namen, Namenstabelle, Befehle ---
+     * Die Sollwerte stehen hier ausgeschrieben - die 27 Namen und 8 Befehle der Musterprojekt-Seiten
+     * (Musterprojekt/baustein_listen.txt, Stand 19.10.2026) -, nicht aus der Funktion abgeleitet. */
+    $s_g3 = $s_alt;
+    unset($s_g3['sonne_hoehe'], $s_g3['sonne_azimut']);
+    $s_g3['prognose'] = -99;
+    $s_g3['felder'] = fb_felderwerte($s_g3);
+    $s_g3['ts'] = time();
+    $z_g3 = fb_zeile($s_g3, 900);
+    $pruefe('Ohne Sonnenstand und Rechnung: Statuszeile SONNE_H=-999, SONNE_AZ=-1, SAISON=-999',
+            strpos($z_g3, ';SONNE_H=-999;') !== false && strpos($z_g3, ';SONNE_AZ=-1;') !== false
+            && strpos($z_g3, ';SAISON=-999;') !== false,
+            trim(strtok($z_g3, "\n")));
+    $z_g3a = $s_g3; $z_g3a['ts'] = time() - 3 * 86400;
+    $zl_g3a = fb_zeile($z_g3a, 900);
+    $pruefe('Veralteter Stand: SONNE_H=-999, SONNE_AZ=-1, SAISON=-999 statt 0',
+            strpos($zl_g3a, ';SONNE_H=-999;') !== false && strpos($zl_g3a, ';SONNE_AZ=-1;') !== false
+            && strpos($zl_g3a, ';SAISON=-999;') !== false,
+            trim(strtok($zl_g3a, "\n")));
+    $m_g3 = fb_mqtt_nachrichten(fb_config_richten(fb_vorgaben()), $s_g3, 7);
+    $pruefe('MQTT ohne Sonnenstand: sonne_hoehe -999, sonne_azimut -1, saison -999, status/zaehler 7',
+            isset($m_g3['sonne_hoehe'], $m_g3['sonne_azimut'], $m_g3['saison'], $m_g3['status/zaehler'])
+            && $m_g3['sonne_hoehe'] === -999 && $m_g3['sonne_azimut'] === -1 && $m_g3['saison'] === -999
+            && $m_g3['status/zaehler'] === 7,
+            json_encode(array_intersect_key($m_g3, array_flip(array('sonne_hoehe', 'sonne_azimut', 'saison',
+                                                                   'status/ok', 'status/zaehler')))));
+    $st_frisch = $s_alt; $st_frisch['ts'] = time(); $st_frisch['ok'] = 1;
+    $st_alt3 = $st_frisch; $st_alt3['ts'] = time() - 3 * 86400;
+    $st_nok = $st_frisch; $st_nok['ok'] = 0;
+    $st_zk = $st_frisch; $st_zk['ts'] = time() + 60;
+    $st_901 = $st_frisch; $st_901['ts'] = time() - 901;
+    $pruefe('status/ok: frisch und ok 1; drei Tage alt, ok 0, 60 s Zukunft, 901 s alt je 0',
+            fb_status_ok($st_frisch, 900) === 1 && fb_status_ok($st_alt3, 900) === 0
+            && fb_status_ok($st_nok, 900) === 0 && fb_status_ok($st_zk, 900) === 0
+            && fb_status_ok($st_901, 86400) === 0,
+            fb_status_ok($st_frisch, 900) . fb_status_ok($st_alt3, 900) . fb_status_ok($st_nok, 900)
+            . fb_status_ok($st_zk, 900) . fb_status_ok($st_901, 86400));
+    $pruefe('status/ok und OK der Statuszeile sagen dasselbe (frisch 1, alt 0)',
+            (strpos(fb_zeile($st_frisch + array('felder' => fb_felderwerte($st_frisch)), 900), ';OK=1;') !== false)
+            === (fb_status_ok($st_frisch, 900) === 1)
+            && (strpos(fb_zeile($st_alt3 + array('felder' => fb_felderwerte($st_alt3)), 900), ';OK=0;') !== false)
+            === (fb_status_ok($st_alt3, 900) === 0),
+            'frisch ' . fb_status_ok($st_frisch, 900) . ', alt ' . fb_status_ok($st_alt3, 900));
+    $pruefe('Gateway-Namen: Kuerzel behaelt die Schreibweise, "/" wird "_"',
+            fb_mqtt_gateway_name('WZ/urteil', array('mqtt_topic' => 'fenster')) === 'fenster_WZ_urteil'
+            && fb_mqtt_gateway_name('status/zaehler', array('mqtt_topic' => 'fenster')) === 'fenster_status_zaehler'
+            && fb_mqtt_gateway_name('status/ok', array('mqtt_topic' => 'haus/fb')) === 'haus_fb_status_ok',
+            fb_mqtt_gateway_name('WZ/urteil', array('mqtt_topic' => 'fenster')));
+    $cfg_mp = fb_vorgaben();
+    $cfg_mp['fenster'] = array(array('kuerzel' => 'WZ', 'name' => 'Wohnzimmer', 'raum' => 'wohnzimmer',
+                                     'raumwerte' => 1, 'aktiv' => 1, 'azimut' => 180, 'blend_hoehe' => 20,
+                                     'daemmen' => 1));
+    $cfg_mp['vorschau'] = 1800; $cfg_mp['daemmen_ein'] = 1; $cfg_mp['stellung_ein'] = 1;
+    $cfg_mp['pv_gegenprobe'] = 1; $cfg_mp['bericht_ein'] = 1; $cfg_mp['mqtt_topic'] = 'fenster';
+    $cfg_mp = fb_config_richten($cfg_mp);
+    $muster_soll = array('fenster_status_ok', 'fenster_status_zaehler', 'fenster_WZ_beschatten30',
+        'fenster_WZ_blendung', 'fenster_WZ_daemmen', 'fenster_WZ_gefahren', 'fenster_WZ_beschatten',
+        'fenster_WZ_grund', 'fenster_saison', 'fenster_wh_tag', 'fenster_fenster_anzahl',
+        'fenster_beschatten_anzahl', 'fenster_beschatten30_anzahl', 'fenster_blendung_anzahl',
+        'fenster_daemmen_anzahl', 'fenster_nicht_gefahren', 'fenster_sonne_hoehe', 'fenster_sonne_azimut',
+        'fenster_strahlung', 'fenster_WZ_urteil', 'fenster_WZ_watt', 'fenster_WZ_glas', 'fenster_WZ_wh',
+        'fenster_WZ_urteil30', 'fenster_WZ_begruendung', 'fenster_bericht', 'fenster_pv_abweichung');
+    $nt_mp = fb_mqtt_namen($cfg_mp);
+    $haken_mp = array(); $muster_ist = array();
+    foreach ($nt_mp as $e_mp) {
+        if ($e_mp['haken']) { $haken_mp[] = $e_mp['name']; }
+        if ($e_mp['muster']) { $muster_ist[] = $e_mp['name']; }
+    }
+    $pruefe('Namenstabelle Musterprojekt: 28 Haken, die 27 Namen der Musterseiten, dazu status/befehle',
+            count($haken_mp) === 28 && count($muster_ist) === 27 && !array_diff($muster_soll, $muster_ist)
+            && !array_diff($muster_ist, $muster_soll) && in_array('fenster_status_befehle', $haken_mp, true),
+            count($haken_mp) . ' Haken, ' . count($muster_ist) . ' Musternamen; fehlt '
+            . implode(',', array_diff($muster_soll, $muster_ist)) . '; zuviel '
+            . implode(',', array_diff($muster_ist, $muster_soll)));
+    list(, $nt_tab, $nt_send) = fb_mqtt_namen_pruefen($cfg_mp);
+    $pruefe('Namenstabelle und Themenliste decken sich (Musterkonfiguration)', !$nt_tab && !$nt_send,
+            'nur Tabelle ' . implode(',', $nt_tab) . '; nur Liste ' . implode(',', $nt_send));
+    $bef_soll = array(
+        'fenster/befehl/messwert/strahlung <v.0>', 'fenster/befehl/messwert/prognose <v.1>',
+        'fenster/befehl/messwert/aussen <v.1>', 'fenster/befehl/messwert/prognose1 <v.1>',
+        'fenster/befehl/messwert/pv_prognose <v.0>', 'fenster/befehl/messwert/ist/wohnzimmer <v.1>',
+        'fenster/befehl/messwert/grenze/wohnzimmer <v.1>', 'fenster/befehl/messwert/stellung/wz <v.0>');
+    $bef_ist = array();
+    foreach (fb_befehl_namen($cfg_mp) as $b_mp) { $bef_ist[] = $b_mp['thema'] . ' ' . $b_mp['format']; }
+    sort($bef_soll); sort($bef_ist);
+    $pruefe('Befehle der Musterkonfiguration = die 8 Befehle der Musterseiten (Thema und Format)',
+            $bef_soll === $bef_ist, implode(' | ', $bef_ist));
 
     /* --- 10. Die Vorlage ist wohlgeformtes XML --- */
     $xml = fb_xml_virtual_in_http(

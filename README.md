@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.18
+Version 0.12.19
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,34 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.19
+
+**Umstellung auf MQTT (Gruppe 3).** Musterprojekt und Reiter *Einbindung in Loxone* nutzen nur noch MQTT; der
+HTTP-Weg bleibt für bestehende Anlagen unverändert (zugeklappt unter „Bestehende Anlagen“).
+
+* **Messwerte über MQTT:** Loxone schickt Strahlung, Prognosen, Außen- und Raumwerte und die Stellung als
+  `publish fenster/befehl/messwert/…` an den UDP-Eingang des MQTT-Gateways; die gemeinsame **Befehlsbrücke**
+  (`bin/befehlsbruecke.php`, Stammfassung) gibt sie an dieselbe Prüfung wie der Endpunkt
+  (`fb_melden_ausfuehren()`). Neuer Haken **„Befehle über MQTT annehmen“** im Reiter *MQTT*, **ab Werk aus** –
+  ohne ihn kommen über MQTT keine Messwerte an. Kein zweiter Haken (kein Befehl schaltet etwas), Sperrzeit 0 s
+  (ein wiederholter Wert ist der Frischebeleg). Wächter der Brücke in der neuen `cron/cron.01min`; die Vorlage
+  „Fensterbilanz MQTT-Befehle“ (Knopf in Schritt 4) baut die Befehle mit den eingerichteten Räumen und Fenstern.
+* **Lebenszeichen:** neu `fenster/status/ok`, `status/ts`, `status/zaehler` in jedem Lauf – auch wenn der
+  Rechentakt die Rechnung überspringt –, nie zurückbehalten. `status/ok` folgt derselben Regel wie `OK` der
+  Statuszeile. Die Ausfallerkennung in Loxone ist eine Analogwertvalidierung an `fenster_status_zaehler`
+  (Tmc 1500 s); `ok`, `herz` und `ts` gehen für bestehende Anlagen weiter hinaus.
+* **Fehlende Werte mit Vorzeichen** gehen als **−999** hinaus statt gar nicht (MQTT) bzw. als `-` oder 0 (HTTP):
+  `sonne_hoehe` und `saison`; `sonne_azimut` ohne Standort als −1. Die HTTP-Vorlage trägt dafür MinVal −999
+  bzw. −1. **Bestehende virtuelle HTTP-Eingänge mit altem MinVal kappen −999 auf −90 bzw. −100** – wer das
+  auswertet, erzeugt die Vorlage neu oder stellt MinVal von Hand um. `pv_abweichung` bleibt 0 vor dem zehnten
+  Tag.
+* **Reiter *Einbindung in Loxone*:** Schritte 1–7 für MQTT – Gateway V1/V2 mit Hakenliste, Namenstabelle der
+  Virtuellen Eingänge mit Kopierknopf (keine Importvorlage für Werte), Befehle mit „Zuletzt eingetroffen“; die drei
+  Baustein-Tabellen wortgleich zum Musterprojekt (33, 27 und 25 Zeilen, #3 und #19 entfallen). Die Bilder der drei
+  Seiten folgen nach dem Anordnen im Musterprojekt.
+* **Texte berichtigt:** keine Empfehlung mehr, das Alter in Loxone aus `ts` zu rechnen; das Gateway legt Eingänge
+  nicht selbst an; „V2 nicht gemessen“ ersetzt durch die Hakenliste.
 
 ## Neu in 0.12.18
 
@@ -196,9 +224,11 @@ Fenster zu ist:
 
 ## Was hereinkommen muss
 
-Das Plugin misst nichts selbst. Die Werte kommen über **einen virtuellen
-Ausgang** aus Loxone; die fertige Importdatei erzeugt der Reiter *Einbindung in
-Loxone*.
+Das Plugin misst nichts selbst. Die Werte kommen als **MQTT-Befehle** aus Loxone
+(`publish <präfix>/befehl/messwert/<name> <wert>`, Befehlsbrücke, Haken „Befehle über MQTT
+annehmen“) – bei bestehenden Anlagen weiter über **einen virtuellen Ausgang** an den
+HTTP-Endpunkt. Befehle und Vorlagen nennt der Reiter *Einbindung in Loxone*. Der Name im
+MQTT-Befehl hat statt des Punkts eine Ebene: `ist.<raum>` wird `messwert/ist/<raum>`.
 
 | Schlüssel | Nötig | Bedeutung |
 | --- | --- | --- |
@@ -231,7 +261,11 @@ Messwert, sondern ein Defekt, und werden verworfen statt geklemmt.
 
 **Über MQTT** (Regelweg), Präfix einstellbar, ab Werk `fenster`:
 
-    fenster/ok                    Daten gültig
+    fenster/status/ok             Daten gültig (wie OK der Statuszeile), jeder Lauf
+    fenster/status/zaehler        Lebenszeichen 0 … 999, jeder Lauf (für die Ausfallerkennung)
+    fenster/status/ts             Zeitpunkt des Lebenszeichens (nur Diagnose)
+    fenster/sonne_hoehe           Sonnenhöhe, −999 ohne Standort
+    fenster/ok                    Daten gültig (Bestand)
     fenster/herz                  Minuten seit dem letzten Lauf, −1 = noch nie
     fenster/saison                Wärmebedarf des Tages, +100 bis −100
     fenster/wh_tag                Wärmeeintrag des Tages über alle Fenster
@@ -327,9 +361,10 @@ Lauf rechnet sofort neu.
      gibt für beide eine Fehlanzeige zurück (gemessen mit PHP 7.4.33 und
      8.4.24). Die Oberfläche zeigt die beiden Werte deshalb **vor** dem
      Formular an, nicht erst in der Fehlermeldung.
-3. **Beide Vorlagen** im Reiter *Einbindung in Loxone* herunterladen und in
-   Loxone Config einlesen. Die Ausgangs-Vorlage liefert die Messwerte herein;
-   **ohne sie rechnet das Plugin nichts.**
+3. **MQTT einbinden:** im Reiter *MQTT* „Befehle über MQTT annehmen“ anhaken, dann im
+   Reiter *Einbindung in Loxone* den Schritten 1–4 folgen – Virtuelle Eingänge nach der
+   Namenstabelle anlegen, die Messwerte als MQTT-Befehle schicken; **ohne sie rechnet das
+   Plugin nichts.** (Bestehende Anlagen: die beiden HTTP-Vorlagen, zugeklappt.)
 4. **Selbstprüfung** im Reiter *Test*. Sie beantwortet ohne Loxone, ob die
    Einrichtung trägt — von der Sprachdatei über den eigenen Endpunkt bis zum
    Rechenkern.

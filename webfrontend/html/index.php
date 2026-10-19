@@ -123,16 +123,19 @@ if ($fb_aktion === 'melden') {
      * Pruefung-Beschattung_Fensterbilanz-0.12.10, Faelle Z2, Z3). 503 und
      * nicht 200: der Wert ist NICHT angenommen - wie jede andere Abweisung
      * hier ohne OK=1. Siehe fb_upgrade_laeuft(). */
-    if (fb_upgrade_laeuft()) {
+    $fb_name = (isset($_GET['wert']) && is_string($_GET['wert']))
+        ? strtolower($_GET['wert']) : '';
+    $fb_v    = (isset($_GET['v']) && is_string($_GET['v'])) ? $_GET['v'] : '';
+    /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 3.2): Aktualisierungspruefung, Annahme und Rechnung stehen in
+     * fb_melden_ausfuehren() - derselben Funktion, die die Befehlsbruecke fuer die MQTT-Befehle ruft. Die
+     * Antworten dieses Endpunkts sind woertlich dieselben wie bis 0.12.18. */
+    list($fb_ok, $fb_grund, $fb_gerechnet) = fb_melden_ausfuehren($fb_name, $fb_v, 'http', $fb_cfg);
+    if (!$fb_ok && $fb_grund === 'AKTUALISIERUNG') {
         http_response_code(503);
         echo "FEHLER;OK=0;GRUND=AKTUALISIERUNG\n";
         echo "Das Plugin wird gerade aktualisiert - der Wert wurde nicht angenommen.\n";
         exit;
     }
-    $fb_name = (isset($_GET['wert']) && is_string($_GET['wert']))
-        ? strtolower($_GET['wert']) : '';
-    $fb_v    = (isset($_GET['v']) && is_string($_GET['v'])) ? $_GET['v'] : '';
-    list($fb_ok, $fb_grund) = fb_messwert_setzen($fb_name, $fb_v, $fb_cfg);
     if (!$fb_ok) {
         /* Abweisen und MELDEN, nicht stillschweigend zurechtbiegen. Ein
          * Endpunkt, der jede Eingabe mit OK=1 quittiert, laesst den
@@ -152,11 +155,7 @@ if ($fb_aktion === 'melden') {
         }
         exit;
     }
-    /* Nach der Annahme rechnen - aber nur, wenn der Rechentakt es erlaubt.
-     * Loxone schickt bei einem Wetterwechsel ein Dutzend virtueller
-     * Ausgaenge in derselben Sekunde los; ohne den Mindestabstand rechnete
-     * das Plugin ein Dutzend Mal und schickte ein Dutzend MQTT-Salven. */
-    list($fb_gerechnet, $fb_stand) = fb_lauf(false, false);   // legt nichts an
+    /* Gerechnet hat fb_melden_ausfuehren() schon - im Rechentakt (fb_lauf(false, false), legt nichts an). */
     echo 'OK=1;WERT=' . $fb_name . ';GERECHNET=' . ($fb_gerechnet ? 1 : 0) . "\n";
     exit;
 }

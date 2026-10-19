@@ -330,6 +330,20 @@ fi
 # selbst aus. Der trap oben bleibt fuer die Ausgaenge davor.
 rm -f "$MARKE" 2>/dev/null
 
+# ---------- Befehlsbruecke (Gruppe 3 / MQTT, 0.12.19) ----------
+# Erst die Marke weg (befehlsbruecke.sh startet nicht, solange eine frische Marke liegt), dann starten - die
+# Bruecke startet nur mit dem Haken "Befehle ueber MQTT annehmen" (ab Werk aus) und misst danach, ob sie laeuft.
+# Ein Sollmerker ist nicht noetig: ob sie laufen soll, sagt allein die Konfiguration. Muster: Bewaesserung 0.9.44.
+BBSH="$PBIN/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
+
 # ---------- Laeuft die Rechnung ueberhaupt? ----------
 # Der Selbsttest braucht weder Netz noch Miniserver noch Konfiguration. Er
 # faehrt den Rechenkern gegen hinterlegte Faelle - darunter der gemessene

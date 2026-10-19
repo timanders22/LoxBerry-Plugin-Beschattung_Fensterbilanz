@@ -156,6 +156,14 @@ else
     echo "<WARNING> Ein Lauf waehrend der Aktualisierung kann die Tagesbilanz verdraengen."
 fi
 
+# Gruppe 3 / MQTT (0.12.19): die Befehlsbruecke vor dem Austausch der Dateien anhalten. Die Marke liegt schon -
+# der Waechter im Minutentakt (cron.01min) startet sie bis postinstall.sh nicht neu. Bis 0.12.18 gab es keine
+# Bruecke (dann fehlt die Datei). Muster: Bewaesserung 0.9.44.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
+
 FEHLER=0
 
 # ---------- 1. Die Konfiguration ----------
