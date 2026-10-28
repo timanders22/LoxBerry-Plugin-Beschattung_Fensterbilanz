@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.19
+Version 0.12.20
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,29 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.20
+
+**Ehrliche Meldung, sicheres Update (Gruppe 36).**
+
+* **Eine Liste für Sperre und Meldung:** Was ein Lauf wirklich braucht, sperrt die Rechnung **und** steht in `fehlend`,
+  `ok`, `meldung` und im Reiter Test. Die Außentemperatur ist nur nachts bei eingeschalteter Nachtdämmung Pflicht, der
+  Tageshöchstwert morgen erst ab der Vorabend-Stunde, die PV-Prognose nie (fehlt sie, ruht nur die Gegenprobe). Bis
+  0.12.19 konnte ein fehlender Zusatzwert die Beschattung still sperren, während `status/ok` 1 meldete.
+* **Update bricht sauber ab:** Lässt sich die Marke, die Konfiguration oder eine Messreihe vor dem Update nicht sichern,
+  meldet `preupgrade.sh` `<FAIL>` und beendet sich mit Rückgabe 2 – **vor** dem Abräumen; die installierte Fassung bleibt.
+  Die Meldungen widersprechen sich nicht mehr.
+* **Zurückspielen einer Sicherung** schaltet die Befehlsbrücke sofort, führt die Abodatei nach und räumt bei einem
+  Präfixwechsel unter dem bisherigen Präfix ab (mit Nachlesen beim Broker), wie das Speichern im Reiter *MQTT*.
+* **`fb_lauf.php` nimmt nur bekannte Schalter** (`--selbsttest`, `--zeile`, `--jetzt`, `--mqtt-leeren [--praefix=…]`);
+  alles andere endet mit einer Hilfezeile und Rückgabe 2. Als root startet nur noch der Selbsttest.
+* **HTTP-Endpunkt:** Selbsttest in Hausform (`SELFTEST;OK=1;TOKEN=OK`), Tokenfehler `FENSTERBILANZ;OK=0;ERR=TOKEN`, neuer
+  Schalter „HTTP-Endpunkt beantworten“ – bei einer Neuinstallation aus, eine bestehende Anlage behält ihn eingeschaltet.
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, Fensterbilanz ist erster Träger): Die Vorlagen der MQTT-Befehle
+  haben jetzt **CRLF** wie die Ausfuhren der Loxone Config; der Inhalt ist gleich, ein Neuimport ist nicht nötig. Wer eine
+  alte Vorlagendatei mit einer neuen vergleicht, sieht trotzdem „alles geändert“ – das sind nur die Zeilenenden.
+* **Reiter Test** prüft alle drei Vorlagen (wohlgeformt, LF gleich CRLF, Tabulator, Zahl der Befehle). **Reiter
+  Logdateien** zeigt zusätzlich die Liste des LoxBerry-Protokollsystems. Je Reiter steht eine Farblegende oben.
 
 ## Neu in 0.12.19
 
@@ -236,9 +259,9 @@ MQTT-Befehl hat statt des Punkts eine Ebene: `ist.<raum>` wird `messwert/ist/<ra
 | `prognose` | immer | erwarteter Tageshöchstwert — **die Größe, die alles trägt** |
 | `ist.<raum>` | je Raum | Raumtemperatur |
 | `grenze.<raum>` | je Raum | Beschattungsgrenze des Raums (`TShadeHeat`) |
-| `aussen` | mit Nachtdämmung | Außentemperatur; sonst freiwillig, steht dann in der Begründung |
-| `prognose1` | mit Vorabendteil | erwarteter Tageshöchstwert **morgen** |
-| `pv_prognose` | mit PV-Gegenprobe | Ertragsprognose als Vergleichsgröße zur Strahlung |
+| `aussen` | nachts mit Nachtdämmung | Außentemperatur; sonst freiwillig, steht dann in der Begründung |
+| `prognose1` | mit Vorabendteil, ab der Vorabend-Stunde | erwarteter Tageshöchstwert **morgen** |
+| `pv_prognose` | nie (nur für die PV-Gegenprobe) | Ertragsprognose als Vergleichsgröße zur Strahlung; fehlt sie, ruht die Gegenprobe |
 | `stellung.<kürzel>` | mit Rückmeldung | Rollladenstellung des Fensters in Prozent |
 
 Was nicht eingeschaltet ist, wird auch nicht verlangt und erzeugt in Loxone
@@ -309,6 +332,11 @@ nichts im Broker stehen, wenn der Haken wieder aus ist.
     /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=json
     /plugins/fensterbilanz/index.php?token=<TOKEN>&aktion=fenster&k=<K>
     /plugins/fensterbilanz/index.php?token=<TOKEN>&selftest=1
+
+Der Selbsttest antwortet seit 0.12.20 in Hausform: `SELFTEST;OK=1;TOKEN=OK`, bei falschem Token HTTP 403
+`SELFTEST;OK=0;ERR=TOKEN`, ohne eingerichtetes Token HTTP 403 `SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET`. Der Schalter
+**„HTTP-Endpunkt beantworten“** (Reiter *MQTT*) ist bei einer Neuinstallation aus; dann antworten die Aktionen mit HTTP 403
+`FENSTERBILANZ;OK=0;ERR=ENDPUNKT_AUS`, der Selbsttest bleibt erreichbar.
 
 Auch die abfragenden Aufrufe verlangen ein Wortzeichen: in der Antwort stehen
 Raumtemperaturen, und die sagen jedem im Heimnetz, ob jemand zu Hause ist.

@@ -63,6 +63,30 @@ require_once $fb_lib;
 
 $fb_argumente = isset($argv) ? $argv : array();
 
+/* Gruppe 36 (0.12.20, Pruefbericht T3-B; Entwurf 4.4): Positivliste der Schalter. Bis 0.12.19 lief jeder unbekannte
+ * Schalter als gewoehnlicher Lauf - --help, --status und der Tippfehler --selftest rechneten neu und sendeten (Probe
+ * t3bc). Jetzt: eine Hilfezeile auf die Fehlerausgabe und Rueckgabe 2, wie die Befehlsbruecke (bb_haupt()).
+ * --praefix=<p> gilt nur zusammen mit --mqtt-leeren. */
+$fb_erlaubt = array('--selbsttest', '--zeile', '--mqtt-leeren', '--jetzt');
+foreach (array_slice($fb_argumente, 1) as $fb_a) {
+    $fb_a = (string) $fb_a;
+    if (strpos($fb_a, '--praefix=') === 0 && in_array('--mqtt-leeren', $fb_argumente, true)) { continue; }
+    if (!in_array($fb_a, $fb_erlaubt, true)) {
+        fwrite(STDERR, 'Unbekannter Schalter: ' . $fb_a . ' - erlaubt: --selbsttest, --zeile, --jetzt, '
+            . "--mqtt-leeren [--praefix=<p>]\n");
+        exit(2);
+    }
+}
+
+/* Gruppe 36 (0.12.20, E-E8): nicht als root. Ein Handaufruf als root legte root-eigene Dateien unter data/ an
+ * (stand.json, bilanz.json, Sperren), die der Takt als loxberry danach nicht mehr schreiben kann. Ausnahme ist der
+ * Selbsttest: er schreibt nur in einen eigenen Ordner unter sys_get_temp_dir(). */
+if (!in_array('--selbsttest', $fb_argumente, true) && function_exists('posix_geteuid') && posix_geteuid() === 0) {
+    fwrite(STDERR, "Fensterbilanz: fb_lauf.php nicht als root starten - als loxberry aufrufen "
+        . "(sudo -u loxberry php .../fb_lauf.php). Es wurde nichts gerechnet und nichts geschrieben.\n");
+    exit(2);
+}
+
 /* --------------------------------------------------------------------
  * Selbsttest: rechnet ohne Anlage, ohne Netz und ohne Messwerte von
  * aussen. Er faehrt den Rechenkern mit hinterlegten Faellen und
@@ -1765,6 +1789,74 @@ $ort = array(48.2, 11.6);
     sort($bef_soll); sort($bef_ist);
     $pruefe('Befehle der Musterkonfiguration = die 8 Befehle der Musterseiten (Thema und Format)',
             $bef_soll === $bef_ist, implode(' | ', $bef_ist));
+
+    /* --- G36. Gruppe 36 (0.12.20, Entscheidung 1 / T2-A): EINE Liste fuer Sperre, fehlend, ok und meldung ---
+     * Die Faelle B, B3, C, C3 und D des Pruefberichts und des Entwurfs (Proben t2a.php, probe_t2a_g36.php). Geeicht
+     * durch Zurueckbauen: mit der alten fehlend-Zeile (feste Pflichtspalte) werden B3 und C3 rot, mit der alten Sperre
+     * (fb_messgroessen_pflicht()) B, C und D. */
+    $g36_f = array_merge(fb_fenster_vorgabe(), array('kuerzel' => 'WZ', 'name' => 'Wohnzimmer Sued', 'azimut' => 194,
+        'raumwerte' => 0, 'flaeche' => 3.0, 'daemmen' => 1));
+    $g36_cfg = function ($extra) use ($ort, $g36_f) {
+        return fb_config_richten(array_merge(fb_vorgaben(), array('breite' => $ort[0], 'laenge' => $ort[1],
+            'fenster' => array($g36_f)), $extra));
+    };
+    $g36_mw = function ($w, $t) {
+        $m = array();
+        foreach ($w as $k => $v) { $m[$k] = array('v' => $v, 't' => $t); }
+        return $m;
+    };
+    $g36_zeig = function ($st) {
+        $e = reset($st['fenster']);
+        return 'ok=' . (int) $st['ok'] . ' meldung=' . $st['meldung'] . ' fehlend=[' . implode(',', $st['fehlend'])
+             . '] grund=' . (is_array($e) ? $e['grund'] : '-');
+    };
+    $g36_grund = function ($st) { $e = reset($st['fenster']); return is_array($e) ? (string) $e['grund'] : ''; };
+    /* Die Uhrzeiten gelten in Europe/Berlin, gleich welche Zeitzone das PHP mitbringt (env -i: UTC). Sonst laege
+     * 17 Uhr bei 13 Grad Sonnenhoehe, und 800 W/m2 waeren dort zu Recht unmoeglich (gemessen in WSL, 28.10.2026).
+     * Die Zone wird nach den Faellen zurueckgestellt. */
+    $g36_tz = date_default_timezone_get();
+    date_default_timezone_set('Europe/Berlin');
+    $g36_mittag = mktime(13, 0, 0, 7, 15, 2026);
+    $g36_zehn = mktime(10, 0, 0, 7, 15, 2026);
+    $g36_siebzehn = mktime(17, 0, 0, 7, 15, 2026);
+    $g36_nacht = mktime(23, 0, 0, 1, 15, 2026);
+    $g36_b = array('strahlung' => 800, 'prognose' => 31);
+    $g36_sB = fb_rechnen($g36_cfg(array('daemmen_ein' => 1)), $g36_mw($g36_b, $g36_mittag), $g36_mittag);
+    $pruefe('T2-A B: Nachtdaemmung an, tags ohne Aussentemperatur - es wird gerechnet (ok=1)',
+            (int) $g36_sB['ok'] === 1 && !$g36_sB['fehlend'] && $g36_grund($g36_sB) !== 'keine_daten', $g36_zeig($g36_sB));
+    $g36_sB3 = fb_rechnen($g36_cfg(array('daemmen_ein' => 1)),
+        $g36_mw(array('strahlung' => 0, 'prognose' => 2), $g36_nacht), $g36_nacht);
+    $pruefe('T2-A B3: Nachtdaemmung an, nachts ohne Aussentemperatur - ok=0, MESSWERTE_FEHLEN [aussen]',
+            (int) $g36_sB3['ok'] === 0 && $g36_sB3['meldung'] === 'MESSWERTE_FEHLEN'
+            && $g36_sB3['fehlend'] === array('aussen'), $g36_zeig($g36_sB3));
+    $g36_sC = fb_rechnen($g36_cfg(array('gewicht_morgen' => 20)), $g36_mw($g36_b, $g36_zehn), $g36_zehn);
+    $pruefe('T2-A C: Vorabendteil mit Gewicht, 10 Uhr ohne Prognose morgen - es wird gerechnet (ok=1)',
+            (int) $g36_sC['ok'] === 1 && !$g36_sC['fehlend'] && $g36_grund($g36_sC) !== 'keine_daten', $g36_zeig($g36_sC));
+    $g36_sC3 = fb_rechnen($g36_cfg(array('gewicht_morgen' => 20)), $g36_mw($g36_b, $g36_siebzehn), $g36_siebzehn);
+    $pruefe('T2-A C3: Vorabendteil mit Gewicht, 17 Uhr ohne Prognose morgen - ok=0, MESSWERTE_FEHLEN [prognose1]',
+            (int) $g36_sC3['ok'] === 0 && $g36_sC3['meldung'] === 'MESSWERTE_FEHLEN'
+            && $g36_sC3['fehlend'] === array('prognose1'), $g36_zeig($g36_sC3));
+    $g36_sD = fb_rechnen($g36_cfg(array('pv_gegenprobe' => 1)), $g36_mw($g36_b, $g36_mittag), $g36_mittag);
+    $pruefe('T2-A D: PV-Gegenprobe an, ohne PV-Prognose - es wird gerechnet (ok=1, pv_prognose nie Pflicht)',
+            (int) $g36_sD['ok'] === 1 && !$g36_sD['fehlend'] && $g36_grund($g36_sD) !== 'keine_daten', $g36_zeig($g36_sD));
+    date_default_timezone_set($g36_tz);
+    /* Gruppe 36 (0.12.20, T2-C; Entwurf 4.8): fb_mqtt_themen($cfg) folgt der UEBERGEBENEN Konfiguration - hier
+     * Nachtdaemmung und Blendschutz an, gespeichert ist keine (oder eine andere). Bis 0.12.19 entschied die Platte. */
+    $g36_fb = $g36_f; $g36_fb['blend_hoehe'] = 20;
+    $g36_cb = fb_config_richten(array_merge(fb_vorgaben(), array('breite' => $ort[0], 'laenge' => $ort[1],
+        'fenster' => array($g36_fb), 'daemmen_ein' => 1)));
+    $g36_c0 = fb_config_richten(array_merge(fb_vorgaben(), array('breite' => $ort[0], 'laenge' => $ort[1],
+        'fenster' => array($g36_f), 'daemmen_ein' => 0)));
+    $g36_tb = fb_mqtt_themen($g36_cb);
+    $g36_t0 = fb_mqtt_themen($g36_c0);
+    $g36_nb = fb_mqtt_nachrichten($g36_cb, fb_rechnen($g36_cb, $g36_mw($g36_b, $g36_mittag), $g36_mittag), 1);
+    $pruefe('fb_mqtt_themen($cfg) und fb_mqtt_nachrichten() folgen der uebergebenen Konfiguration',
+            isset($g36_tb['daemmen_anzahl'], $g36_tb['blendung_anzahl'], $g36_nb['daemmen_anzahl'],
+                  $g36_nb['blendung_anzahl'])
+            && !isset($g36_t0['daemmen_anzahl']) && !isset($g36_t0['blendung_anzahl'])
+            && fb_mqtt_themen_fuer($g36_cb) === $g36_tb,
+            'mit: ' . implode(',', array_keys(array_diff_key($g36_tb, $g36_t0))) . '; Nachricht daemmen_anzahl '
+            . (isset($g36_nb['daemmen_anzahl']) ? 'ja' : 'nein'));
 
     /* --- 10. Die Vorlage ist wohlgeformtes XML --- */
     $xml = fb_xml_virtual_in_http(

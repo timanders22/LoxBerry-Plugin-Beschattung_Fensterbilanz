@@ -13,6 +13,13 @@
  *   ?token=<TOKEN>&aktion=melden&wert=<Name>&v=<Zahl>   einen Messwert abliefern
  *   ?token=<TOKEN>&selftest=1                    Selbsttest, loest nichts aus
  *
+ * Gruppe 36 (0.12.20, Pruefbericht E4, E-E9, E-E10; Regeln/03 :275, Regeln/07 :497): der Selbsttest antwortet in
+ * Hausform - SELFTEST;OK=1;TOKEN=OK, falsches Token HTTP 403 SELFTEST;OK=0;ERR=TOKEN, keines eingerichtet HTTP 403
+ * SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET, je mit Schlusszeile #EOF. Nur selftest=1 zaehlt. Ein falsches Token
+ * sonst: HTTP 403 FENSTERBILANZ;OK=0;ERR=TOKEN (bis 0.12.19 FEHLER;OK=0;GRUND=TOKEN). Der Schalter endpunkt_ein
+ * (Neuinstallation aus, Update an) sperrt alle Aktionen mit HTTP 403 FENSTERBILANZ;OK=0;ERR=ENDPUNKT_AUS - der
+ * Selbsttest bleibt erreichbar, er liefert keine Werte.
+ *
  * WARUM AUCH DIE ABFRAGENDEN AUFRUFE EIN TOKEN VERLANGEN: in der Antwort
  * stehen Raumtemperaturen und Sollwerte. Das ist kein Betriebsgeheimnis,
  * aber es sagt jedem im Heimnetz, ob jemand zu Hause ist und wie er wohnt.
@@ -62,15 +69,24 @@ $fb_ist  = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token']
 /* Der leere Fall VOR dem Vergleich: hash_equals('', '') ist true, und der
  * Endpunkt stuende sonst genau auf der Anlage offen, bei der noch nie
  * jemand die Oberflaeche geoeffnet hat. */
+/* Gruppe 36 (0.12.20): nur selftest=1 ist der Selbsttest (bis 0.12.19 genuegte isset(), auch ?selftest=0). */
+$fb_selftest = (isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'] === '1');
 if ($fb_soll === '') {
     http_response_code(403);
+    if ($fb_selftest) {
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        echo "#EOF\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Wortzeichen.\n";
     exit;
 }
 if (!hash_equals($fb_soll, $fb_ist)) {
     http_response_code(403);
-    echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    /* Gruppe 36 (0.12.20, E-E9): Hausform mit Linienwort wie Smartmeter 2.8.13; der Selbsttest bekommt seine eigene. */
+    echo $fb_selftest ? "SELFTEST;OK=0;ERR=TOKEN\n" : "FENSTERBILANZ;OK=0;ERR=TOKEN\n";
+    echo "#EOF\n";
     /* HIER WIRD ABSICHTLICH NICHT PROTOKOLLIERT, und das ist eine
      * Entscheidung, keine Luecke.
      *
@@ -86,10 +102,10 @@ if (!hash_equals($fb_soll, $fb_ist)) {
 }
 
 /* Der Selbsttest beantwortet die Tokenfrage, ohne etwas auszuloesen. */
-if (isset($_GET['selftest'])) {
+if ($fb_selftest) {
     $fb_s = fb_stand();
     $fb_m = fb_messwerte();
-    echo "SELBSTTEST;OK=1\n";
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
     echo 'Plugin-Ordner      : ' . fb_paths()['plugin'] . "\n";
     echo 'PHP                : ' . PHP_VERSION . "\n";
     echo 'Standort gesetzt   : ' . ((abs((float) $fb_cfg['breite']) > 0.001
@@ -100,6 +116,18 @@ if (isset($_GET['selftest'])) {
           ? date('Y-m-d H:i:s', (int) $fb_s['ts']) : 'noch nie') . "\n";
     echo 'Werteliste         : ' . (isset($fb_s['felder']) ? count($fb_s['felder']) : 0)
           . " Felder\n";
+    echo 'Endpunkt (Aktionen): ' . (empty($fb_cfg['endpunkt_ein']) ? 'aus' : 'an') . "\n";
+    echo "#EOF\n";
+    exit;
+}
+
+/* Gruppe 36 (0.12.20, E-E10): der Schalter endpunkt_ein. Neuinstallation aus (die Werte gehen ueber das MQTT-Gateway
+ * V2), eine bestehende Anlage behaelt ihn beim Update (postupgrade.sh: fehlt = an). Nach der Tokenpruefung: ein
+ * falsches Token bekommt weiter dieselbe Abweisung wie sonst. */
+if (empty($fb_cfg['endpunkt_ein'])) {
+    http_response_code(403);
+    echo "FENSTERBILANZ;OK=0;ERR=ENDPUNKT_AUS\n";
+    echo "#EOF\n";
     exit;
 }
 

@@ -1029,6 +1029,8 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_cfg['sonne_teilen'] = !empty($_POST['sonne_teilen']) ? 1 : 0;
     /* Gruppe 3 / MQTT (0.12.19): der Haken der Befehlsbruecke, im selben Formular, ab Werk aus. */
     $fb_cfg['befehle_mqtt_ein'] = !empty($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    /* Gruppe 36 (0.12.20, E-E10): der Schalter des HTTP-Endpunkts, im selben Formular. */
+    $fb_cfg['endpunkt_ein'] = !empty($_POST['endpunkt_ein']) ? 1 : 0;
     /* Gegen den ROHEN Wert pruefen, nicht gegen den gesaeuberten. Sonst
      * wird "haus fenster" beanstandet und "haus\"fenster" stillschweigend
      * zu "hausfenster" - dieselbe Eingabeart, zweierlei Verhalten.
@@ -1235,8 +1237,8 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
     } elseif ((int) $_FILES['fb_sicherung']['size'] > 262144) {
         $fb_fehler[] = fb_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($fb_neu, $fb_mangel, $fb_n, $fb_s_info) = fb_sicherung_lesen(
-            (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']));
+        $fb_s_inhalt = (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']);
+        list($fb_neu, $fb_mangel, $fb_n, $fb_s_info) = fb_sicherung_lesen($fb_s_inhalt);
         if ($fb_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert
              * wird nichts. */
@@ -1247,13 +1249,29 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
              * war dieser hier der einzige ohne beides, und dabei ersetzt er
              * als einziger die GANZE Konfiguration. */
             $fb_sp = fb_config_sperre();
+            /* Gruppe 36 (0.12.20, Pruefbericht T1-A; Entwurf 4.3): der Stand VOR dem Zurueckspielen, unter der Sperre
+             * gelesen - fuer das Wortzeichen, den Endpunkt-Schalter, den verlassenen Praefix und das Abraeumen. */
+            $fb_vorher = fb_config();
             /* C1: "kein Wortzeichen gesichert" - das geltende bleibt, unter
              * der Sperre gelesen. Bis 0.12.10 wurde im selben Aufruf still
              * ein neues gewuerfelt (gemessen, Code-Pruefer Nr. 2). */
             if (!empty($fb_s_info['token_leer'])) {
-                $fb_neu['aktionstoken'] = fb_config()['aktionstoken'];
+                $fb_neu['aktionstoken'] = $fb_vorher['aktionstoken'];
             }
-            $fb_ok_s = fb_config_speichern(fb_config_richten($fb_neu));
+            /* Gruppe 36 (0.12.20): eine Sicherung bis 0.12.19 kennt endpunkt_ein nicht - dann bleibt der geltende Wert,
+             * eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
+            $fb_s_roh = json_decode($fb_s_inhalt, true);
+            if (!is_array($fb_s_roh) || !array_key_exists('endpunkt_ein', $fb_s_roh)) {
+                $fb_neu['endpunkt_ein'] = (int) $fb_vorher['endpunkt_ein'];
+            }
+            $fb_neu = fb_config_richten($fb_neu);
+            /* T1-A: wechselt der Praefix bei eingeschaltetem MQTT, wird der verlassene vermerkt (mqtt_praefix_alt, wie
+             * speichern_mqtt) - die Deinstallation leert ihn ein zweites Mal. */
+            $fb_p_alt = (string) $fb_vorher['mqtt_topic'];
+            if (!empty($fb_vorher['mqtt_ein']) && $fb_neu['mqtt_topic'] !== $fb_p_alt) {
+                $fb_neu['mqtt_praefix_alt'] = $fb_p_alt;
+            }
+            $fb_ok_s = fb_config_speichern($fb_neu);
             if ($fb_sp !== null) { fb_config_freigeben($fb_sp); }
             if ($fb_ok_s) {
                 $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
@@ -1267,6 +1285,26 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
                 /* Das Merkmal haengt am Aktionstoken und wechselt mit ihm -
                  * wortgleich zum Handler token_neu. */
                 $fb_merkmal = fb_formtoken();
+                /* Gruppe 36 (0.12.20, T1-A): dieselben Folgeschritte wie speichern_mqtt - Abodatei, Befehlsbruecke
+                 * sofort schalten, bei Praefixwechsel bzw. abgeschaltetem MQTT unter dem BISHERIGEN Praefix abraeumen
+                 * und beim Broker nachlesen (fb_mqtt_abraeumen(), Arten leer/geleert/rest/ungeprueft). Ausserhalb der
+                 * Sperre: es kann einige Sekunden dauern. */
+                fb_abo_datei($fb_neu['mqtt_topic'], true);
+                list($fb_brc, $fb_bart, $fb_baus) = fb_bruecke_schalten($fb_neu);
+                if ($fb_bart === 'start') {
+                    $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_EIN') : sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
+                } elseif ($fb_bart === 'stop') {
+                    $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_AUS') : sprintf(fb_t('BEFEHL.M_STOP_FEHL'), $fb_baus);
+                } elseif ($fb_brc === 1) {
+                    $fb_meldungen[] = sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
+                }
+                if (!empty($fb_vorher['mqtt_ein'])) {
+                    if ($fb_neu['mqtt_topic'] !== $fb_p_alt) {
+                        $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_vorher, 'Zurueckspielen');
+                    } elseif (empty($fb_neu['mqtt_ein'])) {
+                        $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_vorher, 'Zurueckspielen, MQTT aus');
+                    }
+                }
                 /* Und der Dienst wird nachgezogen: sonst stuende bis zum
                  * naechsten Cron-Lauf das Urteil der alten Fensterliste da.
                  * C6: gemeldet wird, was geschah (Code-Pruefer Nr. 8). */
@@ -1614,6 +1652,16 @@ window.addEventListener('resize', fbRollbalken);
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $fb_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 <div class="sm-hinweis"><?= fb_t('EINST.WAS_IST_DAS') ?></div>
+<?php /* Gruppe 36 (0.12.20, Regeln/04): EINE gesammelte Legende oben im Reiter - genau die Farben der
+   Knoepfe dieses Reiters (lesen, technisch, schaltend). Bis 0.12.19 stand je Knopfreihe eine eigene. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_PROJEKT') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.SICH_ZURUECK') ?></span>
+</div>
 
 <h2><?= fb_e(fb_t('EINST.H_LAGE')) ?></h2>
 <div class="sm-step"><?= fb_t('EINST.LAGE_ERKLAERUNG') ?></div>
@@ -1876,9 +1924,6 @@ window.addEventListener('resize', fbRollbalken);
   <span class="sm-hilfe"><?= fb_e(fb_abwerk('pv_abweichung')) ?></span>
   <p class="sm-hilfe"><?= fb_t('EINST.H_PV_ABWEICHUNG') ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_modell" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1949,9 +1994,6 @@ if ($fb_ohne_flaeche) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('EINST.FLAECHE_VORGABE'),
     count($fb_ohne_flaeche), fb_e(fb_liste_kurz($fb_ohne_flaeche))) ?></div>
 <?php } ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_fenster" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1972,9 +2014,6 @@ if ($fb_luecke_da) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
 <div class="sm-hinweis"><?= fb_t('EINST.LUECKEN_ERKLAERUNG') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="luecken_schliessen" value="1"><?= fb_e(fb_t('EINST.K_LUECKEN')) ?></button>
 </div>
@@ -2067,10 +2106,6 @@ if (!$fb_r_liste) { ?>
     $fb_rechner['werte']['hoehe_mitte'], $fb_rechner['werte']['hoehe_kante'],
     fb_e($fb_rechner['text'])) ?></div>
 <?php } ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="horizont_rechnen" value="1"><?= fb_e(fb_t('EINST.R_K_RECHNEN')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="horizont_eintragen" value="1"><?= fb_e(fb_t('EINST.R_K_EINTRAGEN')) ?></button>
@@ -2128,9 +2163,6 @@ if (!$fb_raeume_benutzt) { ?>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= fb_t('EINST.RAEUME_HILFE') ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_raeume" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -2189,9 +2221,6 @@ $fb_reicht = $fb_gr['grenze'] >= 3 * 1048576;
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="auszug_skript" value="1"><?= fb_e(fb_t('PROJEKT.K_SKRIPT')) ?></button>
 </div>
@@ -2203,9 +2232,6 @@ $fb_reicht = $fb_gr['grenze'] >= 3 * 1048576;
   <label for="fb_auszug"><?= fb_e(fb_t('PROJEKT.L_AUSZUG')) ?></label>
   <textarea data-role="none" id="fb_auszug" name="auszug" rows="4" cols="80" spellcheck="false"></textarea>
   <p class="sm-hilfe"><?= fb_t('PROJEKT.H_AUSZUG_FELD') ?></p>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="auszug_lesen" value="1"><?= fb_e(fb_t('PROJEKT.K_AUSZUG')) ?></button>
@@ -2291,9 +2317,6 @@ $fb_host = preg_replace('/:\d+$/', '', $fb_host);
   <input data-role="none" type="hidden" id="fb_d_ordner" name="d_ordner" value="<?= (int) $fb_dateien[0]['ordner'] ?>">
   <p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.H_ORDNERDATEI'), count($fb_dateien)) ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="projekt_datei" value="1"><?= fb_e(fb_t('PROJEKT.K_ORDNER')) ?></button>
 </div>
@@ -2321,9 +2344,6 @@ function fbOrdnerSetzen(sel) {
   <p class="sm-hilfe"><?= sprintf(fb_t('PROJEKT.H_DATEI'),
       fb_e($fb_gr['upload_max_filesize'][0]), fb_e($fb_gr['post_max_size'][0])) ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_PROJEKT') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="projekt_lesen" value="1"><?= fb_e(fb_t('PROJEKT.K_LESEN')) ?></button>
 </div>
@@ -2342,9 +2362,6 @@ function fbOrdnerSetzen(sel) {
     <td><?= fb_e($fb_x['titel']) ?></td></tr>
 <?php } ?>
 </table>
-</div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_PROJEKT') ?></span>
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
@@ -2365,12 +2382,6 @@ $fb_alt_w = fb_rueckspiel_altwerte();
 if ($fb_alt_w) { ?>
 <div class="sm-warnung" id="fb_sich_altwerte"><?= sprintf(fb_t('EINST.SICH_ALTWERTE'), fb_e(implode(', ', $fb_alt_w))) ?></div>
 <?php } ?>
-<!-- Legende: keine Knopfreihe ohne sie. Der orange Knopf ersetzt die
-     GANZE Konfiguration - zwei Farben ohne Erklaerung sind hier zu wenig. -->
-<div class="sm-legende">
-  <span><i class="sm-punkt sm-b-lesen"></i> <?= fb_e(fb_t('LEGENDE.LESEN')) ?></span>
-  <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_e(fb_t('LEGENDE.SICH_ZURUECK')) ?></span>
-</div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -2394,6 +2405,11 @@ if ($fb_alt_w) { ?>
 <div class="sm-seite<?= $fb_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2>MQTT</h2>
 <div class="sm-step"><?= fb_t('MQTT.ERKLAERUNG') ?></div>
+<?php /* Gruppe 36 (0.12.20, Regeln/04): EINE gesammelte Legende oben im Reiter - genau die Farben der
+   Knoepfe dieses Reiters (lesen, technisch, schaltend). Bis 0.12.19 stand je Knopfreihe eine eigene. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+</div>
 <?php if (!$fb_mqtt['gefunden']) { ?>
 <div class="sm-warnung"><?= fb_t('MQTT.NICHT_GEFUNDEN') ?></div>
 <?php } elseif (!$fb_mqtt['autostart']) { ?>
@@ -2435,8 +2451,10 @@ if ($fb_alt_w) { ?>
   <label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= fb_eingabe_an('mqtt', 'befehle_mqtt_ein', $fb_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.BEFEHLE_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('MQTT.BEFEHLE_HILFE') ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_SPEICHERN') ?></span>
+<?php /* Gruppe 36 (0.12.20, E-E10): der Schalter des HTTP-Endpunkts (Bestandsweg). */ ?>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="endpunkt_ein" value="1"<?= fb_eingabe_an('mqtt', 'endpunkt_ein', $fb_cfg['endpunkt_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.ENDPUNKT_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('MQTT.ENDPUNKT_HILFE') ?></p>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_mqtt" value="1"><?= fb_e(fb_t('ALLG.SPEICHERN')) ?></button>
@@ -2506,6 +2524,12 @@ list($fb_bl_ok, $fb_bl_txt) = fb_bruecke_lage(); ?>
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $fb_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= fb_e(fb_t('LOX.H')) ?></h2>
+<?php /* Gruppe 36 (0.12.20, Regeln/04): EINE gesammelte Legende oben im Reiter - genau die Farben der
+   Knoepfe dieses Reiters (lesen, technisch, schaltend). Bis 0.12.19 stand je Knopfreihe eine eigene. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_TOKEN') ?></span>
+</div>
 <?php
 /* Gruppe 3 / MQTT (0.12.19; Musterprojekt/entwurf_gruppe3_fb.txt 2.5 und 3.3, Nachtrag 2 Gruppe 1): MQTT ist der Weg
  * des Musterprojekts (Schritte 1-7); der bisherige HTTP-Weg steht unten zugeklappt unter "Bestehende Anlagen". Alle
@@ -2635,10 +2659,9 @@ list($fb_eb_bl, $fb_eb_bl_fehl) = fb_bruecke_liste(); ?>
 <?php } ?>
 </table></div>
 <p class="sm-hilfe"><?= fb_e(fb_t('BEFEHL.SPERRE')) ?></p>
+<?php /* Gruppe 36 (0.12.20, T2-A): die Spalte zeigt die Konfigurationssicht; zeitweise Pflicht steht hier. */ ?>
+<p class="sm-hilfe" id="eb-zeitweise"><?= fb_e(sprintf(fb_t('BEFEHL.ZEITWEISE'), (int) $fb_cfg['vorabend_ab'])) ?></p>
 <p class="sm-hilfe"><?= sprintf(fb_t('BEFEHL.QUITTUNG_H'), fb_e($fb_eb_bl['lebenszeichen'])) ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -2779,9 +2802,6 @@ if (!empty($fb_cfg['stellung_ein'])) {
 <?php if (!$fb_raeume) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('LOX.KEINE_RAEUME'), count(fb_messgroessen())) ?></div>
 <?php } ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -2844,9 +2864,6 @@ $fb_adressen = array(
 
 <h3><?= fb_e(fb_t('LOX.H_ALLES')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.ALLES_TEXT') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK_XML') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -2860,9 +2877,6 @@ $fb_adressen = array(
 
 <h3><?= fb_e(fb_t('LOX.H_TOKEN')) ?></h3>
 <div class="sm-step"><?= fb_t('LOX.TOKEN_TEXT') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_TOKEN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -2877,8 +2891,11 @@ $fb_adressen = array(
 <div class="sm-seite<?= $fb_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= fb_e(fb_t('TEST.H')) ?></h2>
 <div class="sm-step"><?= fb_t('TEST.ERKLAERUNG') ?></div>
+<?php /* Gruppe 36 (0.12.20, Regeln/04): EINE gesammelte Legende oben im Reiter - genau die Farben der
+   Knoepfe dieses Reiters (lesen, technisch, schaltend). Bis 0.12.19 stand je Knopfreihe eine eigene. */ ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN') ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_WASWARE') ?></span>
 <span><i class="sm-punkt sm-b-technik"></i> <?= fb_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_RECHNEN') ?></span>
 </div>
@@ -2978,9 +2995,6 @@ $fb_adressen = array(
 </tr>
 </table>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= fb_t('LEGENDE.LESEN_WASWARE') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="wasware" value="1"><?= fb_e(fb_t('TEST.K_WASWARE')) ?></button>
 </div>
@@ -2988,9 +3002,6 @@ $fb_adressen = array(
 
 <h3><?= fb_e(fb_t('TEST.H_RECHNEN')) ?></h3>
 <p class="sm-hilfe"><?= fb_t('TEST.RECHNEN_ERKLAERUNG') ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_RECHNEN') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -3006,6 +3017,11 @@ $fb_adressen = array(
 <!-- ================= Reiter: Logdateien ================= -->
 <div class="sm-seite<?= $fb_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= fb_e(fb_t('LOG.H')) ?></h2>
+<?php /* Gruppe 36 (0.12.20, Regeln/04): EINE gesammelte Legende oben im Reiter - genau die Farben der
+   Knoepfe dieses Reiters (lesen, technisch, schaltend). Bis 0.12.19 stand je Knopfreihe eine eigene. */ ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_LOG') ?></span>
+</div>
 <p class="sm-hilfe"><?= fb_t('LOG.ERKLAERUNG') ?>
 <span class="sm-mono"><?= fb_e($fb_p['log']) ?></span></p>
 <?php if ($fb_logzeilen) { ?>
@@ -3013,9 +3029,6 @@ $fb_adressen = array(
 <?php } else { ?>
 <div class="sm-hinweis"><?= fb_t('LOG.LEER') ?></div>
 <?php } ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i> <?= fb_t('LEGENDE.AKTION_LOG') ?></span>
-</div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
@@ -3035,6 +3048,12 @@ if (is_file($fb_cronerr) && filesize($fb_cronerr) > 0) { ?>
 <h3><?= fb_e(fb_t('LOG.H_CRONERR')) ?></h3>
 <p class="sm-hilfe"><?= fb_t('LOG.CRONERR_ERKLAERUNG') ?> <span class="sm-mono"><?= fb_e($fb_cronerr) ?></span></p>
 <div class="sm-log"><?= fb_e(implode("\n", fb_log_ende($fb_cronerr, 100))) ?></div>
+<?php } ?>
+<?php /* Gruppe 36 (0.12.20, Pruefbericht T1-D 3; Regeln/04 :168): die Logdateien des LoxBerry-Protokollsystems
+   (LoxBerry::Web::loglist_html()) - unter dem eigenen Protokoll, das seinen Knopf "Protokoll leeren" behaelt. */
+if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) { ?>
+<h3><?= fb_e(fb_t('LOG.H_LOXBERRY')) ?></h3>
+<?php echo LBWeb::loglist_html(); ?>
 <?php } ?>
 </div>
 

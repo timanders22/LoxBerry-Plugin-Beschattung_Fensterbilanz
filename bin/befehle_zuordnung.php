@@ -25,10 +25,21 @@
  * Die Datei setzt keine Konfiguration und schreibt nichts.
  */
 if (!function_exists('fb_config')) {
+    /* Gruppe 36 (0.12.20, Pruefbericht T3-A; Bauform FerienFeiertage 1.2.28 FE14 / Abfahrts-Assistent 1.6.31):
+     * ausdruecklich LBHOMEDIR + LBPPLUGINDIR (Pruefstaende) zuerst, dann installiert (bin/plugins/<ordner> ->
+     * webfrontend/html/plugins/<ordner>) ODER Archiv (bin/ neben webfrontend/). Bis 0.12.19 fand ein Pruefstand mit
+     * bin/ ausserhalb des Baums die Bibliothek nicht ("Bibliothek der Linie nicht geladen", Probe t3a Fall B). */
+    $fb_kand = array();
+    $fb_lb = (string) getenv('LBHOMEDIR');
+    $fb_ordner = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    if ($fb_lb !== '' && $fb_ordner !== ''
+        && !in_array($fb_ordner, array('.', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend'), true)) {
+        $fb_kand[] = $fb_lb . '/webfrontend/html/plugins/' . $fb_ordner . '/fb_lib.php';
+    }
     if (basename(dirname(__DIR__)) === 'plugins') {
-        $fb_kand = array(dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/fb_lib.php');
+        $fb_kand[] = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/fb_lib.php';
     } else {
-        $fb_kand = array(dirname(__DIR__) . '/webfrontend/html/fb_lib.php');
+        $fb_kand[] = dirname(__DIR__) . '/webfrontend/html/fb_lib.php';
     }
     foreach ($fb_kand as $fb_k) {
         if (is_file($fb_k)) { require_once $fb_k; break; }

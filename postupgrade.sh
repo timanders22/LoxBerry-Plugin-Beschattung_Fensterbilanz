@@ -89,6 +89,32 @@ for R in "$BASE"/data/plugins/"$PFOLDER".rettung.*.json; do
     [ -f "$R" ] && UEBRIG=$((UEBRIG+1))
 done
 
+# ---------- Gruppe 36 (0.12.20, E-E10): der Schalter endpunkt_ein ----------
+# Neu in 0.12.20: der HTTP-Endpunkt hat einen Schalter, bei einer Neuinstallation aus (die Werte gehen ueber das
+# MQTT-Gateway V2). Eine bestehende Anlage behaelt ihren Weg: fehlt der Schluessel nach dem Zurueckspielen, wird er hier
+# auf 1 gesetzt (fehlt = an). Ein vorhandener Wert bleibt, wie er ist. Geschrieben wird ueber eine Zwischendatei im
+# selben Ordner und rename, 0600 wie die Konfiguration. Eine Konfiguration ohne Inhalt ('{}') bleibt unberuehrt.
+EP_CF="$BASE/config/plugins/$PFOLDER/fensterbilanz.json"
+if [ -s "$EP_CF" ] && command -v php >/dev/null 2>&1; then
+    EP=$(php -r '
+        $f = $argv[1];
+        $d = json_decode((string) @file_get_contents($f), true);
+        if (!is_array($d) || !$d) { echo "leer"; exit(0); }
+        if (array_key_exists("endpunkt_ein", $d)) { echo "da"; exit(0); }
+        $d["endpunkt_ein"] = 1;
+        $j = json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $t = $f . ".neu";
+        if ($j === false || @file_put_contents($t, $j . "\n") === false) { echo "fehler"; exit(0); }
+        @chmod($t, 0600);
+        echo @rename($t, $f) ? "gesetzt" : "fehler";
+    ' -- "$EP_CF" 2>/dev/null)
+    case "$EP" in
+        gesetzt) echo "<INFO> HTTP-Endpunkt: bleibt eingeschaltet wie vor dem Update (endpunkt_ein=1; abschalten im Reiter MQTT)." ;;
+        da|leer) ;;
+        *) echo "<WARNING> HTTP-Endpunkt: der Schalter endpunkt_ein liess sich nicht setzen - der Endpunkt antwortet bis zum Haken im Reiter MQTT mit ENDPUNKT_AUS." ;;
+    esac
+fi
+
 echo "<OK> postupgrade abgeschlossen - beim naechsten Lauf wird frisch gerechnet."
 if [ -z "$ZAHL" ]; then
     echo "<INFO> Wie viele Messreihen zurueckgeholt wurden, ist nicht feststellbar (postinstall.sh"

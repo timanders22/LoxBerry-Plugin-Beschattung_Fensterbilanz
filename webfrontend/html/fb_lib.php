@@ -454,6 +454,11 @@ function fb_vorgaben()
          * Befehlsbruecke - die Messwerte aus Loxone kommen damit ueber MQTT herein. AB WERK AUS (Hausstandard,
          * gemeinsam E13); einen zweiten Haken gibt es nicht, weil kein Befehl etwas schaltet. */
         'befehle_mqtt_ein' => 0,
+        /* Gruppe 36 (0.12.20, Pruefbericht E4, E-E10): der HTTP-Endpunkt (webfrontend/html/index.php) hat einen
+         * Schalter. Bei einer NEUINSTALLATION aus - die Werte gehen ueber das MQTT-Gateway V2 (Haken darueber). Eine
+         * bestehende Anlage bekommt beim Update 1 (postupgrade.sh: fehlt = an), ihr HTTP-Weg bleibt. Aus heisst
+         * HTTP 403 FENSTERBILANZ;OK=0;ERR=ENDPUNKT_AUS; der Selbsttest ?selftest=1 bleibt erreichbar. */
+        'endpunkt_ein'   => 0,
         'aktionstoken'   => '',
         /* M4 (Durchgang 30.09.2026): das zuletzt verlassene Themenpraefix.
          * Beim Praefixwechsel werden die zurueckbehaltenen Themen darunter
@@ -525,8 +530,8 @@ function fb_messgroessen()
  * Welche Messgroessen sind bei DIESER Konfiguration Pflicht?
  *
  * 'prognose1' wird erst gebraucht, wenn der Vorabend-Term eingeschaltet ist;
- * 'aussen' erst, wenn die Nachtdaemmung laeuft; 'pv_prognose' erst bei
- * eingeschalteter Gegenprobe. Eine feste Spalte in fb_messgroessen() haette
+ * 'aussen' erst, wenn die Nachtdaemmung laeuft; 'pv_prognose' seit 0.12.20 nie
+ * (Gruppe 36). Was in EINEM Lauf gebraucht wird, sagt fb_messgroessen_noetig(). Eine feste Spalte in fb_messgroessen() haette
  * entweder zu viel verlangt oder zu wenig - und beides faellt erst auf, wenn
  * jemand eine Funktion einschaltet.
  */
@@ -538,8 +543,37 @@ function fb_messgroessen_pflicht($cfg)
     }
     if ((int) $cfg['gewicht_morgen'] > 0) { $pflicht[] = 'prognose1'; }
     if (!empty($cfg['daemmen_ein']))      { $pflicht[] = 'aussen'; }
-    if (!empty($cfg['pv_gegenprobe']))    { $pflicht[] = 'pv_prognose'; }
+    /* Gruppe 36 (0.12.20, Entscheidung 1): pv_prognose ist NIE Pflicht - sie greift nie ins Urteil ein (Vorgabe
+     * pv_gegenprobe, H_PV_GEGENPROBE). Fehlt sie, ruht die Gegenprobe, und der Reiter Test sagt es. */
     return array_values(array_unique($pflicht));
+}
+
+/**
+ * Gruppe 36 (0.12.20, T2-A, Entscheidung 1 Vorschlag 1; Entwurf 4.1): die Messgroessen, die in DIESEM Lauf gebraucht
+ * werden - EINE Liste fuer die Sperre, fuer fehlend/ok/meldung (fb_rechnen()) und fuer den Reiter Test
+ * (fb_probe_messwerte()). Bis 0.12.19 sperrte die Konfigurationsliste (fb_messgroessen_pflicht()), gemeldet wurde aber
+ * nur die feste Pflichtspalte: ein fehlender Zusatzwert nahm still die Beschattung (ok=1, meldung leer, alle Fenster
+ * keine_daten; Pruefbericht T2-A, Probe t2a.php).
+ *   immer:     die Pflichtspalte von fb_messgroessen() (strahlung, prognose);
+ *   prognose1: wenn der Vorabendteil ein Gewicht hat UND die Stunde >= vorabend_ab ist (vorher wird er nie gelesen);
+ *   aussen:    wenn die Nachtdaemmung an ist UND die Sonne nicht ueber dem Horizont steht (dieselbe Bedingung wie die
+ *              Daemmung in fb_rechnen());
+ *   pv_prognose nie.
+ * fb_messgroessen_pflicht() bleibt die KONFIGURATIONSSICHT (Spalte "Pflicht" der Befehle, Reiter Einbindung).
+ */
+function fb_messgroessen_noetig($cfg, $jetzt, $sonne_hoehe)
+{
+    $noetig = array();
+    foreach (fb_messgroessen() as $name => $info) {
+        if ($info[0]) { $noetig[] = $name; }
+    }
+    if ((int) $cfg['gewicht_morgen'] > 0 && (int) date('G', (int) $jetzt) >= (int) $cfg['vorabend_ab']) {
+        $noetig[] = 'prognose1';
+    }
+    if (!empty($cfg['daemmen_ein']) && $sonne_hoehe !== null && (float) $sonne_hoehe <= 0.0) {
+        $noetig[] = 'aussen';
+    }
+    return $noetig;
 }
 
 /**
@@ -806,7 +840,7 @@ function fb_fenster_zahlfelder()
 function fb_haken_felder()
 {
     return array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe',
-                 'lernen_ein', 'mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein');
+                 'lernen_ein', 'mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein');
 }
 
 function fb_haken_ok($w)
@@ -1022,6 +1056,7 @@ function fb_config_richten($cfg)
                              ? (string) $cfg['himmelsmodell'] : 'isotrop';
     $cfg['mqtt_ein']       = empty($cfg['mqtt_ein']) ? 0 : 1;
     $cfg['befehle_mqtt_ein'] = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;   // Gruppe 3 / MQTT
+    $cfg['endpunkt_ein']   = empty($cfg['endpunkt_ein']) ? 0 : 1;   // Gruppe 36 (0.12.20)
     $cfg['sonne_teilen']   = empty($cfg['sonne_teilen']) ? 0 : 1;   // Sonne-1
     $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower(is_string($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''));
     /* M9 (Durchgang 30.09.2026): doppelte Schraegstriche zusammenziehen wie
@@ -1326,7 +1361,7 @@ function fb_eingabe_felder($form)
             'haken' => array('f_aktiv', 'f_raumwerte', 'f_daemmen'),
         ),
         'raeume' => array('text' => array('r_qm'), 'haken' => array()),
-        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein')),
+        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein')),
         'rechner' => array(
             'text'  => array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite'),
             'haken' => array('h_ersetzen'),
@@ -1938,10 +1973,12 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
     $ha = (int) $cfg['hoechstalter'];
     $fehlend = array();
     $werte = array();
+    /* Gruppe 36 (0.12.20, T2-A): fehlend, ok, meldung UND die Sperre unten aus derselben Liste. */
+    $noetig = fb_messgroessen_noetig($cfg, $jetzt, $sonne['hoehe']);
     foreach (fb_messgroessen() as $name => $info) {
         list($w, $alter) = fb_messwert($messwerte, $name, $ha, $jetzt);
         $werte[$name] = $w;
-        if ($w === null && $info[0]) { $fehlend[] = $name; }
+        if ($w === null && in_array($name, $noetig, true)) { $fehlend[] = $name; }
     }
     $stand['aussen']    = $werte['aussen'] === null ? -99 : round($werte['aussen'], 1);
     $stand['prognose']  = $werte['prognose'] === null ? -99 : round($werte['prognose'], 1);
@@ -2007,7 +2044,7 @@ function fb_rechnen($cfg, $messwerte, $jetzt, $vorher = array(), $bilanz = array
      * setzt, bekommt die Sperre ohne weiteres Zutun - und die beiden Listen
      * koennen nicht mehr auseinanderlaufen. */
     $pflicht_fehlt = false;
-    foreach (fb_messgroessen_pflicht($cfg) as $fb_n) {
+    foreach ($noetig as $fb_n) {     // Gruppe 36 (0.12.20, T2-A): dieselbe Liste wie fehlend
         if (!isset($werte[$fb_n]) || $werte[$fb_n] === null) { $pflicht_fehlt = true; }
     }
 
@@ -3397,7 +3434,7 @@ function fb_abo_datei($praefix, $schreiben = false)
     return array($pfad, $da);
 }
 
-function fb_mqtt_themen()
+function fb_mqtt_themen($cfg = null)
 {
     $t = array(
         'ok'                 => 'FB_MQTT.OK',
@@ -3423,15 +3460,18 @@ function fb_mqtt_themen()
         'status/ts'             => 'FB_MQTT.STATUS_TS',
         'status/zaehler'        => 'FB_MQTT.STATUS_ZAEHLER',
     );
-    $cfg = fb_config(false);
+    /* Gruppe 36 (0.12.20, Pruefbericht T2-C): die Zweige nach der UEBERGEBENEN Konfiguration; ohne sie die
+     * gespeicherte. Bis 0.12.19 las diese Funktion immer fb_config(false), und fb_mqtt_themen_fuer() fuehrte die Zweige
+     * ein zweites Mal von Hand. */
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
     if ((int) $cfg['vorschau'] > 0) {
         $t['beschatten30_anzahl']  = 'FB_MQTT.BESCHATTEN30';
         $t['<kuerzel>/urteil30']     = 'FB_MQTT.F_URTEIL30';
         $t['<kuerzel>/beschatten30'] = 'FB_MQTT.F_BESCHATTEN30';
     }
     $blendet = false;
-    foreach ($cfg['fenster'] as $fe) {
-        if ((int) $fe['blend_hoehe'] > 0) { $blendet = true; break; }
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $fe) {
+        if (is_array($fe) && isset($fe['blend_hoehe']) && (int) $fe['blend_hoehe'] > 0) { $blendet = true; break; }
     }
     if ($blendet) {
         $t['blendung_anzahl'] = 'FB_MQTT.BLENDUNG';
@@ -3526,8 +3566,9 @@ function fb_mqtt_nachrichten($cfg, $stand, $zaehler = null)
     $m['wh_tag']    = isset($stand['wh_tag']) ? (int) $stand['wh_tag'] : 0;
     /* Welche Zweige es gibt, entscheidet DIESELBE Funktion, die auch die
      * Tabelle im Reiter MQTT fuellt - sonst laufen Anleitung und Wirklichkeit
-     * auseinander. Die Kongruenzprobe im Reiter Test haelt beide gegeneinander. */
-    $themen = fb_mqtt_themen();
+     * auseinander. Die Kongruenzprobe im Reiter Test haelt beide gegeneinander. Seit 0.12.20 mit derselben $cfg
+     * (Gruppe 36, T2-C). */
+    $themen = fb_mqtt_themen($cfg);
     if (isset($themen['beschatten30_anzahl'])) {
         $m['beschatten30_anzahl'] = isset($stand['beschatten30_anzahl'])
             ? (int) $stand['beschatten30_anzahl'] : 0;
@@ -6248,7 +6289,9 @@ function fb_sicherung_freiwillig()
      * Richtung, eine eingerichtete Anlage aendert dadurch nichts. */
     /* Gruppe 3 / MQTT (0.12.19): 'befehle_mqtt_ein' kennen Sicherungen bis 0.12.18 nicht. Fehlt er, gilt die
      * Vorgabe 0 (aus) - die harmlose Richtung, der HTTP-Weg einer eingerichteten Anlage bleibt unberuehrt. */
-    return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein');
+    /* Gruppe 36 (0.12.20): 'endpunkt_ein' kennen Sicherungen bis 0.12.19 nicht. Fehlt er, behaelt das Zurueckspielen
+     * den geltenden Wert (htmlauth/index.php, fb_zurueck) - eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
+    return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein');
 }
 
 /**
@@ -6593,35 +6636,8 @@ function fb_mqtt_namen($cfg = null)
  */
 function fb_mqtt_themen_fuer($cfg)
 {
-    $t = fb_mqtt_themen();
-    foreach (array('beschatten30_anzahl', '<kuerzel>/urteil30', '<kuerzel>/beschatten30', 'blendung_anzahl',
-                   '<kuerzel>/blendung', 'daemmen_anzahl', '<kuerzel>/daemmen', 'nicht_gefahren',
-                   '<kuerzel>/gefahren', 'pv_abweichung', 'bericht') as $weg) {
-        unset($t[$weg]);
-    }
-    if ((int) $cfg['vorschau'] > 0) {
-        $t['beschatten30_anzahl']  = 'FB_MQTT.BESCHATTEN30';
-        $t['<kuerzel>/urteil30']     = 'FB_MQTT.F_URTEIL30';
-        $t['<kuerzel>/beschatten30'] = 'FB_MQTT.F_BESCHATTEN30';
-    }
-    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $fe) {
-        if (is_array($fe) && (int) $fe['blend_hoehe'] > 0) {
-            $t['blendung_anzahl'] = 'FB_MQTT.BLENDUNG';
-            $t['<kuerzel>/blendung'] = 'FB_MQTT.F_BLENDUNG';
-            break;
-        }
-    }
-    if (!empty($cfg['daemmen_ein'])) {
-        $t['daemmen_anzahl'] = 'FB_MQTT.DAEMMEN';
-        $t['<kuerzel>/daemmen'] = 'FB_MQTT.F_DAEMMEN';
-    }
-    if (!empty($cfg['stellung_ein'])) {
-        $t['nicht_gefahren'] = 'FB_MQTT.NICHT_GEFAHREN';
-        $t['<kuerzel>/gefahren'] = 'FB_MQTT.F_GEFAHREN';
-    }
-    if (!empty($cfg['pv_gegenprobe'])) { $t['pv_abweichung'] = 'FB_MQTT.PV_ABW'; }
-    if (!empty($cfg['bericht_ein']))   { $t['bericht'] = 'FB_MQTT.BERICHT'; }
-    return $t;
+    /* Gruppe 36 (0.12.20, T2-C): nur noch ein Name fuer fb_mqtt_themen($cfg) - die Zweige stehen an EINER Stelle. */
+    return fb_mqtt_themen($cfg);
 }
 
 /**
@@ -6798,7 +6814,7 @@ function fb_bruecke_lage()
  * konkreten Raeumen und Fenstern - bb_vorlage() der Stammfassung legt fuer ein Muster ({raum}) nur einen Kommentar an.
  * Befehlszeile in der Form von bb_vorlage_befehl() (Analog, SourceValHigh/DestValHigh 10 wie eine Config-Ausfuhr).
  * Kein Wortzeichen: der Weg ist durch den Haken "Befehle ueber MQTT annehmen" geschuetzt.
- * Rueckgabe array(Name, Inhalt) oder array(Name, '') (Bruecke nicht ladbar).
+ * Rueckgabe array(Name, Inhalt) oder array(Name, '') (Bruecke nicht ladbar). Seit 0.12.20 mit CRLF (Gruppe 36).
  */
 function fb_vorlage_befehle()
 {
@@ -6823,5 +6839,8 @@ function fb_vorlage_befehle()
             'publish ' . $b['thema'] . ' ' . $b['format'], '', true);
     }
     $x[] = '</VirtualOut>';
-    return array('VQ_fensterbilanz_mqtt.xml', implode("\n", $x) . "\n");
+    /* Gruppe 36 (0.12.20, Entscheidung 5): CRLF wie die _Test.xml-Ausfuhren der Loxone Config (Regeln/07) und wie
+     * bb_vorlage() der Stammfassung 1.0.2. Inhalt sonst byte-gleich; XML liest CRLF und LF gleich, ein Neuimport ist
+     * nicht noetig. Der Reiter Test prueft LF == CRLF fuer alle drei Vorlagen. */
+    return array('VQ_fensterbilanz_mqtt.xml', implode("\r\n", $x) . "\r\n");
 }

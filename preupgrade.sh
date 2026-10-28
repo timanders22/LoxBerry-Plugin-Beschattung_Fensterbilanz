@@ -64,13 +64,18 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
         BASE=$(fb_wurzel_suchen) || BASE=""
     fi
 fi
+# Gruppe 36 (0.12.20, T1-B, Entscheidung 2): JEDER Abbruch dieses Skripts ist <FAIL> mit exit 2. Der Installer
+# (plugininstall.pl :852-874 am Geraet) haelt nur bei einer Rueckgabe groesser 1 VOR purge_installation an; exit 1
+# wurde nur notiert, danach raeumte er config/plugins/<ordner>/ und data/plugins/<ordner>/ ab (Pruefbericht T1-B,
+# Probe t1b: Konfiguration danach {}). Mit exit 2 bricht das Update ab, und die installierte Fassung bleibt.
+# Dieser Zweig ist am Geraet unerreichbar ($5 kommt immer) - exit 2 zum Gleichklang.
 if [ -z "$BASE" ]; then
-    echo "<WARNING> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
-    echo "<WARNING> weder das fuenfte Argument noch \$LBHOMEDIR noch der eigene"
-    echo "<WARNING> Ablageort fuehrten auf einen Ordner mit config/plugins,"
-    echo "<WARNING> data/plugins und config/system/general.json."
-    echo "<WARNING> Es wurde NICHTS gesichert."
-    exit 1
+    echo "<FAIL> Das Wurzelverzeichnis des LoxBerry liess sich nicht bestimmen:"
+    echo "<FAIL> weder das fuenfte Argument noch \$LBHOMEDIR noch der eigene"
+    echo "<FAIL> Ablageort fuehrten auf einen Ordner mit config/plugins,"
+    echo "<FAIL> data/plugins und config/system/general.json."
+    echo "<FAIL> Es wurde NICHTS gesichert - das Update bricht ab, die installierte Fassung bleibt."
+    exit 2
 fi
 
 # ---------- INHALT statt GROESSE ----------
@@ -149,11 +154,16 @@ fi
 # sie weg. Sie liegt NEBEN dem Datenordner, sonst loeschte purge_installation
 # sie mit. Inhalt: die Unixzeit.
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# Gruppe 36 (0.12.20, T1-B): ohne Marke haelt preinstall.sh das Update fuer eine Neuinstallation - .backup.json und
+# die Rettungen gingen nach .alt, postinstall.sh spielte nichts zurueck, die Konfiguration stuende auf {} (Probe t1b,
+# Fall data/plugins 0555). Bis 0.12.19 folgten hier nur zwei <WARNING>, und das Update lief weiter.
 if date +%s > "$MARKE" 2>/dev/null && [ -s "$MARKE" ]; then
     echo "<INFO> Marke gesetzt: das Plugin rechnet bis zum Ende der Aktualisierung nicht."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen."
-    echo "<WARNING> Ein Lauf waehrend der Aktualisierung kann die Tagesbilanz verdraengen."
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - das Update bricht ab, die installierte Fassung bleibt."
+    echo "<FAIL> Ohne Marke hielte die Installation das Update fuer eine Neuinstallation: Konfiguration, Wortzeichen"
+    echo "<FAIL> und Messreihen waeren danach weg. Bitte die Rechte unter $BASE/data/plugins pruefen."
+    exit 2
 fi
 
 # Gruppe 3 / MQTT (0.12.19): die Befehlsbruecke vor dem Austausch der Dateien anhalten. Die Marke liegt schon -
@@ -233,6 +243,9 @@ PDATA="$BASE/data/plugins/$PFOLDER"
 STEMPEL="$BASE/data/plugins/$PFOLDER.rettung.zeit"
 GERETTET=0
 NAMEN=""
+# Gruppe 36 (0.12.20, E3): gescheiterte Rettungen eigens gezaehlt - nach einem <FAIL> steht unten kein "Es lagen keine
+# Messreihen vor" mehr (Pruefbericht E3: beides stand bis 0.12.19 im Rechtefall untereinander).
+MR_FEHL=0
 for N in bilanz lernen pv messwerte; do
     Q="$PDATA/$N.json"
     Z="$BASE/data/plugins/$PFOLDER.rettung.$N.json"
@@ -246,8 +259,10 @@ for N in bilanz lernen pv messwerte; do
             GERETTET=$((GERETTET+1))
             NAMEN="$NAMEN $N"
         else
-            echo "<FAIL> $N.json liess sich nicht retten - der Wert ist nach dem Update weg."
+            # Gruppe 36 (0.12.20, E-E7, Entscheidung 2): auch das bricht ab - die Lernkurve braucht eine Saison.
+            echo "<FAIL> Messreihe $N.json liess sich nicht retten - das Update bricht deshalb ab."
             FEHLER=1
+            MR_FEHL=$((MR_FEHL+1))
         fi
     else
         echo "<WARNING> $N.json ist leer oder unlesbar und wurde nicht gerettet."
@@ -260,7 +275,7 @@ if [ "$GERETTET" -gt 0 ]; then
         echo "<WARNING> $GERETTET Datei(en) gerettet, aber der Stempel $STEMPEL liess sich nicht"
         echo "<WARNING> schreiben - postinstall.sh spielt sie dann nicht selbst ein."
     fi
-else
+elif [ "$MR_FEHL" -eq 0 ]; then
     echo "<INFO> Es lagen keine Messreihen vor, die zu retten waeren."
 fi
 
@@ -278,9 +293,15 @@ if [ -n "$FREMD" ]; then
     echo "<INFO> Update uebersteht, steht im Reiter Einstellungen."
 fi
 
+# Gruppe 36 (0.12.20, T1-B, E3): exit 2 statt exit 1, VOR purge_installation - das Update bricht ab, nichts ist
+# verloren. Die Marke geht wieder weg (sonst rechnete das Plugin bis zu einer Stunde nicht, und der Waechter startete
+# die eben angehaltene Befehlsbruecke nicht); der Minutentakt startet die Bruecke danach selbst. Ein <OK> gibt es nur
+# am Ende des Erfolgswegs.
 if [ "$FEHLER" -ne 0 ]; then
-    echo "<FAIL> preupgrade mit Fehlern abgeschlossen - siehe oben."
-    exit 1
+    rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> preupgrade bricht das Update ab (siehe oben) - vor dem Abraeumen, die installierte Fassung bleibt"
+    echo "<FAIL> unveraendert. Die Marke ist wieder entfernt; die Befehlsbruecke startet der Minutentakt neu."
+    exit 2
 fi
 echo "<OK> preupgrade abgeschlossen."
 exit 0

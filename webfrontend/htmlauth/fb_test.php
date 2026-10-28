@@ -168,6 +168,12 @@ function fb_test_pv()
     $z = array();
     $z[] = fb_klartext('TEST.PV_KOPF');
     if (empty($cfg['pv_gegenprobe'])) { $z[] = fb_klartext('TEST.PV_AUS'); }
+    /* Gruppe 36 (0.12.20, Entscheidung 1): pv_prognose ist nie Pflicht. Fehlt sie bei eingeschalteter Gegenprobe, ruht
+     * nur die Gegenprobe (fb_pv_ablegen() legt ohne PV-Summe keinen Tag ab) - das steht hier. */
+    if (!empty($cfg['pv_gegenprobe'])) {
+        list($fb_pvw) = fb_messwert(fb_messwerte(), 'pv_prognose', (int) $cfg['hoechstalter'], time());
+        if ($fb_pvw === null) { $z[] = fb_klartext('TEST.PV_RUHT'); }
+    }
     $daten = fb_json_lesen(fb_paths()['pv']);
     $tage = isset($daten['tage']) ? $daten['tage'] : array();
     $z[] = '';
@@ -642,10 +648,11 @@ function fb_probe_messwerte()
     $fehlen = array();
     $alt = array();
     $gut = 0;
-    $noetig = array();
-    foreach (fb_messgroessen() as $name => $info) {
-        if ($info[0]) { $noetig[] = $name; }
-    }
+    /* Gruppe 36 (0.12.20, T2-A): DIESELBE Liste wie fehlend/ok/meldung und die Sperre in fb_rechnen() - der Reiter Test
+     * sagt damit dasselbe wie stand.json. Die Sonnenhoehe wie dort aus dem Standort (ohne Standort: keine). */
+    $ohne_ort = (abs((float) $cfg['breite']) < 0.001 && abs((float) $cfg['laenge']) < 0.001);
+    $hoehe = $ohne_ort ? null : fb_sonnenstand($jetzt, $cfg['breite'], $cfg['laenge'])['hoehe'];
+    $noetig = fb_messgroessen_noetig($cfg, $jetzt, $hoehe);
     foreach (fb_fenster() as $f) {
         if (empty($f['raumwerte']) || $f['raum'] === '') { continue; }
         $noetig[] = 'ist.' . $f['raum'];
@@ -667,29 +674,92 @@ function fb_probe_messwerte()
         fb_liste_kurz($fehlen), fb_liste_kurz($alt)));
 }
 
-/** Ist die erzeugte Loxone-Vorlage wohlgeformtes XML? */
+/**
+ * Gruppe 36 (0.12.20, Entscheidung 4 und 5; Entwurf 5.3): die drei Vorlagen der Linie - die Funktion, Wurzel und
+ * Befehlselement je Vorlage. Die dritte (MQTT-Befehle) prueft der Reiter Test seit 0.12.20 mit.
+ */
+function fb_vorlagen_liste()
+{
+    return array('vi' => array('fb_vorlage', 'VirtualInHttp', 'VirtualInHttpCmd'),
+                 'vq' => array('fb_vorlage_out', 'VirtualOut', 'VirtualOutCmd'),
+                 'vq_mqtt' => array('fb_vorlage_befehle', 'VirtualOut', 'VirtualOutCmd'));
+}
+
+/**
+ * Gruppe 36 (0.12.20, Entscheidung 5): eine Vorlage nach Hausform pruefen (Regeln/04 :357, Regeln/07 :340/:366).
+ *   wohlgeformt: mit simplexml; ohne simplexml (PHP 8.5 am Geraet) die Zaehlprobe wie die Stammfassung der
+ *                Befehlsbruecke 1.0.2 (Schluss "</Wurzel>" mit CRLF, kein rohes < oder & in einem Attributwert);
+ *   Zeilenenden: LF == CRLF (kein nacktes LF);
+ *   Tabulator:   vor jedem Kindelement (alle Zeilen zwischen Wurzel-Anfang und -Ende).
+ * Rueckgabe array('wohl', 'meldung', 'eintraege' (Kinder der Wurzel), 'befehle' (Befehlselemente), 'crlf', 'lf', 'tab').
+ */
+function fb_vorlage_form($inhalt, $wurzel, $befehl)
+{
+    $aus = array('wohl' => false, 'meldung' => '', 'eintraege' => 0,
+                 'befehle' => substr_count($inhalt, '<' . $befehl . ' '),
+                 'crlf' => substr_count($inhalt, "\r\n"), 'lf' => substr_count($inhalt, "\n"), 'tab' => true);
+    $zeilen = explode("\n", str_replace("\r\n", "\n", rtrim($inhalt, "\r\n")));
+    foreach (array_slice($zeilen, 2, -1) as $z) {
+        if ($z === '' || $z[0] !== "\t") { $aus['tab'] = false; }
+        if ($z !== '' && $z[0] === "\t" && isset($z[1]) && $z[1] === '<') { $aus['eintraege']++; }
+    }
+    if (function_exists('simplexml_load_string')) {
+        $vorher = libxml_use_internal_errors(true);
+        $x = simplexml_load_string($inhalt);
+        if ($x === false) {
+            $e = libxml_get_errors();
+            $aus['meldung'] = $e ? trim($e[0]->message) : 'unbekannt';
+        }
+        libxml_clear_errors();
+        libxml_use_internal_errors($vorher);
+        if ($x !== false) {
+            $aus['wohl'] = ($x->getName() === $wurzel);
+            $aus['eintraege'] = count($x->children());
+            $aus['befehle'] = count($x->{$befehl});
+            if (!$aus['wohl']) { $aus['meldung'] = 'Wurzel ' . $x->getName() . ' statt ' . $wurzel; }
+        }
+    } else {
+        $schluss = '</' . $wurzel . ">\r\n";
+        $aus['wohl'] = substr($inhalt, -strlen($schluss)) === $schluss
+            && !preg_match('/="[^"]*(<|&(?!lt;|gt;|amp;|quot;|#039;|apos;))/', $inhalt);
+        if (!$aus['wohl']) { $aus['meldung'] = 'Zaehlprobe ohne simplexml'; }
+    }
+    return $aus;
+}
+
+/** Sind die erzeugten Loxone-Vorlagen wohlgeformt und in Hausform (CRLF, Tabulator)? Seit 0.12.20 alle drei. */
 function fb_probe_vorlage()
 {
     $fenster = fb_fenster();
     if (!$fenster) { return array(null, fb_klartext('TEST.P_KEIN_FENSTER')); }
     $ergebnis = array();
-    foreach (array('vi' => 'fb_vorlage', 'vq' => 'fb_vorlage_out') as $art => $fn) {
+    $info = array();
+    foreach (fb_vorlagen_liste() as $art => $d) {
+        $fn = $d[0];
         list($name, $inhalt) = $fn();
-        $vorher = libxml_use_internal_errors(true);
-        $x = simplexml_load_string($inhalt);
-        $meldung = '';
-        if ($x === false) {
-            $e = libxml_get_errors();
-            $meldung = $e ? trim($e[0]->message) : 'unbekannt';
+        if ($inhalt === '' && $art === 'vq_mqtt') {
+            /* Bruecke nicht ladbar: kein Fehler dieser Zeile - die Bruecke hat ihre eigene Pruefzeile. */
+            $info[] = sprintf(fb_klartext('TEST.P_XML_INFO'), $name);
+            continue;
         }
-        libxml_clear_errors();
-        libxml_use_internal_errors($vorher);
-        if ($x === false) {
-            return array(false, sprintf(fb_klartext('TEST.P_XML_KAPUTT'), $name, $meldung));
+        $f = fb_vorlage_form($inhalt, $d[1], $d[2]);
+        if (!$f['wohl']) {
+            return array(false, sprintf(fb_klartext('TEST.P_XML_KAPUTT'), $name, $f['meldung']));
         }
-        $ergebnis[] = $name . ' (' . count($x->children()) . ')';
+        if ($f['lf'] !== $f['crlf'] || !$f['tab']) {
+            return array(false, sprintf(fb_klartext('TEST.P_XML_FORM'), $name, $f['crlf'], $f['lf'],
+                fb_klartext($f['tab'] ? 'ALLG.JA' : 'ALLG.NEIN')));
+        }
+        if ($art === 'vq_mqtt') {
+            $soll = count(fb_befehl_namen(fb_config(false)));
+            if ($f['befehle'] !== $soll) {
+                return array(false, sprintf(fb_klartext('TEST.P_XML_BEFEHLE'), $name, $f['befehle'], $soll));
+            }
+        }
+        $ergebnis[] = $name . ' (' . $f['eintraege'] . ')';
     }
-    return array(true, sprintf(fb_klartext('TEST.P_XML_OK'), implode(', ', $ergebnis)));
+    return array(true, sprintf(fb_klartext('TEST.P_XML_OK'), implode(', ', $ergebnis))
+                       . ($info ? ' ' . implode(' ', $info) : ''));
 }
 
 function fb_test_selbstpruefung()
@@ -1043,23 +1113,23 @@ function fb_test_vorlage()
     $fenster = fb_fenster();
     if (!$fenster) { return fb_klartext('TEST.P_KEIN_FENSTER'); }
     $z = array();
-    foreach (array('fb_vorlage', 'fb_vorlage_out') as $fn) {
+    /* Gruppe 36 (0.12.20, Entscheidung 4 und 5): alle drei Vorlagen, dieselbe Pruefung wie die Pruefzeile
+     * (fb_vorlage_form()); bei der dritten dazu die Zahl der Befehle gegen fb_befehl_namen(). */
+    foreach (fb_vorlagen_liste() as $art => $d) {
+        $fn = $d[0];
         list($name, $inhalt) = $fn();
-        $vorher = libxml_use_internal_errors(true);
-        $x = simplexml_load_string($inhalt);
-        $meldung = '';
-        if ($x === false) {
-            $e = libxml_get_errors();
-            $meldung = $e ? trim($e[0]->message) : 'unbekannt';
+        if ($inhalt === '' && $art === 'vq_mqtt') {
+            $z[] = sprintf(fb_klartext('TEST.VORLAGE_NICHT_PRUEFBAR'), $name);
+            continue;
         }
-        libxml_clear_errors();
-        libxml_use_internal_errors($vorher);
-        $crlf = substr_count($inhalt, "\r\n");
-        $lf = substr_count($inhalt, "\n");
+        $f = fb_vorlage_form($inhalt, $d[1], $d[2]);
         $z[] = sprintf(fb_klartext('TEST.VORLAGE_ZEILE'), $name,
-            $x === false ? fb_klartext('ALLG.NEIN') . ' - ' . $meldung : fb_klartext('ALLG.JA'),
-            $x === false ? 0 : count($x->children()),
-            $crlf, $lf, strlen($inhalt));
+            $f['wohl'] ? fb_klartext('ALLG.JA') : fb_klartext('ALLG.NEIN') . ' - ' . $f['meldung'],
+            $f['eintraege'], $f['crlf'], $f['lf'], fb_klartext($f['tab'] ? 'ALLG.JA' : 'ALLG.NEIN'), strlen($inhalt));
+        if ($art === 'vq_mqtt') {
+            $z[] = sprintf(fb_klartext('TEST.VORLAGE_BEFEHLE'), $name, $f['befehle'],
+                count(fb_befehl_namen(fb_config(false))));
+        }
     }
     $z[] = '';
     $z[] = fb_klartext('TEST.VORLAGE_FUSS');
@@ -1113,7 +1183,7 @@ function fb_test_endpunkt()
     $o[] = '';
     $o[] = fb_klartext('TEST.EP_GEGENPROBE');
     $falsch = fb_holen(fb_endpunkt() . '?token=falsch&aktion=status', $ctx);
-    $o[] = ($falsch !== false && strpos((string) $falsch, 'GRUND=TOKEN') !== false)
+    $o[] = ($falsch !== false && strpos((string) $falsch, 'ERR=TOKEN') !== false)     // Gruppe 36: Hausform
         ? fb_klartext('TEST.EP_ABGEWIESEN')
         : sprintf(fb_klartext('TEST.EP_OFFEN'), substr((string) $falsch, 0, 200));
     return implode("\n", $o);
@@ -1141,14 +1211,14 @@ function fb_probe_endpunkt()
     if ($text === false) {
         return array(null, sprintf(fb_klartext('TEST.P_EP_KEINE_ANTWORT'), $adresse));
     }
-    if (strpos((string) $text, 'SELBSTTEST;OK=1') === false) {
+    if (strpos((string) $text, 'SELFTEST;OK=1;TOKEN=OK') === false) {     // Gruppe 36 (0.12.20): Hausform
         return array(false, sprintf(fb_klartext('TEST.P_EP_FEHL'), $adresse,
                      $text === false ? '-' : substr(trim((string) $text), 0, 120)));
     }
     /* Die Gegenprobe gehoert in dieselbe Zeile: ein Endpunkt, der antwortet,
      * aber jedem antwortet, ist schlimmer als einer, der schweigt. */
     $falsch = fb_holen(fb_endpunkt() . '?token=falsch&selftest=1', $ctx);
-    if ($falsch === false || strpos((string) $falsch, 'GRUND=TOKEN') === false) {
+    if ($falsch === false || strpos((string) $falsch, 'SELFTEST;OK=0;ERR=TOKEN') === false) {
         return array(false, fb_klartext('TEST.P_EP_OFFEN'));
     }
     return array(true, fb_klartext('TEST.P_EP_OK'));

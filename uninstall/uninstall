@@ -170,7 +170,7 @@ BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
 BBPHP="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.php"
 BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
 if [ -f "$BBSH" ]; then
-    timeout 40 bash "$BBSH" stop
+    timeout -k 5 40 bash "$BBSH" stop      # Gruppe 36 (0.12.20): -k 5 wie beim Leeren oben
 fi
 BB_REST=0
 for d in /proc/[0-9]*; do
