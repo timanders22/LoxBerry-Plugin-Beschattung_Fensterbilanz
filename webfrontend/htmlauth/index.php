@@ -2565,9 +2565,9 @@ list($fb_eb_bl, $fb_eb_bl_fehl) = fb_bruecke_liste(); ?>
     } ?>
 <p class="sm-hilfe" id="eb-v2"><?= sprintf(fb_t('LOX.S2_V2'), fb_e($fb_eb_pf)) ?></p>
 <div class="sm-breit"><table class="sm-tbl" id="eb-hakenliste">
-<tr><th>#</th><th><?= fb_e(fb_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_SEITE')) ?></th></tr>
+<tr><th>#</th><th><?= fb_e(fb_t('LOX.HAKEN_SP_THEMA')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_NAME')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_SEITE')) ?></th><th><?= fb_e(fb_t('LOX.HAKEN_SP_NC')) ?></th></tr>
 <?php foreach ($fb_eb_haken as $fb_hi => $fb_h) { ?>
-<tr><td><?= (int) $fb_hi + 1 ?></td><td><span class="sm-mono"><?= fb_e(fb_mqtt_thema($fb_eb_pf . '/' . $fb_h['thema'])) ?></span></td><td><span class="sm-mono"><?= fb_e($fb_h['name']) ?></span></td><td><?= $fb_h['muster'] ? fb_e(fb_t('LOX.HAKEN_JA')) : '&ndash;' ?></td></tr>
+<tr><td><?= (int) $fb_hi + 1 ?></td><td><span class="sm-mono"><?= fb_e(fb_mqtt_thema($fb_eb_pf . '/' . $fb_h['thema'])) ?></span></td><td><span class="sm-mono"><?= fb_e($fb_h['name']) ?></span></td><td><?= $fb_h['muster'] ? fb_e(fb_t('LOX.HAKEN_JA')) : '&ndash;' ?></td><td><?= !empty($fb_h['noncached']) ? fb_e(fb_t('LOX.HAKEN_JA')) : '&ndash;' ?></td></tr>
 <?php } ?>
 </table></div>
 <p class="sm-hilfe"><?= fb_e(sprintf(fb_t('LOX.HAKEN_ZAHL'), count($fb_eb_haken), $fb_eb_seite)) ?> <?= fb_e(fb_t('LOX.HAKEN_RESET')) ?></p>

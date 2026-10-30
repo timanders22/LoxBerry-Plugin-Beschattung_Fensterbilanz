@@ -869,6 +869,10 @@ function fb_test_selbstpruefung()
             : sprintf(fb_klartext('TEST.A_NAMEN_ABW'), fb_liste_kurz($nt_tab), fb_liste_kurz($nt_send)));
     list($ok, $txt) = fb_bruecke_lage();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_BRUECKE'), $ok, $txt);
+    /* Nachtwelle N3 (0.12.21): stehen unter MQTT-Gateway V2 die Haken der Hakenliste (Reiter Einbindung, Schritt 2)
+     * in config/system/subscriptions.json - und "Noncached", wo es noetig ist? Unter V1 trifft es nicht zu. */
+    list($ok, $txt) = fb_mqtt_v2_haken_lage($cfg);
+    $z[] = fb_pruefzeile(fb_klartext('TEST.F_V2'), $ok, $txt);
 
     /* --- Die Neuerungen der 0.10.0, jede mit ihrem eigenen Zustand --- */
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_VORSCHAU'),

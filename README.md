@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.20
+Version 0.12.21
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,19 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.21
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion und ohne Änderung an Rechnung, MQTT oder Befehlen:
+
+* **Selbsttest MQTT-Gateway V2:** Die Selbstprüfung im Reiter *Test* hat eine neue Zeile „MQTT-Gateway V2: Datenpunkte
+  angehakt“. Sie liest `config/system/subscriptions.json` und nennt jedes Thema der Hakenliste, das im Gateway nicht
+  angehakt ist, und jedes, dem „Noncached“ fehlt. Unter Gateway V1 oder bei ausgeschaltetem MQTT „trifft nicht zu“.
+* **Noncached:** Die Hakenliste (Reiter *Einbindung in Loxone*, Schritt 2) hat eine Spalte *Noncached*. Nötig ist es
+  nur für `status/ok` und `status/befehle`: beide kommen meist mit gleichem Wert, und Gateway V2 unterdrückt einen
+  gleichen Wert – ohne den Haken fehlten sie nach einem Neustart des Miniservers. Bis 0.12.20 stand dort „kein Thema
+  braucht Noncached“, während die Bausteinliste für `status_ok` schon „Noncached“ verlangte.
+* Unverändert: Befehlsbrücke 1.0.2 (seit 0.12.20); ein Sprachmodul hat diese Linie nicht.
 
 ## Neu in 0.12.20
 

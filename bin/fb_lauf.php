@@ -1779,6 +1779,38 @@ $ort = array(48.2, 11.6);
     list(, $nt_tab, $nt_send) = fb_mqtt_namen_pruefen($cfg_mp);
     $pruefe('Namenstabelle und Themenliste decken sich (Musterkonfiguration)', !$nt_tab && !$nt_send,
             'nur Tabelle ' . implode(',', $nt_tab) . '; nur Liste ' . implode(',', $nt_send));
+    /* Nachtwelle N3 (0.12.21): Selbsttest Gateway V2 gegen subscriptions.json - der reine Abgleich an der
+     * Musterkonfiguration: vollstaendig / ein Haken fehlt / Noncached fehlt / Noncached zu viel (Fehler mit Thema), dazu das
+     * Lesen der Datei. Noncached genau status/ok und status/befehle (fb_mqtt_noncached()). */
+    $v2_abo = array();
+    $v2_nc = array();
+    foreach ($nt_mp as $e_mp) {
+        if (!$e_mp['haken']) { continue; }
+        $v2_abo[fb_mqtt_thema('fenster/' . $e_mp['thema'])] = (bool) $e_mp['noncached'];
+        if ($e_mp['noncached']) { $v2_nc[] = $e_mp['thema']; }
+    }
+    sort($v2_nc);
+    $v2_a = fb_mqtt_v2_abgleich($nt_mp, $v2_abo, 'fenster');
+    $v2_x = $v2_abo; unset($v2_x['fenster/WZ/grund']);
+    $v2_b = fb_mqtt_v2_abgleich($nt_mp, $v2_x, 'fenster');
+    $v2_x = $v2_abo; $v2_x['fenster/status/ok'] = false;
+    $v2_c = fb_mqtt_v2_abgleich($nt_mp, $v2_x, 'fenster');
+    $v2_x = $v2_abo; $v2_x['fenster/WZ/grund'] = true;
+    $v2_d = fb_mqtt_v2_abgleich($nt_mp, $v2_x, 'fenster');
+    $pruefe('Gateway V2: Abgleich vollstaendig / Haken fehlt / Noncached fehlt / Noncached zu viel',
+            $v2_a[0] === true && $v2_a[3] === 28 && $v2_a[4] === 28 && $v2_a[5] === 2
+            && $v2_nc === array('status/befehle', 'status/ok')
+            && $v2_b[0] === false && $v2_b[1] === array('fenster/WZ/grund') && !$v2_b[2]
+            && $v2_c[0] === false && !$v2_c[1] && $v2_c[2] === array('fenster/status/ok')
+            && $v2_d[0] === false && $v2_d[6] === array('fenster/WZ/grund'),
+            json_encode(array($v2_a, $v2_b[1], $v2_c[2], $v2_d[0], $v2_nc)));
+    $v2_e = fb_mqtt_v2_abos(array('Subscriptions' => array(array('Id' => 'fenster/status/ok', 'Noncached' => 'true'),
+        array('Id' => 'fenster/x', 'Noncached' => false), array('id' => 'fenster/y'), 'kaputt',
+        array('Noncached' => 1), array('Id' => 'fenster/z', 'Noncached' => array(1)))));
+    $pruefe('Gateway V2: subscriptions.json lesen (Id/id, Noncached als Text/Wahrheitswert, kaputte Eintraege)',
+            $v2_e === array('fenster/status/ok' => true, 'fenster/x' => false, 'fenster/y' => false, 'fenster/z' => false)
+            && fb_mqtt_v2_abos('x') === null && fb_mqtt_v2_abos(array()) === array(),
+            json_encode($v2_e));
     $bef_soll = array(
         'fenster/befehl/messwert/strahlung <v.0>', 'fenster/befehl/messwert/prognose <v.1>',
         'fenster/befehl/messwert/aussen <v.1>', 'fenster/befehl/messwert/prognose1 <v.1>',

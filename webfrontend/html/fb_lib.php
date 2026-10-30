@@ -6573,6 +6573,8 @@ function fb_mqtt_gateway_name($thema, $cfg = null)
  * 'quelle' dienst|bruecke, 'muster' (steht auf einer Seite des Musterprojekts)).
  * Musterprojekt mit einem Fenster und allen Zweigen: 16 + 12 = 28 Haken, 27 davon auf den Seiten (status/befehle
  * wahlweise). "Bestand" (ok, herz, ts, status/ts) geht weiter hinaus, steht aber nicht in der Hakenliste.
+ * Seit 0.12.21 (Nachtwelle N3) traegt jeder Eintrag 'noncached' (aus fb_mqtt_noncached(), nur bei Haken) - die
+ * Spalte Noncached der Hakenliste und der Selbsttest gegen subscriptions.json lesen ihn hier.
  */
 function fb_mqtt_namen($cfg = null)
 {
@@ -6588,7 +6590,8 @@ function fb_mqtt_namen($cfg = null)
         $aus[] = array('thema' => $thema, 'name' => fb_mqtt_gateway_name($thema, $cfg), 'bedeutung' => $schl,
                        'bereich' => $ber, 'art' => $art, 'gruppe' => $gruppe, 'fenster' => $fenster,
                        'haken' => $gruppe !== 'bestand', 'quelle' => $quelle,
-                       'muster' => $gruppe !== 'bestand' && $quelle !== 'bruecke');
+                       'muster' => $gruppe !== 'bestand' && $quelle !== 'bruecke',
+                       'noncached' => $gruppe !== 'bestand' && in_array($thema, fb_mqtt_noncached(), true));
     };
     $neu('status/ok', 'FB_MQTT.STATUS_OK', '0/1', 'zahl', 'global', '', 'dienst');
     $neu('status/zaehler', 'FB_MQTT.STATUS_ZAEHLER', '0 … 999', 'zahl', 'global', '', 'dienst');
@@ -6664,6 +6667,110 @@ function fb_mqtt_namen_pruefen($cfg = null)
         if ($e['quelle'] === 'dienst') { $ist[] = $e['thema']; }
     }
     return array(count($namen), array_values(array_diff($ist, $soll)), array_values(array_diff($soll, $ist)));
+}
+
+/**
+ * Nachtwelle N3 (0.12.21): die Themen, die unter MQTT-Gateway V2 "Noncached" brauchen - EINE Quelle fuer die
+ * Namenstabelle (fb_mqtt_namen(), Feld 'noncached'), die Spalte Noncached der Hakenliste (Reiter Einbindung, Schritt 2)
+ * und den Selbsttest gegen subscriptions.json. status/ok kommt mit jedem Lauf mit meist gleichem Wert, status/befehle
+ * schickt der Waechter der Befehlsbruecke jede Minute mit gleichem Wert. Gateway V2 unterdrueckt einen gleichen Wert
+ * (Dedup) - ohne "Noncached" fehlten beide nach einem Neustart des Miniservers, bis sie sich aendern (wie Govee E6,
+ * Robonect E9). status/zaehler aendert sich bei jedem Lauf und braucht es nicht; die Zustaende der Fenster bringt der
+ * reconnect beim Systemstart des Musterprojekts.
+ */
+function fb_mqtt_noncached()
+{
+    return array('status/ok', 'status/befehle');
+}
+
+/**
+ * Nachtwelle N3 (0.12.21): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten. Ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function fb_mqtt_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Nachtwelle N3 (0.12.21): Soll gegen Ist (Rein). Soll sind die Eintraege der Namenstabelle mit 'haken' - dieselbe
+ * Liste wie die Hakenliste im Reiter Einbindung, Schritt 2 -, das Thema voll mit Praefix wie beim Senden
+ * (fb_mqtt_thema()). Fehlt ein Thema in den Abos, steht es in fehlt[]; braucht es "Noncached" und hat es nicht, steht
+ * es in ohne_nc[].
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function fb_mqtt_v2_abgleich(array $namen, array $abo, $praefix)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $soll = 0;
+    $nc = 0;
+    foreach ($namen as $e) {
+        if (empty($e['haken'])) { continue; }
+        $soll++;
+        if (!empty($e['noncached'])) { $nc++; }
+        $t = fb_mqtt_thema((string) $praefix . '/' . $e['thema']);
+        if (!array_key_exists($t, $abo)) { $fehlt[] = $t; continue; }
+        $da++;
+        if (!empty($e['noncached']) && !$abo[$t]) { $ohne[] = $t; }
+        elseif (empty($e['noncached']) && $abo[$t]) { $zuviel[] = $t; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, $soll, $nc, $zuviel);
+}
+
+/**
+ * Nachtwelle N3 (0.12.21): die Zeile "MQTT-Gateway V2: Datenpunkte angehakt" der Selbstpruefung (Reiter Test).
+ * Liest nur: general.json (Gatewayversion, fb_mqtt_zustand()) und config/system/subscriptions.json. Rueckgabe
+ * array(true|false|null, Text): true = alle Datenpunkte der Hakenliste angehakt und die Noncached-Themen so markiert;
+ * false = es fehlt etwas (die Themen werden genannt); null = trifft nicht zu (Gateway V1, MQTT im Plugin aus) oder
+ * nicht feststellbar (Fassung oder Datei nicht lesbar).
+ */
+function fb_mqtt_v2_haken_lage($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = fb_config(false); }
+    $m = fb_mqtt_zustand();
+    $p = fb_paths();
+    if ((int) $m['fassung'] === 0 || $p['home'] === '') { return array(null, fb_klartext('TEST.A_V2_UNKLAR')); }
+    if ((int) $m['fassung'] < 2) { return array(null, fb_klartext('TEST.A_V2_V1')); }
+    if (empty($cfg['mqtt_ein'])) { return array(null, fb_klartext('TEST.A_V2_MQTT_AUS')); }
+    list($d, $zustand) = fb_json_lesen_geprueft($p['home'] . '/config/system/subscriptions.json');
+    $abo = $zustand === 'ok' ? fb_mqtt_v2_abos($d) : null;
+    if ($abo === null) {
+        return array(null, sprintf(fb_klartext('TEST.A_V2_UNKLAR_DATEI'), 'config/system/subscriptions.json'));
+    }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = fb_mqtt_v2_abgleich(fb_mqtt_namen($cfg), $abo, (string) $cfg['mqtt_topic']);
+    if ($soll === 0) { return array(null, fb_klartext('TEST.A_V2_LEER')); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array(true, sprintf(fb_klartext('TEST.A_V2_OK'), $soll, $nc)); }
+    return array(false, sprintf(fb_klartext('TEST.A_V2_FEHLT'), $da, $soll, fb_liste_kurz($fehlt, 8),
+                                fb_liste_kurz($ohne, 8))
+        . ($zuviel ? ' ' . sprintf(fb_klartext('TEST.A_V2_NC_ZUVIEL'), fb_liste_kurz($zuviel, 8)) : ''));
 }
 
 /**
