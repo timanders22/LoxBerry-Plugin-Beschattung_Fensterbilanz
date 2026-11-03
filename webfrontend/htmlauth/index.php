@@ -1019,6 +1019,19 @@ if ($fb_post && isset($_POST['wasware'])) {
 }
 
 /* ---------------- Speichern: MQTT ---------------- */
+/* 0.12.22: Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($fb_post && isset($_POST['ansage_test'])) {
+    list($fb_at, $fb_ag) = fb_ansage_test();
+    if ($fb_at) { $fb_meldungen[] = fb_t('ANSAGEPLUGIN.M_TEST_OK'); } else { $fb_fehler[] = fb_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $fb_ag; }
+    $fb_tab = 'tab-settings';
+}
+if ($fb_post && isset($_POST['ansage_speichern'])) {
+    list($fb_ao, $fb_af, $fb_ah) = fb_ansage_post($_POST);
+    foreach ($fb_af as $fb_ax) { $fb_fehler[] = $fb_ax; }
+    if ($fb_ao && !$fb_af) { $fb_meldungen[] = fb_t('ANSAGEPLUGIN.M_OK'); foreach ($fb_ah as $fb_ax) { $fb_meldungen[] = $fb_ax; } }
+    elseif (!$fb_af) { $fb_fehler[] = fb_t('ANSAGEPLUGIN.M_FEHL'); }
+    $fb_tab = 'tab-settings';
+}
 if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_sperre = fb_config_sperre();      // Begruendung beim Modell-Handler
     $fb_cfg = fb_config();
@@ -2373,6 +2386,7 @@ function fbOrdnerSetzen(sel) {
 <?php } ?>
 
 
+<?= fb_ansage_form_html('<input data-role="none" type="hidden" name="fmt" value="' . fb_e($fb_merkmal) . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= fb_e(fb_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= fb_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= fb_t('EINST.SICH_WARNUNG') ?></div>

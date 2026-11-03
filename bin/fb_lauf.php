@@ -154,6 +154,7 @@ if (!$fb_gerechnet) {
     }
     exit(0);
 }
+fb_ansage_takt($fb_stand);     // 0.12.22: legt nur hin, wartet auf nichts; steuert nichts
 if ($fb_stand['meldung'] === 'KEIN_STANDORT') {
     fwrite(STDERR, "Es ist kein Standort eingetragen (Reiter Einstellungen). "
         . "Ohne Breite und Laenge gibt es keinen Sonnenstand.\n");

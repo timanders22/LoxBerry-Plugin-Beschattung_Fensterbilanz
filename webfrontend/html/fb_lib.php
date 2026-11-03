@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
 /**
  * Fensterbilanz - gemeinsame Bibliothek
  *
@@ -312,7 +313,7 @@ function fb_fenster_vorgabe()
  */
 function fb_vorgaben()
 {
-    return array(
+    return fb_ansage_vorgaben() + array(
         'fenster'        => array(),
         'breite'         => 0.0,   // Grad Nord
         'laenge'         => 0.0,   // Grad Ost
@@ -3038,7 +3039,10 @@ function fb_mqtt_behalten_liste(array $filter)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 0.12.21 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -4949,6 +4953,441 @@ function fb_median($reihe)
     return ($n % 2) ? (float) $r[$m] : ((float) $r[$m - 1] + (float) $r[$m]) / 2.0;
 }
 
+/** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
+function fb_ansage_schluessel()
+{
+    return array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft', 'ansage_aus_datei');
+}
+
+/** Die Vorgaben: nie gesetzt = ab Werk EIN. Ein gespeicherter Block bleibt, auch 'aus'. */
+function fb_ansage_vorgaben()
+{
+    return array('tts' => ansage_werk_block(), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('beschatten' => 1, 'geber' => 1), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
+}
+
+/** Wertpruefung fuer die Sprachansagen: null = nicht meine Schluessel, sonst tauglich ja/nein. */
+function fb_ansage_wert($k, $w)
+{
+    if (!in_array((string) $k, fb_ansage_schluessel(), true)) { return null; }
+    $g = '';
+    switch ((string) $k) {
+        case 'tts':
+            return is_array($w) && ansage_wert_pruefen($w, $g, fb_ansage_modi()) !== null;
+        case 'ansage_regeln':
+            return is_array($w) && ansage_regeln_wert($w, $g) !== null;
+        case 'ansage_haken':
+            if (!is_array($w)) { return false; }
+            foreach ($w as $a => $v) {
+                if (!array_key_exists($a, array('beschatten' => 1, 'geber' => 1)) || !in_array($v, array(0, 1, '0', '1'), true)) { return false; }
+            }
+            return true;
+        case 'ansage_token_herkunft':
+            return is_array($w);
+        case 'ansage_aus_datei':
+            return in_array($w, array(0, 1, '0', '1'), true);
+    }
+    return false;
+}
+
+/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
+function fb_ansage_fuer_sicherung(array $c)
+{
+    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
+    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
+    return $c;
+}
+
+/**
+ * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
+ * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
+ */
+function fb_ansage_sicherung_vor($roh)
+{
+    $d = json_decode((string) $roh, true);
+    if (!is_array($d)) { return $roh; }
+    $inhalt = false;
+    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
+    if (!$inhalt) { return $roh; }
+    $j = fb_ansage_cfg();
+    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
+    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
+    if (array_key_exists('tts', $d)) {
+        $g = '';
+        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, fb_ansage_modi()) : null;
+        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
+            $d['tts'] = 'ABGEWIESEN';
+        } else {
+            list($tv) = ansage_vervollstaendigen($p, 'aus');
+            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+        }
+    } else {
+        $d['tts'] = fb_tts($j);
+    }
+    foreach (array_diff(fb_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
+        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
+    }
+    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
+    $d['ansage_aus_datei'] = 1;
+    return (string) json_encode($d);
+}
+
+/**
+ * Die Hauptkonfiguration. Liegt eine ansage.json aus einer Probe vom 01.11., wird sie EINMAL uebernommen (Vermerk ansage_aus_datei) und bleibt liegen.
+ */
+function fb_ansage_cfg()
+{
+    $c = fb_config();
+    if (empty($c['ansage_aus_datei'])) {
+        $f = rtrim(fb_paths()['configdir'], '/') . '/ansage.json';
+        if (is_file($f)) {
+            $d = json_decode((string) @file_get_contents($f), true);
+            if (is_array($d)) {
+                foreach (array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft') as $k) {
+                    if (array_key_exists($k, $d) && fb_ansage_wert($k, $d[$k]) === true) { $c[$k] = $d[$k]; }
+                }
+            }
+            $c['ansage_aus_datei'] = 1;
+            fb_ansage_cfg_schreiben($c);
+        }
+    }
+    return $c;
+}
+
+function fb_ansage_cfg_schreiben(array $cfg)
+{
+    return fb_config_speichern($cfg);
+}
+
+/** Die Ausgabearten dieser Linie. */
+function fb_ansage_modi()
+{
+    return array_values(array_diff(ansage_modi(), array('audioserver')));
+}
+
+/** Der Block tts: gespeichert bleibt, auch 'aus'; ungueltig gilt als 'aus'. */
+function fb_tts($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    return ansage_block_oder_aus(isset($cfg['tts']) ? $cfg['tts'] : ansage_werk_block(), fb_ansage_modi());
+}
+
+/** Der Kontext des Moduls. */
+function fb_ansage_k()
+{
+    $d = fb_paths()['datadir'];
+    return array(
+        'port' => ansage_webport(ansage_lbhome() . '/config/system/general.json'),
+        'home' => ansage_lbhome(),
+        'kopf' => array('User-Agent: LoxBerry Fensterbilanz'),
+        'ordner' => @is_dir($d) ? $d : '',
+        't' => function ($s) { return fb_t($s); },
+        'werk' => ansage_werk_modus(),
+    );
+}
+
+/** Die Anlaesse: Name => Beschriftung. */
+function fb_ansage_anlaesse()
+{
+    return array('beschatten' => fb_t('ANSAGEPLUGIN.L_BESCHATTEN'), 'geber' => fb_t('ANSAGEPLUGIN.L_GEBER'));
+}
+
+/** Ist der Haken dieses Anlasses gesetzt? Fehlt er, gilt die Vorgabe der Linie. */
+function fb_ansage_anlass_an($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $h = (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken'])) ? $cfg['ansage_haken'] : array();
+    $v = array('beschatten' => 1, 'geber' => 1);
+    return !empty(array_key_exists($a, $h) ? $h[$a] : (isset($v[$a]) ? $v[$a] : 0));
+}
+
+/** Die Eingaben nach einer Beanstandung bis zur naechsten Seite aufheben, nie ein Sprechtoken. */
+function fb_ansage_eingaben($setzen = null)
+{
+    $f = fb_paths()['datadir'] . '/ansage_eingaben.json';
+    if (is_array($setzen)) {
+        if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+        @file_put_contents($f, (string) json_encode($setzen));
+        @chmod($f, 0600);
+        return $setzen;
+    }
+    $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (is_array($d) && $d) { @file_put_contents($f, '{}'); return $d; }
+    return array();
+}
+
+/** Das Formular lesen und speichern: array(gelungen, Fehlertexte, Hinweise). */
+function fb_ansage_post(array $post)
+{
+    $cfg = fb_ansage_cfg();
+    $k = fb_ansage_k();
+    $m = array();
+    $b = array();
+    $h = array();
+    $neu = ansage_formular_lesen($post, fb_tts($cfg), $m, $b, array('modi' => fb_ansage_modi(), 'ziele' => true, 'token_vor_ort' => true, 'aus_gewinnt' => true), $k, $h);
+    list($r, $hk) = ansage_regeln_formular($post, fb_ansage_regeln($cfg), fb_ansage_anlaesse(), $m, $b, $k);
+    if ($m) {
+        $t = array();
+        foreach ($m as $x) { $t[] = $x['text']; }
+        $e = array('_bean' => array_values($b));
+        foreach ($post as $n => $w) {
+            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0) {
+                if ((string) $n !== 'tts_alexa_token' && (string) $n !== 'tts_google_token') { $e[$n] = $w; }
+            }
+        }
+        fb_ansage_eingaben($e);
+        return array(false, $t, array());
+    }
+    $cfg['tts'] = $neu;
+    $cfg['ansage_regeln'] = $r;
+    $cfg['ansage_haken'] = $hk;
+    $t = array();
+    foreach ($h as $x) { $t[] = $x['text']; }
+    return array(fb_ansage_cfg_schreiben($cfg), array(), $t);
+}
+
+/** Der Abschnitt im Reiter Einstellungen, eigenes Formular. $felder: die versteckten Felder (Formularmerkmal, Reiter). Nach einer Beanstandung traegt er das Eingetippte. */
+function fb_ansage_form_html($felder)
+{
+    $cfg = fb_ansage_cfg();
+    $k = fb_ansage_k();
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $ein = fb_ansage_eingaben();
+    $bean = isset($ein['_bean']) && is_array($ein['_bean']) ? $ein['_bean'] : array();
+    $h = array(
+        'w' => function ($n, $g) use ($ein) { return (isset($ein[$n]) && is_string($ein[$n])) ? $ein[$n] : $g; },
+        'm' => function ($n) use ($bean) { return in_array($n, $bean, true) ? ' class="sm-beanstandet"' : ''; },
+        'c' => function ($n, $g) use ($ein) { return $ein ? !empty($ein[$n]) : (bool) $g; },
+    );
+    $o = array();
+    $o[] = '<h2>' . $e(fb_t('ANSAGEPLUGIN.H')) . '</h2>';
+    $o[] = '<form action="index.php" method="post" autocomplete="off">' . $felder;
+    $o[] = ansage_formular_html(fb_tts($cfg), $h + array('modi' => fb_ansage_modi(), 'ziele' => true, 'ziele_post' => isset($ein['tts_ziel_art']) ? $ein : null), $k);
+    $o[] = ansage_regeln_html(fb_ansage_regeln($cfg), isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken']) ? $cfg['ansage_haken'] : array('beschatten' => 1, 'geber' => 1), fb_ansage_anlaesse(), $h + array('token_vor_ort' => true), $k);
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_speichern" value="1">' . $e(fb_t('ANSAGEPLUGIN.K_SPEICHERN')) . '</button>';
+    $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(fb_t('ANSAGEPLUGIN.K_TEST')) . '</button></div>';
+    $o[] = '</form>';
+    $o[] = fb_ansage_lage_html($cfg);
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Testansage (der Knopf spricht immer). Rueckgabe: array(gesendet, Grund). */
+function fb_ansage_test()
+{
+    $k = fb_ansage_k();
+    fb_ansage_token_pflegen();
+    $r = ansage_testansage(fb_ansage_vor_ort(), $k);
+    fb_log('Testansage: ' . ansage_kurz($r));
+    return array($r['stand'] === 1, $r['stand'] === 1 ? '' : ansage_kennung_text($r['kennung'], $k));
+}
+
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (0.12.22, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('FB_ANSAGE_HOECHSTALTER')) { define('FB_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function fb_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function fb_ansage_warte($fn)
+{
+    $d = fb_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function fb_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    fb_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; fb_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function fb_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(fb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), fb_ansage_k());
+    if (!$g) { return false; }
+    $cfg = fb_ansage_cfg();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!fb_ansage_cfg_schreiben($cfg)) { return false; }
+    fb_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function fb_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    return ansage_token_fuer_lauf(fb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), fb_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function fb_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $t = fb_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(fb_ansage_vor_ort($cfg), fb_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function fb_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $k = fb_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(fb_tts($cfg), fb_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function fb_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function fb_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = fb_ansage_cfg();
+    $k = fb_ansage_k();
+    $t = $tts === null ? fb_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, fb_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function fb_ansage_senden($jetzt = null)
+{
+    $d = fb_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = fb_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= FB_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = fb_ansage_cfg();
+        fb_ansage_token_pflegen($conf);
+        $conf = fb_ansage_cfg();
+        $a = ansage_regel_sprechen($frisch, fb_tts($conf), fb_ansage_regeln($conf), fb_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { fb_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            fb_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
+/**
+ * Aus bin/fb_lauf.php nach einem gerechneten Lauf: die Flanken. Der Merker haelt je Fenster den letzten Stand und die PV-Warnung. Der erste Lauf ohne Merker spricht nicht
+ * (sonst kaeme nach jedem Update alles auf einmal). Wechselt nur, was die Ansage betrifft; Stellung und Rueckwerte bleiben unberuehrt. Rueckgabe: Zahl der hingelegten Anlaesse.
+ */
+function fb_ansage_takt($stand, $jetzt = null)
+{
+    if (!is_array($stand) || !isset($stand['fenster']) || !is_array($stand['fenster'])) { return 0; }
+    $cfg = fb_ansage_cfg();
+    $f = fb_paths()['datadir'] . '/ansage_flanken.json';
+    $alt = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $erstes = !is_array($alt);
+    $alt = $erstes ? array() : $alt;
+    $neu = array('fenster' => array(), 'pv' => 0);
+    $l = array();
+    foreach ($stand['fenster'] as $nr => $e) {
+        $b = (is_array($e) && !empty($e['beschatten'])) ? 1 : 0;
+        $neu['fenster'][(string) $nr] = $b;
+        if (!$erstes && $b === 1 && empty($alt['fenster'][(string) $nr]) && fb_ansage_anlass_an('beschatten', $cfg)) {
+            $n = (is_array($e) && isset($e['kuerzel']) && (string) $e['kuerzel'] !== '') ? (string) $e['kuerzel'] : (string) $nr;
+            $l[] = array('schluessel' => 'beschatten|' . $nr, 'text' => sprintf(fb_t('ANSAGEPLUGIN.SATZ_BESCHATTEN'), $n));
+        }
+    }
+    $main = fb_config();
+    if (!empty($main['pv_gegenprobe'])) {
+        $pv = fb_pv_pruefen($main);
+        $neu['pv'] = (!empty($pv['warnt']) && $pv['tage'] >= 10) ? 1 : 0;
+        if (!$erstes && $neu['pv'] === 1 && empty($alt['pv']) && fb_ansage_anlass_an('geber', $cfg)) {
+            $l[] = array('schluessel' => 'geber', 'text' => fb_t('ANSAGEPLUGIN.SATZ_GEBER'));
+        }
+    }
+    @file_put_contents($f, (string) json_encode($neu));
+    if ($l) {
+        fb_ansage_token_pflegen($cfg);
+        fb_ansage_legen($l, $jetzt);
+    }
+    return count($l);
+}
+
 /** Die Warnung ins Protokoll - hoechstens einmal, solange sie gleich bleibt. */
 function fb_pv_warnen($cfg)
 {
@@ -6131,6 +6570,7 @@ function fb_t($schluessel)
  */
 function fb_sicherung_lesen($roh, &$namen = null)
 {
+    $roh = fb_ansage_sicherung_vor($roh);     // 0.12.22: Token und Vermerk bleiben die geltenden
     /* X-3 (Verbesserungsbau 01.10.2026): $namen sammelt die NAMEN der
      * beanstandeten Schluessel - nie Werte - fuer die Warnung beim Sichern
      * (fb_rueckspiel_altwerte()). Das Zurueckspielen selbst aendert sich nicht. */
@@ -6257,7 +6697,7 @@ function fb_sicherung_bauen()
         '_plugin'  => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
         /* KEINE Fassungsnummer - siehe den Handler fb_sichern. */
         '_stand'   => date('Y-m-d H:i:s'),
-    ), fb_config());
+    ), fb_ansage_fuer_sicherung(fb_config()));     // 0.12.22: nie ein Sprechtoken
 }
 
 /**
@@ -6300,6 +6740,8 @@ function fb_sicherung_freiwillig()
  */
 function fb_sicherung_wert($k, $w, &$namen = null)
 {
+    $fb_aw = fb_ansage_wert($k, $w);     // 0.12.22
+    if ($fb_aw !== null) { return $fb_aw ? array() : array(sprintf(fb_t('EINST.SICH_W_HAKEN'), $k)); }
     if (!is_array($namen)) { $namen = array(); }     // X-3: Namen, nie Werte
     $zf = fb_zahlfelder();
     if (isset($zf[$k])) {

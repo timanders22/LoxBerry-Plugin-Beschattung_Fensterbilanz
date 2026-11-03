@@ -104,11 +104,15 @@ return array(
      * Protokoll steht, wenn sich das Ergebnis eines Befehls aendert (angenommen <-> abgelehnt), nicht jeder Wert. Die
      * Werte selbst zeigen der Reiter Einbindung ("Zuletzt eingetroffen") und der Reiter Test (letzter Befehl). */
     'protokoll' => function ($stufe, $text) {
-        if ($stufe === 'INFO' && preg_match('/^([a-z0-9_\/]{1,200}) \(.*\): (.*)\z/s', (string) $text, $m)) {
+        /* 0.12.22: bb_log() setzt "Befehlsbruecke: " schon vor den Text (Nachzug 01.11.2026, wie MGiSmart 1.1.30). Bis
+         * 0.12.21 passte das Muster deshalb nie (der Text begann mit "Befehlsbruecke: "), jede Befehlszeile ging
+         * ungebremst und mit doppeltem Praefix ins Protokoll (am Geraet 384 Zeilen). Das Praefix ist jetzt im Muster
+         * erlaubt, und die Zuordnung setzt kein eigenes mehr davor. */
+        if ($stufe === 'INFO' && preg_match('/^(?:Befehlsbruecke: )?([a-z0-9_\/]{1,200}) \(.*\): (.*)\z/s', (string) $text, $m)) {
             fb_log_wenn_neu('bruecke_' . $m[1], 'Befehlsbruecke: ' . $m[1] . ': ' . $m[2]);
             return;
         }
-        fb_log('Befehlsbruecke' . ($stufe === 'INFO' ? '' : ' ' . $stufe) . ': ' . $text);
+        fb_log(($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
     },
     'teile' => array('raum' => '[a-z0-9_]{1,20}', 'fenster' => '[a-z0-9_]{1,16}'),
     'befehle' => $fb_befehle,
