@@ -156,6 +156,7 @@ if ($fb_post && isset($_POST['auszug_skript'])) {
         $fb_fehler[] = fb_t('PROJEKT.SKRIPT_FEHLT');
         $fb_tab = 'tab-settings';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="fensterbilanz_auszug.ps1"');
         echo $fb_inhalt_s;
@@ -206,6 +207,7 @@ if ($fb_post && isset($_POST['vorlage'])) {
         $fb_fehler[] = fb_t($fb_welche === 'vq_mqtt' ? 'BEFEHL.FEHLER_VORLAGE' : 'LOX.FEHLER_VORLAGE');
         $fb_tab = 'tab-loxone';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         // Anfuehrungszeichen um den Dateinamen: ohne sie bricht jeder Name
         // mit einem Leerzeichen darin.
@@ -1212,6 +1214,7 @@ if ($fb_post && isset($_POST['fb_sichern'])) {
     $fb_js = json_encode($fb_aus,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($fb_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="beschattung_fensterbilanz_einstellungen_'
                . date('Ymd_His') . '.json"');
