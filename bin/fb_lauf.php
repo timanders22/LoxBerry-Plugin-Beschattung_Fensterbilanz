@@ -834,6 +834,18 @@ $ort = array(48.2, 11.6);
     $bil['letzte'] = $t0 - 3600;                       // eine Stunde her
     $stand_b = fb_rechnen($cfg, $mess_august, $t0, array());
     $watt_b = (int) $stand_b['fenster']['1']['watt'];
+    // 0.12.25 (FB-3): diese Faelle rechnen mit offenem Rollladen; hinter dem geschlossenen zaehlt die Strahlung nicht.
+    $stand_zu = $stand_b;
+    foreach (array_keys($stand_b['fenster']) as $fb_k) {
+        $stand_b['fenster'][$fb_k]['beschatten'] = 0;
+        $stand_b['fenster'][$fb_k]['stellung'] = -1;
+        $stand_zu['fenster'][$fb_k]['beschatten'] = 1;
+        $stand_zu['fenster'][$fb_k]['stellung'] = -1;
+    }
+    $bil_zu = fb_bilanz_fortschreiben($cfg, $stand_zu, $bil, $mess_august, $t0);
+    $pruefe('Hinter dem geschlossenen Rollladen zaehlt die Strahlung nicht (FB-3)',
+            abs($bil_zu['fenster']['1']) < 0.001 && $bil_zu['zu_s']['1'] === 900,
+            sprintf('%.1f Wh, zu %d s', $bil_zu['fenster']['1'], $bil_zu['zu_s']['1']));
     $bil2 = fb_bilanz_fortschreiben($cfg, $stand_b, $bil, $mess_august, $t0);
     $pruefe('Die Tagesbilanz wird mit dem Deckel von 900 s fortgeschrieben',
             abs($bil2['fenster']['1'] - $watt_b * 0.25) < 0.5,

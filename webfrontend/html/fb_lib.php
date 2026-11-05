@@ -4748,6 +4748,16 @@ function fb_tageswechsel($cfg, $bilanz, $jetzt)
  * die es nie gegeben hat. Ein Deckel von einer Viertelstunde ist grosszuegig
  * gegenueber dem Fuenfminutentakt und schneidet den Unfug sauber ab.
  */
+function fb_bilanz_wh($cfg, $e, $stunden)
+{
+    /* 0.12.25 (FB-3): watt ist die Strahlung auf das Glas ohne Rollladen. Hinter dem geschlossenen Rollladen kam sie nicht
+     * in den Raum; bis 0.12.24 zaehlte sie weiter: der Raum galt als voll, Protokoll und Lernkurve lagen um die Rollladenzeit
+     * zu hoch. Massgeblich ist die gemeldete Stellung, ohne sie der Befehl. */
+    $st = isset($e['stellung']) ? (int) $e['stellung'] : -1;
+    $zu = (!empty($cfg['stellung_ein']) && $st >= 0) ? ($st >= (int) $cfg['stellung_zu']) : !empty($e['beschatten']);
+    return $zu ? 0.0 : (float) $e['watt'] * $stunden;
+}
+
 function fb_bilanz_fortschreiben($cfg, $stand, $bilanz, $messwerte, $jetzt)
 {
     $letzte = (int) $bilanz['letzte'];
@@ -4759,7 +4769,7 @@ function fb_bilanz_fortschreiben($cfg, $stand, $bilanz, $messwerte, $jetzt)
     $ha = (int) $cfg['hoechstalter'];
 
     foreach ((isset($stand['fenster']) ? $stand['fenster'] : array()) as $nr => $e) {
-        $wh = (float) $e['watt'] * $stunden;
+        $wh = fb_bilanz_wh($cfg, $e, $stunden);
         $bilanz['fenster'][$nr] = (isset($bilanz['fenster'][$nr])
             ? (float) $bilanz['fenster'][$nr] : 0.0) + $wh;
         if (!empty($e['beschatten'])) {
@@ -4778,7 +4788,7 @@ function fb_bilanz_fortschreiben($cfg, $stand, $bilanz, $messwerte, $jetzt)
         $nr++;
         if ($f['kuerzel'] === '' || $f['raum'] === '') { continue; }
         if (!isset($stand['fenster'][(string) $nr])) { continue; }
-        $wh = (float) $stand['fenster'][(string) $nr]['watt'] * $stunden;
+        $wh = fb_bilanz_wh($cfg, $stand['fenster'][(string) $nr], $stunden);
         $bilanz['raeume'][$f['raum']] = (isset($bilanz['raeume'][$f['raum']])
             ? (float) $bilanz['raeume'][$f['raum']] : 0.0) + $wh;
     }
@@ -5138,6 +5148,8 @@ function fb_ansage_post(array $post)
         return array(false, $t, array());
     }
     $cfg['tts'] = $neu;
+    // 0.12.25: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.12.24 ueberschrieb es der naechste Abgleich.
+    $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
     $t = array();
