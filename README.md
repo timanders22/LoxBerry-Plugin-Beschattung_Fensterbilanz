@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.25
+Version 0.12.26
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,11 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.26
+
+- Fenster: Unter der Fenstertabelle steht ein Link zum Azimut-Werkzeug (azimut.polka-umwelt.de). Dort das Haus im Luftbild suchen und mit „Orthogonales Messen“ an der Hauswand entlang klicken. Das Werkzeug zählt 0 = Süden (Osten negativ, Westen positiv); das Feld Richtung zählt 0 = Norden im Uhrzeigersinn. Der Hilfetext sagt die Umrechnung: 180 dazuzählen (−35 wird 145, 120 wird 300).
+- Standort: Unter dem Feld „Geografische Breite in Grad (Nord positiv)“ steht ein Link zu einer Karte (mapatlas.eu). Dort die Adresse eingeben und die Zahlen unter „Dezimalgrad“ kopieren. Beide Zahlen dürfen auch zusammen ins Feld „Geografische Breite in Grad (Nord positiv)“ kopiert werden („50.123, 8.456“, getrennt durch Komma, Semikolon, Schrägstrich oder Leerzeichen, Dezimalpunkt); das Plugin teilt sie beim Speichern auf, wenn das Feld Längengrad leer ist oder schon die zweite Zahl trägt. Eine einzelne Zahl mit Komma („51,3“) wird nicht aufgeteilt.
 
 ## Neu in 0.12.25
 

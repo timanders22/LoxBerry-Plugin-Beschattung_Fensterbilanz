@@ -259,6 +259,15 @@ $fb_zahl = function ($roh, $von, $bis, $bez, $nachkomma = 0) use (&$fb_fehler) {
 
 /* ---------------- Speichern: Standort und Modell ---------------- */
 if ($fb_post && isset($_POST['speichern_modell'])) {
+    // 0.12.26: beide Zahlen aus der Karte zusammen ins Feld Breitengrad kopiert ("50.123, 8.456") - hier aufteilen,
+    // wenn Laengengrad leer ist oder schon die zweite Zahl traegt. Eine Kommazahl allein ("51,3") bleibt eine Zahl.
+    if (isset($_POST['breite']) && is_string($_POST['breite'])
+        && !preg_match('/^\s*-?\d+,\d+\s*\z/', $_POST['breite'])
+        && preg_match('/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;\/ ]\s*(-?\d{1,3}(?:\.\d+)?)\s*\z/', $_POST['breite'], $fb_pm)
+        && (!isset($_POST['laenge']) || !is_string($_POST['laenge']) || trim($_POST['laenge']) === ''
+            || str_replace(',', '.', trim($_POST['laenge'])) === $fb_pm[2])) {
+        $_POST['breite'] = $fb_pm[1]; $_POST['laenge'] = $fb_pm[2];
+    }
     /* SPERRE UM LESEN, AENDERN UND SCHREIBEN.
      *
      * Ohne sie geht bei zwei gleichzeitigen Speichervorgaengen eine der
@@ -1739,6 +1748,7 @@ window.addEventListener('resize', fbRollbalken);
   <label for="fb_breite"><?= fb_e(fb_t('EINST.L_BREITE')) ?></label>
   <input data-role="none" type="text" id="fb_breite" name="breite" value="<?= fb_e(fb_eingabe('modell', 'breite', $fb_cfg['breite'])) ?>"<?= fb_markierung('modell', 'breite') ?>>
   <p class="sm-hilfe"><?= fb_t('EINST.H_BREITE') ?></p>
+  <p class="sm-hilfe"><a href="<?= fb_e('https://mapatlas.eu/' . (fb_sprache() === 'de' ? 'de' : 'en') . '/tools/coordinates') ?>" target="_blank" rel="noopener"><?= fb_e(fb_t('EINST.KARTE')) ?></a>. <?= fb_e(fb_t('EINST.KARTE_ZUSAMMEN')) ?></p>
 </div>
 <div class="sm-feld">
   <label for="fb_laenge"><?= fb_e(fb_t('EINST.L_LAENGE')) ?></label>
@@ -1995,6 +2005,7 @@ window.addEventListener('resize', fbRollbalken);
 <?php } ?>
 </table>
 </div>
+<p class="sm-hilfe"><a href="https://azimut.polka-umwelt.de/" target="_blank" rel="noopener"><?= fb_e(fb_t('EINST.AZIMUT_LINK')) ?></a>. <?= fb_e(fb_t('EINST.AZIMUT_UMRECHNEN')) ?></p>
 <p class="sm-hilfe"><?= fb_t('EINST.FELDER_HILFE') ?></p>
 <?php
 /* DER HINWEIS AUF DIE VORGABEFLAECHE.
