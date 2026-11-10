@@ -72,7 +72,16 @@ $inhalt = [System.IO.File]::ReadAllText($Datei, [System.Text.Encoding]::UTF8)
 # naechsten Anfang durchsucht. Das ist zulaessig, WEIL K="Dir" nur im
 # AutoJalousie vorkommt - und genau das wird unten nachgezaehlt und
 # gemeldet, falls es einmal nicht mehr stimmt. Geraten wird hier nichts.
-$anfaenge = [regex]::Matches($inhalt, '<C Type="AutoJalousie"')
+#
+# Seit 0.12.28 drei Typen: AutoJalousie (Automatikbeschattung), Jalousiemotor
+# (Automatikbeschattung Integriert) und ShadeRoof (Dachfenster Beschattung).
+# Alle drei tragen K="Dir"; die Zaehlung unten gilt fuer alle drei zusammen.
+# Ein AutoJalousie ergibt denselben Eintrag wie bisher (titel, dir, dirtol);
+# nur die beiden neuen Typen tragen zusaetzlich typ und beim ShadeRoof tilt
+# (Neigung, 0 = waagerecht, 90 = senkrecht). Was daraus wird, entscheidet
+# das Plugin.
+$anfaenge = [regex]::Matches($inhalt, '<C Type="(AutoJalousie|Jalousiemotor|ShadeRoof)"')
+$neueTypen = 0
 $dirGesamt = ([regex]::Matches($inhalt, '<Co K="Dir"')).Count
 
 $fenster = New-Object System.Collections.ArrayList
@@ -97,23 +106,37 @@ for ($i = 0; $i -lt $anfaenge.Count; $i++) {
     }
     $titel = [System.Net.WebUtility]::HtmlDecode($titel)
 
+    $typ = $anfaenge[$i].Groups[1].Value
+    # Beim ShadeRoof heisst die Toleranz bei Sonneneintritt DirTol1.
+    $kTol = if ($typ -eq 'ShadeRoof') { 'DirTol1' } else { 'DirTol' }
     $mD = [regex]::Match($block, '<Co K="Dir"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
-    $mDT = [regex]::Match($block, '<Co K="DirTol"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
+    $mDT = [regex]::Match($block, '<Co K="' + $kTol + '"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
 
     if ($mD.Success) {
         # O10: kaufmaennisch runden wie PHP round() - [math]::Round rundet ab
         # Werk auf die gerade Zahl (22.5 -> 22, im Plugin 23).
-        $null = $fenster.Add([ordered]@{
+        $eintrag = [ordered]@{
             titel  = $titel
             dir    = [int][math]::Round([double]$mD.Groups[1].Value, [System.MidpointRounding]::AwayFromZero)
             dirtol = if ($mDT.Success) { [int][math]::Round([double]$mDT.Groups[1].Value, [System.MidpointRounding]::AwayFromZero) } else { $null }
-        })
+        }
     } else {
         # MELDEN, nicht raten. Ein Baustein, dessen Richtung an einem Eingang
         # haengt statt an einer festen Zahl, hat hier keine ablesbare Zahl.
         $null = $ohneRichtung.Add($(if ($titel -ne '') { $titel } else { 'ohne Titel' }))
-        $null = $fenster.Add([ordered]@{ titel = $titel; dir = $null; dirtol = $null })
+        $eintrag = [ordered]@{ titel = $titel; dir = $null; dirtol = $null }
     }
+    if ($typ -ne 'AutoJalousie') {
+        $neueTypen++
+        $eintrag['typ'] = $typ
+        if ($typ -eq 'ShadeRoof') {
+            # Tilt wird als Zeichenkette weitergegeben, so wie er in der Datei
+            # steht; fehlt Def, bleibt er leer, und das Plugin meldet es.
+            $mTi = [regex]::Match($block, '<Co K="Tilt"[^>]*\sDef="(-?\d+(?:\.\d+)?)"')
+            $eintrag['tilt'] = if ($mTi.Success) { $mTi.Groups[1].Value } else { $null }
+        }
+    }
+    $null = $fenster.Add($eintrag)
 }
 
 # ----------------------------------------------------------------- Raeume
@@ -140,6 +163,9 @@ $json = $auszug | ConvertTo-Json -Depth 5 -Compress
 
 Schreib ''
 Schreib ("Rollladenbausteine gefunden : {0}" -f $anfaenge.Count)
+if ($neueTypen -gt 0) {
+    Schreib ("davon Integriert oder Dach  : {0}" -f $neueTypen)
+}
 Schreib ("davon mit ablesbarer Richtung: {0}" -f ($fenster.Count - $ohneRichtung.Count))
 Schreib ("Raeume mit Grundflaeche      : {0}" -f $raeume.Count)
 Schreib ("Auszug                       : {0:N1} kB" -f ($json.Length / 1KB))

@@ -1362,6 +1362,8 @@ function fb_eingabe_felder($form)
             'haken' => array('f_aktiv', 'f_raumwerte', 'f_daemmen'),
         ),
         'raeume' => array('text' => array('r_qm'), 'haken' => array()),
+        /* 0.12.28: die Haken "uebernehmen" der Einlese-Tabelle (p_wahl.<zeile>). */
+        'vorschlag' => array('text' => array(), 'haken' => array('p_wahl')),
         'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein')),
         'rechner' => array(
             'text'  => array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite'),
@@ -1388,6 +1390,9 @@ function fb_eingabe_schluessel_ok($form, $schluessel)
     }
     if ($form === 'raeume') {
         return preg_match('/^r_qm\.[a-z0-9_]{1,20}\z/', $schluessel) === 1;
+    }
+    if ($form === 'vorschlag') {
+        return preg_match('/^p_wahl\.[0-9]{1,3}\z/', $schluessel) === 1;
     }
     return in_array($schluessel, array_merge($f['text'], $f['haken']), true);
 }
@@ -1420,6 +1425,16 @@ function fb_eingaben_sammeln($form, $beanstandet)
             if (++$n > 60) { break; }
             $s = 'r_qm.' . (string) $r;
             if (fb_eingabe_schluessel_ok('raeume', $s) && fb_eingabe_brauchbar($q)) { $werte[$s] = $q; }
+        }
+    } elseif ($form === 'vorschlag') {
+        /* Die Zeilenzahl kommt aus dem gespeicherten Vorschlag, nicht aus dem
+         * Formular: ein abgewaehlter Haken wird nicht mitgeschickt. */
+        $v = fb_json_lesen(fb_paths()['datadir'] . '/vorschlag.json');
+        $n = (is_array($v) && isset($v['liste']) && is_array($v['liste']))
+             ? min(count($v['liste']), 1000) : 0;
+        $a = isset($_POST['p_wahl']) && is_array($_POST['p_wahl']) ? $_POST['p_wahl'] : array();
+        for ($i = 0; $i < $n; $i++) {
+            $werte['p_wahl.' . $i] = !empty($a[$i]) ? '1' : '';
         }
     } else {
         foreach ($f['text'] as $n) {
@@ -5516,19 +5531,45 @@ function fb_bericht_text($cfg, $bilanz, $stand)
  * Rueckgabe: array(liste, fehler). Ein Baustein ohne ablesbares Dir kommt
  * MIT dem Vermerk in die Fehlerliste und nicht mit einer geratenen Zahl in
  * die Liste.
+ *
+ * SEIT 0.12.28 DREI TYPEN (Issue 1 an timanders22/LoxBerry-Plugin-
+ * Beschattung_Fensterbilanz, Auszuege aus einer echten Projektdatei):
+ *
+ *     AutoJalousie   "Automatikbeschattung"            Dir, DirTol
+ *     Jalousiemotor  "Automatikbeschattung Integriert" Dir, DirTol
+ *     ShadeRoof      "Dachfenster Beschattung"         Dir, DirTol1, Tilt
+ *
+ * Die Bausteine werden in der Reihenfolge ihres Vorkommens in der Datei
+ * gelesen, mit derselben Tiefenzaehlung. Die Toleranz (Loxone: Dts,
+ * "Richtungstoleranz bei Sonneneintritt") wird nur angezeigt und nicht
+ * gerechnet; DirTol2 (Dte, Sonnenaustritt) liest das Plugin deshalb bei
+ * keinem der drei Typen. Tilt ist laut Loxone-Dokumentation der
+ * "Dachfenster Beschattung" (Parameter Pi) die Dach- oder Fensterneigung,
+ * 0 = horizontal, 90 = vertikal, 0...90, Vorgabe 30 - also dieselbe
+ * Zaehlung wie das Feld neigung dieses Plugins.
+ *
+ * Ein AutoJalousie ergibt genau den Eintrag wie bis 0.12.27 (drei Felder).
+ * Nur die beiden neuen Typen tragen ein viertes Feld mit 'typ' und beim
+ * ShadeRoof 'neigung' (null, wenn nicht ablesbar) samt 'neigung_hinweis'.
  */
 function fb_projekt_lesen($inhalt)
 {
     $roh = array();
     $fehler = array();
     $inhalt = (string) $inhalt;
-    if (strpos($inhalt, '<C Type="AutoJalousie"') === false) {
+    /* Der Schluessel KEIN_AUTOJALOUSIE bleibt: er heisst seit 0.12.28 "keiner
+     * der drei Typen". */
+    if (strpos($inhalt, '<C Type="AutoJalousie"') === false
+        && strpos($inhalt, '<C Type="Jalousiemotor"') === false
+        && strpos($inhalt, '<C Type="ShadeRoof"') === false) {
         return array(array(), array('KEIN_AUTOJALOUSIE'));
     }
     $laenge = strlen($inhalt);
-    $pos = 0;
-    while (($start = strpos($inhalt, '<C Type="AutoJalousie"', $pos)) !== false) {
-        $pos = $start + 20;
+    preg_match_all('/<C Type="(AutoJalousie|Jalousiemotor|ShadeRoof)"/', $inhalt,
+                   $anfaenge, PREG_OFFSET_CAPTURE);
+    foreach ($anfaenge[0] as $nr => $anfang) {
+        $start = (int) $anfang[1];
+        $typ = (string) $anfaenge[1][$nr][0];
         /* Das Ende des Bausteins ueber Tiefenzaehlung finden. */
         $i = $start;
         $tiefe = 0;
@@ -5563,16 +5604,61 @@ function fb_projekt_lesen($inhalt)
         if (preg_match('/<Co\s[^>]*K="Dir"[^>]*\sDef="(-?\d+(?:\.\d+)?)"/', $blk, $m)) {
             $dir = (int) round((float) $m[1]);
         }
-        if (preg_match('/<Co\s[^>]*K="DirTol"[^>]*\sDef="(-?\d+(?:\.\d+)?)"/', $blk, $m)) {
+        /* Beim ShadeRoof heisst die Toleranz bei Sonneneintritt DirTol1. */
+        $k_tol = ($typ === 'ShadeRoof') ? 'DirTol1' : 'DirTol';
+        if (preg_match('/<Co\s[^>]*K="' . $k_tol . '"[^>]*\sDef="(-?\d+(?:\.\d+)?)"/', $blk, $m)) {
             $dirtol = (int) round((float) $m[1]);
         }
         /* Ein Baustein, dessen Dir an einem Eingang haengt statt an einer
          * Konstanten, hat hier keine ablesbare Zahl. Er wird mit null
          * weitergereicht und in fb_projekt_liste_bauen() GEMELDET - eine
          * erfundene 180 saehe aus wie eine abgelesene. */
-        $roh[] = array($titel, $dir, $dirtol);
+        if ($typ === 'AutoJalousie') {
+            $roh[] = array($titel, $dir, $dirtol);
+            continue;
+        }
+        $tilt_roh = null;
+        if ($typ === 'ShadeRoof'
+            && preg_match('/<Co\s[^>]*K="Tilt"[^>]*\sDef="(-?\d+(?:\.\d+)?)"/', $blk, $m)) {
+            $tilt_roh = (string) $m[1];
+        }
+        $roh[] = array($titel, $dir, $dirtol, fb_projekt_zusatz($typ, $tilt_roh));
     }
     return fb_projekt_liste_bauen($roh, $fehler);
+}
+
+/**
+ * Das vierte Feld eines Jalousiemotor- oder ShadeRoof-Eintrags (0.12.28).
+ *
+ * EINE Stelle fuer BEIDE Wege - Projektdatei und eingefuegter Auszug -,
+ * damit dasselbe Dachfenster auf beiden Wegen dieselbe Neigung bekommt.
+ *
+ * Die Neigung wird GELESEN oder GEMELDET, nicht geraten: fehlt Tilt (ohne
+ * Def haengt der Parameter in der Projektdatei an einem Eingang), ist er
+ * keine Zahl oder liegt er ausserhalb 0...90, bleibt die Zeile beim
+ * Uebernehmen auf der Vorgabe des Plugins, und die Tabelle sagt es.
+ *
+ * $tilt_roh: der Def-Wert von Tilt als Zeichenkette, oder null.
+ */
+function fb_projekt_zusatz($typ, $tilt_roh)
+{
+    $zusatz = array('typ' => (string) $typ);
+    if ($typ !== 'ShadeRoof') { return $zusatz; }
+    $zusatz['neigung'] = null;
+    $zusatz['neigung_hinweis'] = 'FEHLT';
+    $zusatz['tilt'] = '';
+    if (is_string($tilt_roh) && preg_match('/^-?\d+(?:\.\d+)?\z/', $tilt_roh) === 1) {
+        $tilt = (float) $tilt_roh;
+        $zusatz['tilt'] = $tilt_roh;
+        if ($tilt < 0.0 || $tilt > 90.0) {
+            $zusatz['neigung_hinweis'] = 'BEREICH';
+        } else {
+            $zusatz['neigung'] = (int) round($tilt);
+            $zusatz['neigung_hinweis'] =
+                ((float) $zusatz['neigung'] == $tilt) ? '' : 'GERUNDET';
+        }
+    }
+    return $zusatz;
 }
 
 /**
@@ -5659,13 +5745,33 @@ function fb_auszug_lesen($text)
         return array(array(), array('AUSZUG_ZU_NEU'), array(), array());
     }
     $roh_f = array();
+    $fehler_t = array();
     if (isset($d['fenster']) && is_array($d['fenster'])) {
         foreach ($d['fenster'] as $f) {
             if (!is_array($f) || !isset($f['titel'])) { continue; }
             $dir = (isset($f['dir']) && $f['dir'] !== null && $f['dir'] !== '')
                    ? (int) round((float) $f['dir']) : null;
-            $roh_f[] = array((string) $f['titel'], $dir,
-                             isset($f['dirtol']) ? (int) $f['dirtol'] : null);
+            $e = array((string) $f['titel'], $dir,
+                       isset($f['dirtol']) ? (int) $f['dirtol'] : null);
+            /* 0.12.28: ein Eintrag OHNE typ ist ein AutoJalousie und bleibt
+             * dreifeldrig wie bis 0.12.27. Jalousiemotor und ShadeRoof
+             * bekommen ihr viertes Feld aus derselben Stelle wie beim Lesen
+             * der Datei (fb_projekt_zusatz()). Ein unbekannter Typ wird
+             * gemeldet und nicht als Automatikbeschattung genommen. */
+            if (isset($f['typ'])) {
+                $typ_a = is_string($f['typ']) ? $f['typ'] : '';
+                if ($typ_a !== 'Jalousiemotor' && $typ_a !== 'ShadeRoof') {
+                    $t_a = (string) $f['titel'];
+                    $fehler_t[] = ($t_a !== '' ? $t_a : 'ohne Titel') . ' (Typ ' . $typ_a . ')';
+                    continue;
+                }
+                $tilt_a = null;
+                if (isset($f['tilt']) && (is_string($f['tilt']) || is_int($f['tilt']) || is_float($f['tilt']))) {
+                    $tilt_a = (string) $f['tilt'];
+                }
+                $e[] = fb_projekt_zusatz($typ_a, $tilt_a);
+            }
+            $roh_f[] = $e;
         }
     }
     $roh_r = array();
@@ -5677,7 +5783,7 @@ function fb_auszug_lesen($text)
         }
     }
     if (!$roh_f) { return array(array(), array('AUSZUG_OHNE_FENSTER'), array(), array()); }
-    list($liste, $fehler) = fb_projekt_liste_bauen($roh_f);
+    list($liste, $fehler) = fb_projekt_liste_bauen($roh_f, $fehler_t);
     list($raeume, $mehrfach) = fb_projekt_raeume_bauen($roh_r);
     return array($liste, $fehler, $raeume, $mehrfach);
 }
@@ -5712,6 +5818,13 @@ function fb_projekt_liste_bauen($roh, $fehler = array())
             'kuerzel' => fb_kuerzel_vorschlag($titel),
             'raum'    => fb_raum_vorschlag($titel),
         );
+        /* 0.12.28: Typ und Neigung der beiden neuen Bausteintypen. Ein
+         * AutoJalousie traegt kein viertes Feld - sein Eintrag bleibt
+         * Zeichen fuer Zeichen der von 0.12.27. */
+        if (isset($e[3]) && is_array($e[3])) {
+            $j = count($liste) - 1;
+            foreach ($e[3] as $zk => $zw) { $liste[$j][(string) $zk] = $zw; }
+        }
     }
 
     /* GLEICHE KUERZEL AUSEINANDERZIEHEN.

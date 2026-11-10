@@ -1552,6 +1552,27 @@ $ort = array(48.2, 11.6);
             implode(', ', $kuerzel_p));
     $pruefe('Ein Baustein ohne ablesbare Richtung wird gemeldet und nicht geraten',
             in_array('Ohne Richtung', $fehler_p, true), implode(', ', $fehler_p));
+    /* 0.12.28 (Issue 1): Automatikbeschattung Integriert und Dachfenster
+     * Beschattung werden mitgelesen, in der Reihenfolge der Datei; beim
+     * Dachfenster kommt die Neigung aus Tilt, und ein fehlendes Tilt wird
+     * gemeldet statt geraten. */
+    $xml_n = '<C Type="ShadeRoof" Title="Fenster B"><Co K="Dir" Def="68"/>'
+           . '<Co K="Tilt" Def="23"/><Co K="DirTol1" Def="85"/><Co K="DirTol2" Def="60"/></C>'
+           . '<C Type="Jalousiemotor" Title="Fenster A"><Co K="Dir" Def="248"/>'
+           . '<Co K="DirTol" Def="85"/><Co K="DirTol2" Def="60"/></C>'
+           . '<C Type="ShadeRoof" Title="Fenster C"><Co K="Dir" Def="100"/><Co K="Tilt"/></C>';
+    list($liste_n, $fehler_n) = fb_projekt_lesen($xml_n);
+    $pruefe('Dachfenster Beschattung und Automatikbeschattung Integriert werden gelesen',
+            count($liste_n) === 3 && !$fehler_n
+            && $liste_n[0]['typ'] === 'ShadeRoof' && (int) $liste_n[0]['azimut'] === 68
+            && (int) $liste_n[0]['dirtol'] === 85 && $liste_n[0]['neigung'] === 23
+            && $liste_n[1]['typ'] === 'Jalousiemotor' && (int) $liste_n[1]['azimut'] === 248
+            && (int) $liste_n[1]['dirtol'] === 85,
+            json_encode($liste_n));
+    $pruefe('Ein Dachfenster ohne ablesbares Tilt bekommt keine geratene Neigung',
+            isset($liste_n[2]) && $liste_n[2]['neigung'] === null
+            && $liste_n[2]['neigung_hinweis'] === 'FEHLT',
+            isset($liste_n[2]) ? json_encode($liste_n[2]) : 'fehlt');
     /* --- Der vorzeitige Rueckweg traegt die Zaehler mit ---
      *
      * Ohne Standort steigt fb_rechnen() sofort aus. Wer danach 'anzahl'

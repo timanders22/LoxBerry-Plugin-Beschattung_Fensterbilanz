@@ -917,8 +917,49 @@ if ($fb_post && isset($_POST['projekt_uebernehmen'])) {
     $fb_sperre = fb_config_sperre();
     $fb_v = fb_json_lesen($fb_p['datadir'] . '/vorschlag.json');
     $fb_cfg = fb_config();
+    /* DIE AUSWAHL (0.12.28, Issue 1): je Zeile ein Haken "uebernehmen", ab
+     * Werk gesetzt. Kommt das Formular ohne das Merkmal p_auswahl (eine
+     * Seite von 0.12.27, die vor dem Update geoeffnet war), gilt wie bisher
+     * die ganze Liste. Mit Merkmal wird alles geprueft, bevor etwas
+     * geschieht: der Vorschlag muss derselbe sein, den die Tabelle zeigte
+     * (p_zeit), jede genannte Zeile muss es geben, und mindestens eine muss
+     * angehakt sein - sonst wird NICHTS uebernommen und gemeldet. */
+    $fb_wahl = null;
+    $fb_abgewaehlt = 0;
+    $fb_fehler_vor_wahl = count($fb_fehler);
+    if (!empty($fb_v['liste']) && isset($_POST['p_auswahl'])) {
+        $fb_wahl_roh = isset($_POST['p_wahl']) && is_array($_POST['p_wahl']) ? $_POST['p_wahl'] : array();
+        $fb_zeit_roh = isset($_POST['p_zeit']) && is_string($_POST['p_zeit']) ? $_POST['p_zeit'] : '';
+        $fb_n_v = count($fb_v['liste']);
+        $fb_wahl_fremd = array();
+        $fb_wahl = array();
+        foreach ($fb_wahl_roh as $fb_wk => $fb_ww) {
+            $fb_wk = (string) $fb_wk;
+            if (preg_match('/^[0-9]{1,4}\z/', $fb_wk) !== 1 || (int) $fb_wk >= $fb_n_v
+                || !is_string($fb_ww) || $fb_ww !== '1') {
+                $fb_wahl_fremd[] = $fb_wk;
+                continue;
+            }
+            $fb_wahl[(int) $fb_wk] = true;
+        }
+        $fb_v_zeit = isset($fb_v['zeit']) ? (string) (int) $fb_v['zeit'] : '';
+        if ($fb_zeit_roh === '' || $fb_zeit_roh !== $fb_v_zeit) {
+            $fb_fehler[] = fb_t('PROJEKT.VORSCHLAG_ANDERS');
+        } else {
+            if ($fb_wahl_fremd) {
+                $fb_fehler[] = sprintf(fb_t('PROJEKT.WAHL_UNBEKANNT'), fb_liste_kurz($fb_wahl_fremd));
+            }
+            if (!$fb_wahl) {
+                $fb_fehler[] = fb_t('PROJEKT.NICHTS_GEWAEHLT');
+            }
+            if (count($fb_fehler) > $fb_fehler_vor_wahl) { $fb_eingaben_form = 'vorschlag'; }   // X-2
+        }
+        $fb_abgewaehlt = $fb_n_v - count($fb_wahl);
+    }
     if (empty($fb_v['liste'])) {
         $fb_fehler[] = fb_t('PROJEKT.NICHTS_ZU_UEBERNEHMEN');
+    } elseif (count($fb_fehler) > $fb_fehler_vor_wahl) {
+        $fb_fehler[] = fb_t('PROJEKT.NICHTS_UEBERNOMMEN');
     } else {
         /* Nur in LEERE Zeilen schreiben, und nur Kuerzel, die es noch nicht
          * gibt. Ein Uebernehmen, das bestehende Zeilen ueberschreibt, waere
@@ -928,7 +969,10 @@ if ($fb_post && isset($_POST['projekt_uebernehmen'])) {
             if ($fb_ff['kuerzel'] !== '') { $fb_belegt[strtoupper($fb_ff['kuerzel'])] = true; }
         }
         $fb_gesetzt = 0; $fb_uebersprungen = 0;
-        foreach ($fb_v['liste'] as $fb_x) {
+        foreach ($fb_v['liste'] as $fb_xi => $fb_x) {
+            /* Abgewaehlte Zeilen zaehlen nicht als uebersprungen: sie
+             * stehen in einer eigenen Meldung (PROJEKT.ABGEWAEHLT). */
+            if ($fb_wahl !== null && !isset($fb_wahl[(int) $fb_xi])) { continue; }
             $fb_k = fb_kuerzel_richten($fb_x['kuerzel']);
             if ($fb_k === '' || isset($fb_belegt[strtoupper($fb_k)])) {
                 $fb_uebersprungen++;
@@ -943,6 +987,13 @@ if ($fb_post && isset($_POST['projekt_uebernehmen'])) {
             $fb_cfg['fenster'][$fb_frei]['name']    = (string) $fb_x['titel'];
             $fb_cfg['fenster'][$fb_frei]['azimut']  = (int) $fb_x['azimut'];
             $fb_cfg['fenster'][$fb_frei]['raum']    = fb_raumschluessel_richten($fb_x['raum']);
+            /* 0.12.28: die Neigung einer Dachfenster Beschattung (Tilt).
+             * Fehlt sie im Vorschlag (null), bleibt die Zeile auf ihrem Wert;
+             * die Tabelle hat das vor dem Uebernehmen gesagt. */
+            if (isset($fb_x['neigung']) && is_int($fb_x['neigung'])
+                && $fb_x['neigung'] >= 0 && $fb_x['neigung'] <= 90) {
+                $fb_cfg['fenster'][$fb_frei]['neigung'] = $fb_x['neigung'];
+            }
             /* UND DEN HAKEN MITSETZEN.
              *
              * Ohne diese Zeile blieb er auf 0 - und das war ein stiller
@@ -987,6 +1038,9 @@ if ($fb_post && isset($_POST['projekt_uebernehmen'])) {
         if ($fb_gesetzt > 0 && fb_config_speichern(fb_config_richten($fb_cfg))) {
             $fb_meldungen[] = sprintf(fb_t('PROJEKT.UEBERNOMMEN'),
                 $fb_gesetzt, $fb_uebersprungen);
+            if ($fb_abgewaehlt > 0) {
+                $fb_meldungen[] = sprintf(fb_t('PROJEKT.ABGEWAEHLT'), $fb_abgewaehlt);
+            }
             if ($fb_qm_gesetzt > 0) {
                 $fb_meldungen[] = sprintf(fb_t('PROJEKT.RAEUME_UEBERNOMMEN'), $fb_qm_gesetzt);
             }
@@ -2378,25 +2432,52 @@ function fbOrdnerSetzen(sel) {
 
 <?php if (!empty($fb_vorschlag['liste'])) { ?>
 <h3><?= fb_e(sprintf(fb_t('PROJEKT.H_VORSCHLAG'), count($fb_vorschlag['liste']))) ?></h3>
+<?= fb_eingaben_hinweis('vorschlag') ?>
+<?php /* 0.12.28 (Issue 1): je Zeile ein Haken "uebernehmen", ab Werk gesetzt,
+       und der Typ des Bausteins wortgleich mit Loxone Config. Die Tabelle
+       steht deshalb im Formular des Knopfes. */
+$fb_typ_text = array('AutoJalousie' => 'PROJEKT.TYP_AUTOJALOUSIE',
+    'Jalousiemotor' => 'PROJEKT.TYP_JALOUSIEMOTOR', 'ShadeRoof' => 'PROJEKT.TYP_SHADEROOF');
+$fb_neig_vorgabe = (int) fb_fenster_vorgabe()['neigung']; ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
+<input data-role="none" type="hidden" name="p_auswahl" value="1">
+<input data-role="none" type="hidden" name="p_zeit" value="<?= isset($fb_vorschlag['zeit']) ? (int) $fb_vorschlag['zeit'] : 0 ?>">
+<p class="sm-hilfe"><?= fb_e(fb_t('PROJEKT.H_WAHL')) ?></p>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= fb_e(fb_t('EINST.L_KUERZEL')) ?></th><th><?= fb_e(fb_t('EINST.L_AZIMUT')) ?></th>
-    <th><?= fb_e(fb_t('EINST.L_RAUM')) ?></th><th><?= fb_e(fb_t('PROJEKT.SP_BAUSTEIN')) ?></th></tr>
-<?php foreach ($fb_vorschlag['liste'] as $fb_x) { ?>
-<tr><td><span class="sm-mono"><?= fb_e($fb_x['kuerzel']) ?></span></td>
+<tr><th><?= fb_e(fb_t('PROJEKT.SP_WAHL')) ?></th><th><?= fb_e(fb_t('EINST.L_KUERZEL')) ?></th><th><?= fb_e(fb_t('EINST.L_AZIMUT')) ?></th>
+    <th><?= fb_e(fb_t('EINST.L_RAUM')) ?></th><th><?= fb_e(fb_t('PROJEKT.SP_BAUSTEIN')) ?></th><th><?= fb_e(fb_t('PROJEKT.SP_TYP')) ?></th></tr>
+<?php foreach ($fb_vorschlag['liste'] as $fb_xi => $fb_x) {
+    $fb_xt = (isset($fb_x['typ']) && isset($fb_typ_text[$fb_x['typ']])) ? $fb_x['typ'] : 'AutoJalousie';
+    $fb_xh = '';
+    if ($fb_xt === 'ShadeRoof') {
+        $fb_xn = isset($fb_x['neigung_hinweis']) ? (string) $fb_x['neigung_hinweis'] : 'FEHLT';
+        $fb_xr = isset($fb_x['tilt']) ? (string) $fb_x['tilt'] : '';
+        if ($fb_xn === '' && isset($fb_x['neigung']) && $fb_x['neigung'] !== null) {
+            $fb_xh = sprintf(fb_t('PROJEKT.NEIGUNG_GELESEN'), (int) $fb_x['neigung']);
+        } elseif ($fb_xn === 'GERUNDET' && isset($fb_x['neigung']) && $fb_x['neigung'] !== null) {
+            $fb_xh = sprintf(fb_t('PROJEKT.NEIGUNG_GERUNDET'), $fb_xr, (int) $fb_x['neigung']);
+        } elseif ($fb_xn === 'BEREICH') {
+            $fb_xh = sprintf(fb_t('PROJEKT.NEIGUNG_BEREICH'), $fb_xr, $fb_neig_vorgabe);
+        } else {
+            $fb_xh = sprintf(fb_t('PROJEKT.NEIGUNG_FEHLT'), $fb_neig_vorgabe);
+        }
+    } ?>
+<tr><td><input data-role="none" type="checkbox" name="p_wahl[<?= (int) $fb_xi ?>]" value="1"<?= fb_eingabe_an('vorschlag', 'p_wahl.' . (int) $fb_xi, true) ? ' checked' : '' ?>></td>
+    <td><span class="sm-mono"><?= fb_e($fb_x['kuerzel']) ?></span></td>
     <td><?= (int) $fb_x['azimut'] ?>&#176;<?= $fb_x['dirtol'] !== null ? ' &plusmn;' . (int) $fb_x['dirtol'] . '&#176;' : '' ?></td>
     <td><span class="sm-mono"><?= fb_e($fb_x['raum']) ?></span></td>
-    <td><?= fb_e($fb_x['titel']) ?></td></tr>
+    <td><?= fb_e($fb_x['titel']) ?></td>
+    <td><?= fb_e(fb_t($fb_typ_text[$fb_xt])) ?><?= $fb_xh !== '' ? '<br><span class="sm-hilfe">' . fb_e($fb_xh) . '</span>' : '' ?></td></tr>
 <?php } ?>
 </table>
 </div>
 <div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="projekt_uebernehmen" value="1"><?= fb_e(fb_t('PROJEKT.K_UEBERNEHMEN')) ?></button>
-  </form>
 </div>
+</form>
 <?php } ?>
 
 

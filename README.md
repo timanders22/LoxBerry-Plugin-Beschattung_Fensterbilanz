@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.27
+Version 0.12.28
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,14 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.28
+
+- Projektdatei einlesen: Neben der „Automatikbeschattung“ (`AutoJalousie`) liest das Plugin jetzt auch die „Automatikbeschattung Integriert“ (`Jalousiemotor`) und die „Dachfenster Beschattung“ (`ShadeRoof`). Die Richtung kommt aus `Dir`, die angezeigte Toleranz aus `DirTol` bzw. beim Dachfenster aus `DirTol1`. Beim Dachfenster wird zusätzlich die Neigung aus `Tilt` übernommen; Loxone zählt sie wie das Plugin (0 = waagerecht, 90 = senkrecht). Ist `Tilt` nicht ablesbar, bleibt die Neigung auf der Vorgabe des Plugins, und die Tabelle sagt es.
+- Die Einlese-Tabelle zeigt je Zeile den Typ des Bausteins mit seiner Bezeichnung aus Loxone Config.
+- Je Zeile gibt es einen Haken „übernehmen“, ab Werk gesetzt. Wer einen Baustein nicht auswerten will, etwa eine Markise, nimmt den Haken heraus; diese Zeile wird dann nicht übernommen. Wer nichts ändert, bekommt wie bisher alle Zeilen.
+- Das Auslese-Skript für den Auszug (Weg 1) liest dieselben drei Typen und gibt für die beiden neuen den Typ und beim Dachfenster `Tilt` mit. Neigung und Hinweise entstehen wie beim Lesen der Datei im Plugin, sodass beide Wege dieselbe Liste ergeben. Wer Weg 1 mit den neuen Typen nutzen will, lädt das Skript im Reiter Einstellungen neu herunter.
+- Eine Projektdatei oder ein Auszug, die nur Automatikbeschattungen enthalten, ergeben dieselbe Liste wie in 0.12.27.
 
 ## Neu in 0.12.27
 
