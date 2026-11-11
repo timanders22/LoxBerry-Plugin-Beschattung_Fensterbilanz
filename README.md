@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.29
+Version 0.12.30
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,10 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.30
+
+- **Hilfe zur geografischen Breite:** Das erste Beispiel nennt jetzt Berlin (52,5) statt einer süddeutschen Stadt; Hamburg und Zürich bleiben. Am Verhalten des Plugins ändert sich nichts.
 
 ## Neu in 0.12.29
 
