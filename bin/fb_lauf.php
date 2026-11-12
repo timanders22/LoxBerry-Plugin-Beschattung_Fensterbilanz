@@ -131,6 +131,16 @@ if (fb_upgrade_laeuft()) {
     exit(0);
 }
 
+/* 0.12.31 (Nachtpruefung 12.11.2026): die beiden Meldungen des Rechenlaufs tragen Datum und Uhrzeit. cron/cron.05min
+ * haengt die Fehlerausgabe an log/plugins/<ordner>/cron.err an und beruehrt die Datei jede Minute (touch) - ihr
+ * Zeitstempel sagt deshalb nichts. Am Geraet stand dort eine Zeile "Es fehlen gueltige Messwerte" vom 07.11.2026,
+ * waehrend alle Messwerte hoechstens 287 s alt waren; der Reiter Protokoll zeigte sie ohne Zeit wie einen
+ * gegenwaertigen Fehler. Form wie fb_log(): "[JJJJ-MM-TT hh:mm:ss] Text". */
+function fb_lauf_fehlerzeile($text)
+{
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n");
+}
+
 $fb_erzwingen = in_array('--jetzt', $fb_argumente, true);
 list($fb_gerechnet, $fb_stand, $fb_warum) = fb_lauf($fb_erzwingen);
 
@@ -156,15 +166,15 @@ if (!$fb_gerechnet) {
 }
 fb_ansage_takt($fb_stand);     // 0.12.22: legt nur hin, wartet auf nichts; steuert nichts
 if ($fb_stand['meldung'] === 'KEIN_STANDORT') {
-    fwrite(STDERR, "Es ist kein Standort eingetragen (Reiter Einstellungen). "
-        . "Ohne Breite und Laenge gibt es keinen Sonnenstand.\n");
+    fb_lauf_fehlerzeile("Es ist kein Standort eingetragen (Reiter Einstellungen). "
+        . "Ohne Breite und Laenge gibt es keinen Sonnenstand.");
     exit(1);
 }
 printf("%d von %d Fenstern wollen Beschattung. Sonne %.1f Grad hoch, Azimut %.1f Grad.\n",
     (int) $fb_stand['beschatten_anzahl'], (int) $fb_stand['anzahl'],
     (float) $fb_stand['sonne_hoehe'], (float) $fb_stand['sonne_azimut']);
 if (!empty($fb_stand['fehlend'])) {
-    fwrite(STDERR, 'Es fehlen gueltige Messwerte: ' . implode(', ', $fb_stand['fehlend']) . "\n");
+    fb_lauf_fehlerzeile('Es fehlen gueltige Messwerte: ' . implode(', ', $fb_stand['fehlend']));
     exit(1);
 }
 exit(0);

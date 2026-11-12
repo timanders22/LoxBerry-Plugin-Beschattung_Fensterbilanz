@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.30
+Version 0.12.31
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,10 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.31
+
+- **Fehlerausgabe des Takts mit Uhrzeit:** Die beiden Meldungen des Rechenlaufs in `cron.err` („Es fehlen gültige Messwerte …“, „Es ist kein Standort eingetragen …“) beginnen jetzt mit Datum und Uhrzeit, wie die Zeilen des Protokolls. Bis 0.12.30 standen sie ohne Zeit da; weil der Takt die Datei jede Minute berührt, sagte auch ihr Dateidatum nichts. Eine alte Meldung sah im Reiter *Protokoll* deshalb aus wie ein gegenwärtiger Fehler. Eine Zeile ohne Zeit stammt aus einer früheren Fassung oder aus einem PHP-Abbruch. Am Rechnen und an den Werten ändert sich nichts.
 
 ## Neu in 0.12.30
 
