@@ -1259,10 +1259,9 @@ if ($fb_post && isset($_POST['test'])) {
  * Unterstrich, und fb_sicherung_lesen() ueberspringt genau diese - sonst
  * waere die eigene Sicherung beim Zurueckspielen "fremd". */
 if ($fb_post && isset($_POST['fb_sichern'])) {
-    /* KEINE Fassungsnummer im Kopf (fb_sicherung_bauen()). Sie stuende hier
-     * als zweite Quelle neben plugin.cfg, release.cfg, prerelease.cfg und der
-     * README - und Werkzeuge/fassung_setzen.py kennt genau diese vier. Eine
-     * fuenfte Stelle waere eine, die beim naechsten Release stehenbleibt. */
+    /* 0.12.32: der Kopf traegt _plugin und _fassung (gemeinsames Sicherungsmodul); die Fassung kommt aus
+     * der Plugin-Datenbank bzw. der plugin.cfg - keine fuenfte Stelle im Code neben plugin.cfg,
+     * release.cfg, prerelease.cfg und der README, die Werkzeuge/fassung_setzen.py pflegt. */
     $fb_aus = fb_sicherung_bauen();
     /* X-3 (Verbesserungsbau 01.10.2026): wuerde das eigene Zurueckspielen
      * diese Datei abweisen, sagt es der Kopf "_warnung" - nur NAMEN, nie
@@ -1270,7 +1269,7 @@ if ($fb_post && isset($_POST['fb_sichern'])) {
      * Entscheidung 13). "_" am Anfang: fb_sicherung_lesen() ueberspringt ihn. */
     $fb_alt_s = fb_rueckspiel_altwerte($fb_aus);
     if ($fb_alt_s) {
-        $fb_aus = array_merge(array_slice($fb_aus, 0, 3, true),
+        $fb_aus = array_merge(array_slice($fb_aus, 0, 4, true),
             array('_warnung' => sprintf(fb_klartext('EINST.SICH_WARN_KOPF'), implode(', ', $fb_alt_s))),
             array_slice($fb_aus, 3, null, true));
     }
@@ -1317,83 +1316,67 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
         $fb_fehler[] = fb_t('EINST.SICH_ZU_GROSS');
     } else {
         $fb_s_inhalt = (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']);
-        list($fb_neu, $fb_mangel, $fb_n, $fb_s_info) = fb_sicherung_lesen($fb_s_inhalt);
-        if ($fb_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $fb_fehler[] = fb_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $fb_mangel);
-        } else {
-            /* Unter der Sperre, und durch fb_config_richten() - wie an den
-             * fuenf anderen schreibenden Handlern dieser Datei. Bis 0.12.6
-             * war dieser hier der einzige ohne beides, und dabei ersetzt er
-             * als einziger die GANZE Konfiguration. */
-            $fb_sp = fb_config_sperre();
-            /* Gruppe 36 (0.12.20, Pruefbericht T1-A; Entwurf 4.3): der Stand VOR dem Zurueckspielen, unter der Sperre
-             * gelesen - fuer das Wortzeichen, den Endpunkt-Schalter, den verlassenen Praefix und das Abraeumen. */
-            $fb_vorher = fb_config();
-            /* C1: "kein Wortzeichen gesichert" - das geltende bleibt, unter
-             * der Sperre gelesen. Bis 0.12.10 wurde im selben Aufruf still
-             * ein neues gewuerfelt (gemessen, Code-Pruefer Nr. 2). */
-            if (!empty($fb_s_info['token_leer'])) {
-                $fb_neu['aktionstoken'] = $fb_vorher['aktionstoken'];
+        /* 0.12.32: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest UNTER DER SPERRE,
+         * prueft, verwirft Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen (auch das
+         * Wortzeichen, C1) und aendert bei einer Beanstandung GAR NICHTS - alle Beanstandungen, nicht nur
+         * die erste. Die Schritte dieser Linie davor und danach stehen in den Rueckrufen, dieselben wie bis
+         * 0.12.31: unter der Sperre durch fb_config_richten() (wie an den fuenf anderen schreibenden
+         * Handlern), der verlassene Praefix wird vermerkt, danach Formularmerkmal, Abodatei,
+         * Befehlsbruecke, Abraeumen und Neurechnen - und die Meldung sagt, was geschah (C6). */
+        $fb_b = fb_sicherung_beschreibung();
+        $fb_b['sperre'] = 'fb_config_sperre';
+        $fb_b['freigeben'] = 'fb_config_freigeben';
+        $fb_b['jetzt'] = 'fb_config';
+        $fb_b['vorbereiten'] = function ($neu, $vorher) {
+            /* 0.12.22: Herkunft der Sprechtoken und der Vermerk ansage_aus_datei kommen nie aus der Datei. */
+            $j = fb_ansage_cfg();
+            $neu['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft'])
+                ? $j['ansage_token_herkunft'] : array();
+            $neu['ansage_aus_datei'] = 1;
+            $neu = fb_config_richten($neu);
+            /* T1-A: wechselt der Praefix bei eingeschaltetem MQTT, wird der verlassene vermerkt
+             * (mqtt_praefix_alt, wie speichern_mqtt) - die Deinstallation leert ihn ein zweites Mal. */
+            if (!empty($vorher['mqtt_ein']) && $neu['mqtt_topic'] !== (string) $vorher['mqtt_topic']) {
+                $neu['mqtt_praefix_alt'] = (string) $vorher['mqtt_topic'];
             }
-            /* Gruppe 36 (0.12.20): eine Sicherung bis 0.12.19 kennt endpunkt_ein nicht - dann bleibt der geltende Wert,
-             * eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
-            $fb_s_roh = json_decode($fb_s_inhalt, true);
-            if (!is_array($fb_s_roh) || !array_key_exists('endpunkt_ein', $fb_s_roh)) {
-                $fb_neu['endpunkt_ein'] = (int) $fb_vorher['endpunkt_ein'];
+            return $neu;
+        };
+        $fb_b['speichern'] = function ($neu) { return fb_config_speichern($neu); };
+        $fb_b['zweitschrift'] = function () { $p = fb_paths(); return array($p['config'], $p['sicherung']); };
+        $fb_b['nachziehen'] = function ($neu, $vorher) use (&$fb_merkmal) {
+            $h = array();
+            /* Das Merkmal haengt am Aktionstoken und wechselt mit ihm - wortgleich zum Handler token_neu. */
+            $fb_merkmal = fb_formtoken();
+            /* Gruppe 36 (0.12.20, T1-A): Abodatei, Befehlsbruecke sofort schalten, bei Praefixwechsel bzw.
+             * abgeschaltetem MQTT unter dem BISHERIGEN Praefix abraeumen. Ausserhalb der Sperre. */
+            fb_abo_datei($neu['mqtt_topic'], true);
+            list($brc, $bart, $baus) = fb_bruecke_schalten($neu);
+            if ($bart === 'start') {
+                $h[] = $brc === 0 ? fb_t('BEFEHL.M_EIN') : sprintf(fb_t('BEFEHL.M_START_FEHL'), $baus);
+            } elseif ($bart === 'stop') {
+                $h[] = $brc === 0 ? fb_t('BEFEHL.M_AUS') : sprintf(fb_t('BEFEHL.M_STOP_FEHL'), $baus);
+            } elseif ($brc === 1) {
+                $h[] = sprintf(fb_t('BEFEHL.M_START_FEHL'), $baus);
             }
-            $fb_neu = fb_config_richten($fb_neu);
-            /* T1-A: wechselt der Praefix bei eingeschaltetem MQTT, wird der verlassene vermerkt (mqtt_praefix_alt, wie
-             * speichern_mqtt) - die Deinstallation leert ihn ein zweites Mal. */
-            $fb_p_alt = (string) $fb_vorher['mqtt_topic'];
-            if (!empty($fb_vorher['mqtt_ein']) && $fb_neu['mqtt_topic'] !== $fb_p_alt) {
-                $fb_neu['mqtt_praefix_alt'] = $fb_p_alt;
+            $p_alt = (string) $vorher['mqtt_topic'];
+            if (!empty($vorher['mqtt_ein'])) {
+                if ($neu['mqtt_topic'] !== $p_alt) {
+                    $h[] = fb_mqtt_abraeumen($p_alt, $vorher, 'Zurueckspielen');
+                } elseif (empty($neu['mqtt_ein'])) {
+                    $h[] = fb_mqtt_abraeumen($p_alt, $vorher, 'Zurueckspielen, MQTT aus');
+                }
             }
-            $fb_ok_s = fb_config_speichern($fb_neu);
-            if ($fb_sp !== null) { fb_config_freigeben($fb_sp); }
-            if ($fb_ok_s) {
-                $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERNOMMEN'), $fb_n);
-                if (!empty($fb_s_info['token_leer'])) {
-                    $fb_meldungen[] = fb_t('EINST.SICH_TOKEN_BEHALTEN');
-                }
-                if (!empty($fb_s_info['uebergangen'])) {
-                    $fb_meldungen[] = sprintf(fb_t('EINST.SICH_UEBERGANGEN'),
-                        implode(', ', $fb_s_info['uebergangen']));
-                }
-                /* Das Merkmal haengt am Aktionstoken und wechselt mit ihm -
-                 * wortgleich zum Handler token_neu. */
-                $fb_merkmal = fb_formtoken();
-                /* Gruppe 36 (0.12.20, T1-A): dieselben Folgeschritte wie speichern_mqtt - Abodatei, Befehlsbruecke
-                 * sofort schalten, bei Praefixwechsel bzw. abgeschaltetem MQTT unter dem BISHERIGEN Praefix abraeumen
-                 * und beim Broker nachlesen (fb_mqtt_abraeumen(), Arten leer/geleert/rest/ungeprueft). Ausserhalb der
-                 * Sperre: es kann einige Sekunden dauern. */
-                fb_abo_datei($fb_neu['mqtt_topic'], true);
-                list($fb_brc, $fb_bart, $fb_baus) = fb_bruecke_schalten($fb_neu);
-                if ($fb_bart === 'start') {
-                    $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_EIN') : sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
-                } elseif ($fb_bart === 'stop') {
-                    $fb_meldungen[] = $fb_brc === 0 ? fb_t('BEFEHL.M_AUS') : sprintf(fb_t('BEFEHL.M_STOP_FEHL'), $fb_baus);
-                } elseif ($fb_brc === 1) {
-                    $fb_meldungen[] = sprintf(fb_t('BEFEHL.M_START_FEHL'), $fb_baus);
-                }
-                if (!empty($fb_vorher['mqtt_ein'])) {
-                    if ($fb_neu['mqtt_topic'] !== $fb_p_alt) {
-                        $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_vorher, 'Zurueckspielen');
-                    } elseif (empty($fb_neu['mqtt_ein'])) {
-                        $fb_meldungen[] = fb_mqtt_abraeumen($fb_p_alt, $fb_vorher, 'Zurueckspielen, MQTT aus');
-                    }
-                }
-                /* Und der Dienst wird nachgezogen: sonst stuende bis zum
-                 * naechsten Cron-Lauf das Urteil der alten Fensterliste da.
-                 * C6: gemeldet wird, was geschah (Code-Pruefer Nr. 8). */
-                list($fb_g_s, , $fb_warum_s) = fb_lauf(true);
-                $fb_meldungen[] = $fb_g_s ? fb_t('EINST.SICH_GERECHNET')
-                    : fb_t('ALLG.NICHT_GERECHNET') . ' ' . fb_lauf_grund_text($fb_warum_s);
-            } else {
-                $fb_fehler[] = fb_t('EINST.SICH_SCHREIBFEHLER');
-            }
-        }
+            /* Und der Dienst wird nachgezogen: sonst stuende bis zum naechsten Cron-Lauf das Urteil der
+             * alten Fensterliste da. C6: gemeldet wird, was geschah (Code-Pruefer Nr. 8). */
+            list($g_s, , $warum_s) = fb_lauf(true);
+            $h[] = $g_s ? fb_t('EINST.SICH_GERECHNET') : fb_t('ALLG.NICHT_GERECHNET') . ' ' . fb_lauf_grund_text($warum_s);
+            return $h;
+        };
+        $fb_b['log'] = function ($z) { fb_log($z); };
+        $fb_r = sicherung_zurueckspielen($fb_b, $fb_s_inhalt);
+        $fb_m = sicherung_meldungen($fb_b, $fb_r);
+        foreach ($fb_m['fehler'] as $fb_x) { $fb_fehler[] = $fb_x; }
+        foreach ($fb_m['hinweise'] as $fb_x) { $fb_meldungen[] = $fb_x; }
     }
 }
 

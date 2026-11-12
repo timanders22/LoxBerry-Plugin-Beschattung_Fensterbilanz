@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.31
+Version 0.12.32
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,16 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.32
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei nennt im Kopf jetzt auch die Fassung (`_fassung`). Eine Datei ohne das Kennzeichen `_plugin` wird als Ganzes abgewiesen; es ändert sich dann nichts. Sicherungen dieses Plugins ab 0.12.7 tragen es und werden weiter angenommen. Sicherungen von 0.12.4 bis 0.12.6 hatten keinen Kopf; sie lassen sich von einer fremden Datei nicht sicher unterscheiden und werden seit dieser Fassung abgewiesen (bis 0.12.31 wurden sie angenommen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird jetzt auch in den Blöcken (Sprachausgabe, Ansageregeln, Ansageanlässe, je Fensterzeile) nicht übernommen und mit ihrem Namen gemeldet; die übrigen Einstellungen werden zurückgespielt. Bis 0.12.31 wies ein solcher Name in einem Block die ganze Datei ab. Oben in der Datei galt das schon.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Wortzeichen.
+  - Die Zeile „Sicherung“ im Reiter *Test* prüft die neuen Regeln mit 13 Fällen, darunter eine Datei ohne und eine mit fremdem Kennzeichen.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Das Wortzeichen gehört in die Datei, die Sprechtoken nicht. Nach dem Zurückspielen zieht die Zweitschrift mit, das Plugin rechnet sofort neu, und die Meldung sagt es.
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen aller 28 Vorfassungen von 0.12.4 bis 0.12.31; am Gerät nicht gemessen.
 
 ## Neu in 0.12.31
 

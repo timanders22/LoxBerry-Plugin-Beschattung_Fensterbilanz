@@ -572,20 +572,27 @@ function fb_probe_sicherung()
     $kopf = array('_hinweis' => 'x', '_plugin' => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
                   '_stand' => 'x');
     $eigene = array_merge($kopf, fb_config());
+    /* 0.12.32 (gemeinsames Sicherungsmodul, Entscheidungen des Hausherrn 12.11.2026): eine Datei ohne den
+     * Kopf _plugin ist abzuweisen, ein unbekannter Schluessel in der EIGENEN Datei wird verworfen und
+     * genannt, die Datei angenommen. Die Wertfaelle tragen deshalb den Kopf - sonst fielen sie am
+     * Kennzeichen durch und mass die Zeile nicht mehr die Wertpruefung. */
+    $voll_k = array_merge($kopf, $voll);
+    $fremd_k = array_merge($voll_k, array('_plugin' => 'LoxBerry-Plugin-Anderes'));
     $faelle = array(
         // Name              Inhalt                                 muss angenommen werden?
-        array('gueltig',     json_encode($voll),                                     true),
-        array('mit Kopf',    json_encode(array_merge(array('_stand' => 'x'), $voll)), true),
-        array('halb',        json_encode(array_merge($voll, array('unbekannt' => 1))), false),
+        array('gueltig',     json_encode($voll_k),                                   true),
+        array('ohne Kennzeichen', json_encode(array_merge(array('_stand' => 'x'), $voll)), false),
+        array('fremdes Kennzeichen', json_encode($fremd_k),                          false),
+        array('eigene mit Unbekanntem', json_encode(array_merge($voll_k, array('unbekannt' => 1))), true),
         array('fremd',       json_encode(array('broker' => 'x', 'topic' => 'y')),     false),
         array('kein JSON',   'das ist keine Sicherung',                               false),
         array('leer',        '{}',                                                    false),
         array('eigene Sicherung', json_encode($eigene),                               true),
-        array('Token als Liste', json_encode(array_merge($voll, array('aktionstoken' => array('x', 'y')))), false),
-        array('Token Array', json_encode(array_merge($voll, array('aktionstoken' => 'Array'))), false),
-        array('Fenster als Text', json_encode(array_merge($voll, array('fenster' => 'kaputt'))), false),
-        array('Breite abc',  json_encode(array_merge($voll, array('breite' => 'abc'))),   false),
-        array('Thema als Liste', json_encode(array_merge($voll, array('mqtt_topic' => array('a')))), false),
+        array('Token als Liste', json_encode(array_merge($voll_k, array('aktionstoken' => array('x', 'y')))), false),
+        array('Token Array', json_encode(array_merge($voll_k, array('aktionstoken' => 'Array'))), false),
+        array('Fenster als Text', json_encode(array_merge($voll_k, array('fenster' => 'kaputt'))), false),
+        array('Breite abc',  json_encode(array_merge($voll_k, array('breite' => 'abc'))),   false),
+        array('Thema als Liste', json_encode(array_merge($voll_k, array('mqtt_topic' => array('a')))), false),
     );
     $schlecht = array();
     foreach ($faelle as $f) {

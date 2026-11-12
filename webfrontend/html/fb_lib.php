@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/sicherung.php';         // 0.12.32: gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php)
 /**
  * Fensterbilanz - gemeinsame Bibliothek
  *
@@ -5014,47 +5015,10 @@ function fb_ansage_wert($k, $w)
     return false;
 }
 
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function fb_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function fb_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = fb_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, fb_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = fb_tts($j);
-    }
-    foreach (array_diff(fb_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
-}
+/* 0.12.32: fb_ansage_fuer_sicherung() und fb_ansage_sicherung_vor() sind in die Beschreibung fuer das gemeinsame
+ * Sicherungsmodul gewandert: nie ein Sprechtoken und nie der Herkunftsvermerk in der Datei (fb_sicherung_beschreibung(),
+ * 'sichern' und 'nie_aus_datei'), der Block tts vor der Pruefung in fb_sicherung_vorbehandeln(), fehlende Ansage-Schluessel
+ * behalten den geltenden Wert ('fehlt' => 'behalten'), Vermerk und Herkunft setzt der Handler fb_zurueck. */
 
 /**
  * Die Hauptkonfiguration. Liegt eine ansage.json aus einer Probe vom 01.11., wird sie EINMAL uebernommen (Vermerk ansage_aus_datei) und bleibt liegen.
@@ -6693,120 +6657,128 @@ function fb_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function fb_sicherung_lesen($roh, &$namen = null)
+function fb_sicherung_lesen($roh, &$namen = null, &$r = null, $jetzt = null)
 {
-    $roh = fb_ansage_sicherung_vor($roh);     // 0.12.22: Token und Vermerk bleiben die geltenden
-    /* X-3 (Verbesserungsbau 01.10.2026): $namen sammelt die NAMEN der
-     * beanstandeten Schluessel - nie Werte - fuer die Warnung beim Sichern
-     * (fb_rueckspiel_altwerte()). Das Zurueckspielen selbst aendert sich nicht. */
+    /* 0.12.32: Lesen und Pruefen macht das gemeinsame Sicherungsmodul (sicherung_lesen(), Beschreibung
+     * fb_sicherung_beschreibung(); Auftrag des Hausherrn 12.11.2026). Was bis 0.12.31 hier stand und
+     * bleibt: der Kopf _plugin erkennt die eigene Datei (O18), ein unbekannter Schluessel oben wird
+     * uebergangen und genannt, jeder Wert geht durch fb_sicherung_wert() (C1), dieselben
+     * Querpruefungen wie der Speicher-Handler, fehlende Schluessel sind eine Beanstandung ausser den
+     * freiwilligen, eine halb gueltige Datei aendert GAR NICHTS, ein leeres Wortzeichen behaelt das
+     * geltende. Was sich aendert (Entscheidungen des Hausherrn 12.11.2026):
+     *   - Eine Datei OHNE den Kopf _plugin wird abgewiesen (bis 0.12.31: gelesen und bei Unbekanntem
+     *     beanstandet). Sicherungen bis 0.12.6 trugen keinen Kopf; sie sind von einer fremden Datei nicht
+     *     sicher zu unterscheiden.
+     *   - Ein unbekannter Schluessel IN EINEM BLOCK (tts, ansage_regeln, ansage_haken, eine Zeile der
+     *     Fensterliste) wird verworfen und genannt; bis 0.12.31 wies er die ganze Datei ab.
+     *   - Ein leerer Wert ueberschreibt keinen bestehenden (bis 0.12.31 nur beim Wortzeichen).
+     * Rueckgabe wie bisher: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
+     * array('token_leer' => bool, 'uebergangen' => Liste)); das volle Ergebnis steht in $r.
+     * X-3: $namen sammelt die NAMEN der beanstandeten Schluessel - nie Werte. */
     $namen = array();
-    /* C1 (Durchgang 30.09.2026): Rueckgabe traegt ein viertes Feld,
-     * array('token_leer' => bool, 'uebergangen' => Liste). Jeder Wert wird mit
-     * denselben Regeln geprueft wie im Formular (fb_sicherung_wert()); bis
-     * 0.12.10 wurde nur die Schluesselmenge verglichen, und "37 Werte
-     * uebernommen" stand auch ueber einem Wortzeichen als Liste, einem Thema
-     * als Liste, einem Standort "abc" und einer Fensterliste als Text
-     * (gemessen unter 7.4 und 8.5, Code-Pruefer Nr. 1-3, Oberflaeche-Pruefer
-     * Nr. 1). Eine halb gueltige Datei aendert weiterhin gar nichts. */
+    $b = fb_sicherung_beschreibung($namen);
+    $r = sicherung_lesen($b, (string) $roh, is_array($jetzt) ? $jetzt : fb_config());
     $mangel = array();
-    $info = array('token_leer' => false, 'uebergangen' => array());
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        $namen[] = '-';
-        return array(null, array(fb_t('EINST.SICH_KEIN_JSON')), 0, $info);
-    }
-    /* O18: traegt die Datei den Kopf, den der Sichern-Knopf DIESER Linie
-     * schreibt, stammt sie aus einer ihrer Fassungen. Ein Schluessel, den
-     * diese Fassung nicht mehr kennt, ist dann ein Altschluessel: er wird
-     * uebergangen und genannt. Bis 0.12.10 wies er die eigene Sicherung als
-     * Ganzes ab (gemessen, Oberflaeche-Pruefer Nr. 18). Ohne diesen Kopf
-     * bleibt es bei der Beanstandung. */
-    $eigen = isset($daten['_plugin']) && $daten['_plugin'] === 'LoxBerry-Plugin-Beschattung_Fensterbilanz';
-    $neu = fb_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        /* Der lesbare Kopf wird uebersprungen, nicht beanstandet.
-         *
-         * Seit 0.12.7 schreibt der Sichern-Knopf _hinweis, _plugin und
-         * _stand an den Anfang der Datei, damit sie von sich aus sagt, von
-         * welchem Plugin und von wann sie ist und dass sie ein Geheimnis
-         * traegt. Ohne diesen Uebersprung waere die eigene Sicherung beim
-         * Zurueckspielen "fremd" - und weil eine halb gueltige Datei GAR
-         * NICHTS aendert, waere sie damit unbrauchbar. */
-        if ($k !== '' && $k[0] === '_') { continue; }
-        if (!in_array($k, $bekannt, true)) {
-            if ($eigen) { $info['uebergangen'][] = $k; continue; }
-            /* O19: roh - maskiert wird an der Ausgabe (fb_e). Bis 0.12.10
-             * wurde hier UND dort maskiert (gemessen, Oberflaeche-Pruefer
-             * Nr. 19). */
-            $mangel[] = sprintf(fb_t('EINST.SICH_FREMD'), $k);
-            $namen[] = $k;
-            continue;
-        }
-        $n_k = array();
-        $wm = fb_sicherung_wert($k, $w, $n_k);
-        if ($wm) {
-            foreach ($wm as $z) { $mangel[] = $z; }
-            foreach ($n_k ? $n_k : array($k) as $nk) { $namen[] = $nk; }
-            continue;
-        }
-        /* Ein LEERES Wortzeichen heisst "keines gesichert" - der Aufrufer
-         * setzt das geltende ein und sagt es (Code-Pruefer Nr. 2). */
-        if ($k === 'aktionstoken' && $w === '') { $info['token_leer'] = true; }
-        $neu[$k] = $w;
-        $anzahl++;
-    }
-    /* Dieselben Querpruefungen wie der Speicher-Handler. */
-    if (!$mangel) {
-        if ((int) $neu['schwelle_aus'] >= (int) $neu['schwelle_ein']) {
-            $mangel[] = sprintf(fb_t('FEHLER.SCHWELLEN'),
-                                (int) $neu['schwelle_aus'], (int) $neu['schwelle_ein']);
-            $namen[] = 'schwelle_ein';
-            $namen[] = 'schwelle_aus';
-        }
-        if ((int) $neu['gewicht_raum'] + (int) $neu['gewicht_tag'] === 0) {
-            $mangel[] = fb_t('FEHLER.GEWICHTE_NULL');
-            $namen[] = 'gewicht_raum';
-            $namen[] = 'gewicht_tag';
-        }
-    }
-    if ($anzahl === 0) {
-        $mangel[] = fb_t('EINST.SICH_LEER');
-        $namen[] = '-';
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    $fehlend = array();
-    foreach (array_keys(fb_vorgaben()) as $fk) {
-        if (in_array($fk, fb_sicherung_freiwillig(), true)) { continue; }
-        if (!array_key_exists($fk, $daten)) {
-            $fehlend[] = $fk;
-        }
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(fb_t('EINST.SICH_FEHLEND'), count($fehlend),
-            implode(', ', $fehlend));
-        foreach ($fehlend as $fk) { $namen[] = $fk; }
+    foreach ($r['beanstandet'] as $x) {
+        if ($x['text'] !== '') { $mangel[] = $x['text']; }
+        if ($x['name'] === '_plugin' || $x['name'] === '-') { $namen[] = '-'; }
     }
     $namen = array_values(array_unique($namen));
-    return array($mangel ? null : $neu, $mangel, $anzahl, $info);
+    $info = array('token_leer' => in_array('aktionstoken', $r['leer_behalten'], true),
+                  'uebergangen' => $r['verworfen']);
+    return array($r['ok'] ? $r['neu'] : null, $mangel, (int) $r['anzahl'], $info);
+}
+
+/**
+ * 0.12.32: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Bloecke und ihre Unterschluessel (gemessen 12.11.2026 an fb_vorgaben(), fb_fenster_vorgabe(),
+ * fb_ansage_vorgaben() und fb_ansage_wert()): tts die Schluessel von ansage_werk_block() und die
+ * Sprechtoken (ein gesichertes Sprechtoken weist die Pruefung ab), je weiterem Ziel
+ * art/wo/laut/sprache/ein, ansage_regeln die von ansage_regeln_vorgaben(), ansage_haken
+ * beschatten/geber, je Fenster die von fb_fenster_vorgabe() - einander zugeordnet ueber das Kuerzel.
+ * raumflaechen traegt Raumnamen als Schluessel (dynamisch) und bleibt der Pruefung ueberlassen.
+ * $namen sammelt die Namen beanstandeter Schluessel (X-3), nie Werte.
+ */
+function fb_sicherung_beschreibung(&$namen = null)
+{
+    if (!is_array($namen)) { $namen = array(); }
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
+                 + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
+        'ansage_haken' => sicherung_block(array('beschatten', 'geber')) + array('fehlt' => 'behalten'),
+        'fenster' => sicherung_liste(array_keys(fb_fenster_vorgabe()), 'kuerzel'),
+        'raumflaechen' => sicherung_offen(),
+        /* Gruppe 36 (0.12.20): eine Sicherung bis 0.12.19 kennt endpunkt_ein nicht - der geltende Wert
+         * bleibt, eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
+        'endpunkt_ein' => array('fehlt' => 'behalten'),
+    );
+    /* Reine Vermerke bzw. harmlose Vorgaben, die aeltere Fassungen nicht kannten (fb_sicherung_freiwillig()):
+     * fehlen sie, gilt die Vorgabe. */
+    foreach (array_diff(fb_sicherung_freiwillig(), array('endpunkt_ein')) as $f) {
+        $schluessel[$f] = array('fehlt' => 'vorgabe');
+    }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
+        'hinweis' => fb_klartext('EINST.SICH_KOPF'),
+        'home' => (string) fb_paths()['home'], 'ordner' => (string) fb_paths()['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => fb_vorgaben(),
+        'schluessel' => $schluessel,
+        /* 0.12.22: der Herkunftsvermerk der Sprechtoken und der Vermerk ansage_aus_datei kommen nie aus
+         * einer Datei; das Zurueckspielen setzt sie aus dem geltenden Stand (index.php, fb_zurueck). */
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'pruefen' => function ($k, $w) use (&$namen) {
+            $n_k = array();
+            $wm = fb_sicherung_wert($k, $w, $n_k);
+            if (!$wm) { return ''; }
+            foreach ($n_k ? $n_k : array($k) as $nk) { $namen[] = $nk; }
+            return $wm;
+        },
+        'vorbehandeln' => 'fb_sicherung_vorbehandeln',
+        'quer' => function ($neu, $r) use (&$namen) {
+            /* Dieselben Querpruefungen wie der Speicher-Handler - erst, wenn jeder Wert fuer sich taugt. */
+            if ($r['beanstandet']) { return array(); }
+            $aus = array();
+            if ((int) $neu['schwelle_aus'] >= (int) $neu['schwelle_ein']) {
+                $aus[] = array('schwelle_ein', sprintf(fb_t('FEHLER.SCHWELLEN'), (int) $neu['schwelle_aus'], (int) $neu['schwelle_ein']));
+                $namen[] = 'schwelle_ein';
+                $namen[] = 'schwelle_aus';
+            }
+            if ((int) $neu['gewicht_raum'] + (int) $neu['gewicht_tag'] === 0) {
+                $aus[] = array('gewicht_raum', fb_t('FEHLER.GEWICHTE_NULL'));
+                $namen[] = 'gewicht_raum';
+                $namen[] = 'gewicht_tag';
+            }
+            return $aus;
+        },
+        't' => 'fb_t',
+        'e' => 'fb_e',
+    );
+}
+
+/**
+ * 0.12.32: Der Block tts vor der Pruefung - was bis 0.12.31 fb_ansage_sicherung_vor() an der rohen Datei
+ * tat, jetzt nach dem Verwerfen unbekannter Unterschluessel: ein Block mit Sprechtoken oder mit einem
+ * unzulaessigen Wert wird unbrauchbar gemacht (die Wertpruefung nennt ihn), sonst vervollstaendigt, und die
+ * geltenden Sprechtoken bleiben. Fehlt der Block, behaelt das Modul den geltenden ('fehlt' => 'behalten').
+ */
+function fb_sicherung_vorbehandeln($bereit, $jetzt)
+{
+    if (!array_key_exists('tts', $bereit)) { return $bereit; }
+    $j = fb_ansage_cfg();
+    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
+    $g = '';
+    $p = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, fb_ansage_modi()) : null;
+    if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $p === null) {
+        $bereit['tts'] = 'ABGEWIESEN';
+    } else {
+        list($tv) = ansage_vervollstaendigen($p, 'aus');
+        $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    return $bereit;
 }
 
 /**
@@ -6817,12 +6789,14 @@ function fb_sicherung_lesen($roh, &$namen = null)
  */
 function fb_sicherung_bauen()
 {
-    return array_merge(array(
-        '_hinweis' => fb_klartext('EINST.SICH_KOPF'),
-        '_plugin'  => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
-        /* KEINE Fassungsnummer - siehe den Handler fb_sichern. */
-        '_stand'   => date('Y-m-d H:i:s'),
-    ), fb_ansage_fuer_sicherung(fb_config()));     // 0.12.22: nie ein Sprechtoken
+    /* 0.12.32: Kopf und Inhalt baut das gemeinsame Sicherungsmodul (sicherung_bauen()). Der Kopf traegt
+     * jetzt auch _fassung (Entscheidung des Hausherrn 12.11.2026) - gelesen aus der Plugin-Datenbank bzw.
+     * der plugin.cfg, also keine fuenfte Stelle neben den vier, die Werkzeuge/fassung_setzen.py pflegt.
+     * Nie ein Sprechtoken, nie der Herkunftsvermerk (0.12.22; Beschreibung: 'sichern', 'nie_aus_datei').
+     * Die Warnung _warnung setzt der Handler fb_sichern wie bisher (fb_rueckspiel_altwerte()). */
+    $d = sicherung_bauen(fb_sicherung_beschreibung(), fb_config());
+    unset($d['_warnung']);
+    return $d;
 }
 
 /**
