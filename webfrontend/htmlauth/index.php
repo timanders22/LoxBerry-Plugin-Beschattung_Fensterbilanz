@@ -1302,20 +1302,17 @@ if ($fb_post && isset($_POST['fb_sichern'])) {
  *   3. Es wurde nicht neu gerechnet. Bis zum naechsten Cron-Lauf stand in
  *      stand.json das Urteil der alten Fensterliste.
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
+ * 0.12.33: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0, Entscheidung des
+ * Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und
+ * nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die
+ * Groessengrenze des Moduls; erst danach wird die Datei gelesen. */
 if ($fb_post && isset($_POST['fb_zurueck'])) {
     $fb_tab = 'tab-settings';
-    if (!isset($_FILES['fb_sicherung']) || !is_array($_FILES['fb_sicherung'])
-        || !isset($_FILES['fb_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['fb_sicherung']['tmp_name'])) {
-        $fb_fehler[] = fb_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['fb_sicherung']['size'] > 262144) {
-        $fb_fehler[] = fb_t('EINST.SICH_ZU_GROSS');
+    list($fb_s_inhalt, $fb_ab) = sicherung_eingang(fb_sicherung_beschreibung(), $_POST, $_FILES, 'fb_sicherung');
+    if ($fb_ab !== null) {
+        $fb_m = sicherung_meldungen(fb_sicherung_beschreibung(), $fb_ab);
+        foreach ($fb_m['fehler'] as $fb_x) { $fb_fehler[] = $fb_x; }
     } else {
-        $fb_s_inhalt = (string) @file_get_contents($_FILES['fb_sicherung']['tmp_name']);
         /* 0.12.32: das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()) liest UNTER DER SPERRE,
          * prueft, verwirft Unbekanntes mit Namen, laesst leere Werte den bisherigen stehen (auch das
          * Wortzeichen, C1) und aendert bei einer Beanstandung GAR NICHTS - alle Beanstandungen, nicht nur
@@ -2488,6 +2485,7 @@ if ($fb_alt_w) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= fb_e($fb_merkmal) ?>">
     <input data-role="none" type="file" name="fb_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(fb_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="fb_zurueck" value="1"><?= fb_e(fb_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>

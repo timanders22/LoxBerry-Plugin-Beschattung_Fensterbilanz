@@ -6715,10 +6715,12 @@ function fb_sicherung_beschreibung(&$namen = null)
          * bleibt, eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
         'endpunkt_ein' => array('fehlt' => 'behalten'),
     );
-    /* Reine Vermerke bzw. harmlose Vorgaben, die aeltere Fassungen nicht kannten (fb_sicherung_freiwillig()):
-     * fehlen sie, gilt die Vorgabe. */
+    /* Was aeltere Fassungen nicht kannten (fb_sicherung_freiwillig()): fehlt es, behaelt es den geltenden Wert
+     * und wird genannt. Bis 0.12.33 mit Modul 1.2.0 galt fuer mqtt_praefix_alt, sonne_teilen und
+     * befehle_mqtt_ein die Vorgabe (Entscheidung des Hausherrn 12.11.2026 "Ja, behalten", einheitlich mit
+     * den uebrigen Linien). */
     foreach (array_diff(fb_sicherung_freiwillig(), array('endpunkt_ein')) as $f) {
-        $schluessel[$f] = array('fehlt' => 'vorgabe');
+        $schluessel[$f] = array('fehlt' => 'behalten');
     }
     return array(
         'kennzeichen' => 'LoxBerry-Plugin-Beschattung_Fensterbilanz',
@@ -6824,10 +6826,9 @@ function fb_rueckspiel_altwerte($aus = null)
 function fb_sicherung_freiwillig()
 {
     /* Sonne-1 (Verbesserungsbau 01.10.2026): 'sonne_teilen' kennen Sicherungen
-     * bis 0.12.12 nicht. Fehlt er, gilt die Vorgabe 0 (aus) - die harmlose
-     * Richtung, eine eingerichtete Anlage aendert dadurch nichts. */
-    /* Gruppe 3 / MQTT (0.12.19): 'befehle_mqtt_ein' kennen Sicherungen bis 0.12.18 nicht. Fehlt er, gilt die
-     * Vorgabe 0 (aus) - die harmlose Richtung, der HTTP-Weg einer eingerichteten Anlage bleibt unberuehrt. */
+     * bis 0.12.12 nicht. Gruppe 3 / MQTT (0.12.19): 'befehle_mqtt_ein' kennen Sicherungen bis 0.12.18
+     * nicht. Fehlt einer davon, behaelt er seit 0.12.33 (Modul 1.2.1) den geltenden Wert; bis dahin galt die
+     * Vorgabe 0 (Entscheidung des Hausherrn 12.11.2026 "Ja, behalten"). */
     /* Gruppe 36 (0.12.20): 'endpunkt_ein' kennen Sicherungen bis 0.12.19 nicht. Fehlt er, behaelt das Zurueckspielen
      * den geltenden Wert (htmlauth/index.php, fb_zurueck) - eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
     return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein');
