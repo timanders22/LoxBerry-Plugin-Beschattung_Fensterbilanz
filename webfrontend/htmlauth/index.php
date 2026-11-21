@@ -1452,7 +1452,8 @@ $fb_rahmen = class_exists('LBWeb', false);
 
 
 if ($fb_rahmen) {
-    LBWeb::lbheader(fb_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(fb_t('ALLG.TITEL'), __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
