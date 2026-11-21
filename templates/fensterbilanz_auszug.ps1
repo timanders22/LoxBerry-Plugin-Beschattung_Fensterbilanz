@@ -68,10 +68,37 @@ $inhalt = [System.IO.File]::ReadAllText($Datei, [System.Text.Encoding]::UTF8)
 
 # ---------------------------------------------------------------- Fenster
 #
-# Die Bausteine werden am Anfangsmerkmal getrennt und der Abschnitt bis zum
-# naechsten Anfang durchsucht. Das ist zulaessig, WEIL K="Dir" nur im
-# AutoJalousie vorkommt - und genau das wird unten nachgezaehlt und
-# gemeldet, falls es einmal nicht mehr stimmt. Geraten wird hier nichts.
+# Ein Baustein reicht vom Anfangsmerkmal bis zu SEINEM </C>, gefunden ueber
+# Tiefenzaehlung - dieselbe Regel wie fb_projekt_lesen() im Plugin
+# (0.12.37, fremder Pruefer C3). Bis 0.12.36 reichte der Abschnitt bis zum
+# naechsten Rollladenbaustein, beim letzten bis zum Dateiende; ein Baustein,
+# dessen Richtung oder Neigung an einem Eingang haengt, bekam so die Zahl
+# eines fremden Bausteins dahinter (in einer Referenzdatei steht hinter dem
+# Dachfenster ein AnalogStepper, der ebenfalls einen Anschluss Dir traegt).
+# Unten wird gezaehlt, ob jeder Baustein genau eine Richtungsangabe traegt.
+# Geraten wird hier nichts.
+function Get-BausteinEnde([string]$t, [int]$start) {
+    $i = $start
+    $tiefe = 0
+    while ($i -lt $t.Length) {
+        $auf = $t.IndexOf('<C ', $i, [System.StringComparison]::Ordinal)
+        $zu = $t.IndexOf('</C>', $i, [System.StringComparison]::Ordinal)
+        if ($zu -lt 0) { return -1 }
+        if ($auf -ge 0 -and $auf -lt $zu) {
+            $tagEnde = $t.IndexOf('>', $auf, [System.StringComparison]::Ordinal)
+            if ($tagEnde -lt 0) { return -1 }
+            # Ein selbstschliessendes <C .../> zaehlt nicht mit.
+            if ($t[$tagEnde - 1] -ne '/') { $tiefe++ }
+            $i = $tagEnde + 1
+            continue
+        }
+        $tiefe--
+        $i = $zu + 4
+        if ($tiefe -le 0) { return $zu }
+    }
+    return -1
+}
+
 #
 # Seit 0.12.28 drei Typen: AutoJalousie (Automatikbeschattung), Jalousiemotor
 # (Automatikbeschattung Integriert) und ShadeRoof (Dachfenster Beschattung).
@@ -82,15 +109,22 @@ $inhalt = [System.IO.File]::ReadAllText($Datei, [System.Text.Encoding]::UTF8)
 # das Plugin.
 $anfaenge = [regex]::Matches($inhalt, '<C Type="(AutoJalousie|Jalousiemotor|ShadeRoof)"')
 $neueTypen = 0
-$dirGesamt = ([regex]::Matches($inhalt, '<Co K="Dir"')).Count
+$dirGesamt = 0
+$unvollstaendig = 0
 
 $fenster = New-Object System.Collections.ArrayList
 $ohneRichtung = New-Object System.Collections.ArrayList
 
 for ($i = 0; $i -lt $anfaenge.Count; $i++) {
     $von = $anfaenge[$i].Index
-    $bis = if ($i + 1 -lt $anfaenge.Count) { $anfaenge[$i + 1].Index } else { $inhalt.Length }
+    $bis = Get-BausteinEnde $inhalt $von
+    if ($bis -lt 0) {
+        # Wie fb_projekt_lesen(): ein Baustein ohne Ende wird uebergangen und gezaehlt.
+        $unvollstaendig++
+        continue
+    }
     $block = $inhalt.Substring($von, $bis - $von)
+    $dirGesamt += ([regex]::Matches($block, '<Co K="Dir"')).Count
 
     $kopfEnde = $block.IndexOf('>')
     $kopf = if ($kopfEnde -gt 0) { $block.Substring(0, $kopfEnde) } else { $block }
@@ -176,10 +210,15 @@ if ($ohneRichtung.Count -gt 0) {
     foreach ($n in $ohneRichtung) { Schreib ("   " + $n) }
 }
 
-if ($dirGesamt -ne $anfaenge.Count) {
+if ($unvollstaendig -gt 0) {
     Schreib ''
-    Schreib ("ACHTUNG: {0} Rollladenbausteine, aber {1} Richtungsangaben in der Datei." -f $anfaenge.Count, $dirGesamt)
-    Schreib '         Dieses Skript ordnet die Richtung dem jeweils vorangehenden Baustein zu.'
+    Schreib ("ACHTUNG: {0} Rollladenbaustein(e) ohne Ende in der Datei - uebergangen." -f $unvollstaendig)
+}
+
+if ($dirGesamt -ne $fenster.Count) {
+    Schreib ''
+    Schreib ("ACHTUNG: {0} Rollladenbausteine, aber {1} Richtungsangaben in ihnen." -f $fenster.Count, $dirGesamt)
+    Schreib '         Gelesen wird nur innerhalb des eigenen Bausteins.'
     Schreib '         Bitte die Zahlen im Plugin gegen Loxone Config pruefen.'
 }
 

@@ -67,12 +67,12 @@ $fb_argumente = isset($argv) ? $argv : array();
  * Schalter als gewoehnlicher Lauf - --help, --status und der Tippfehler --selftest rechneten neu und sendeten (Probe
  * t3bc). Jetzt: eine Hilfezeile auf die Fehlerausgabe und Rueckgabe 2, wie die Befehlsbruecke (bb_haupt()).
  * --praefix=<p> gilt nur zusammen mit --mqtt-leeren. */
-$fb_erlaubt = array('--selbsttest', '--zeile', '--mqtt-leeren', '--jetzt');
+$fb_erlaubt = array('--selbsttest', '--zeile', '--mqtt-leeren', '--jetzt', '--haus-lesen');   // --haus-lesen: 0.12.37 (E1)
 foreach (array_slice($fb_argumente, 1) as $fb_a) {
     $fb_a = (string) $fb_a;
     if (strpos($fb_a, '--praefix=') === 0 && in_array('--mqtt-leeren', $fb_argumente, true)) { continue; }
     if (!in_array($fb_a, $fb_erlaubt, true)) {
-        fwrite(STDERR, 'Unbekannter Schalter: ' . $fb_a . ' - erlaubt: --selbsttest, --zeile, --jetzt, '
+        fwrite(STDERR, 'Unbekannter Schalter: ' . $fb_a . ' - erlaubt: --selbsttest, --zeile, --jetzt, --haus-lesen, '
             . "--mqtt-leeren [--praefix=<p>]\n");
         exit(2);
     }
@@ -131,6 +131,13 @@ if (fb_upgrade_laeuft()) {
     exit(0);
 }
 
+/* 0.12.37 (Erweiterung E1): der abgekoppelte Leser fuer haus/pv - gestartet von fb_haus_pv_leser_starten(), hoechstens
+ * einer (eigene Sperre), bis zu 65 s am Broker; der Takt wartet nie darauf. */
+if (in_array('--haus-lesen', $fb_argumente, true)) {
+    echo fb_haus_pv_leser_lauf() . "\n";
+    exit(0);
+}
+
 /* 0.12.31 (Nachtpruefung 12.11.2026): die beiden Meldungen des Rechenlaufs tragen Datum und Uhrzeit. cron/cron.05min
  * haengt die Fehlerausgabe an log/plugins/<ordner>/cron.err an und beruehrt die Datei jede Minute (touch) - ihr
  * Zeitstempel sagt deshalb nichts. Am Geraet stand dort eine Zeile "Es fehlen gueltige Messwerte" vom 07.11.2026,
@@ -143,6 +150,8 @@ function fb_lauf_fehlerzeile($text)
 
 $fb_erzwingen = in_array('--jetzt', $fb_argumente, true);
 list($fb_gerechnet, $fb_stand, $fb_warum) = fb_lauf($fb_erzwingen);
+/* 0.12.37 (E1): mit pv_haus_ein den Leser fuer haus/pv anstossen - abgekoppelt, ohne zu warten; aus = nichts. */
+if ($fb_warum !== 'aktualisierung') { fb_haus_pv_leser_starten(); }
 
 if (!$fb_gerechnet) {
     /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.2 a, E5): auch ohne Rechnung das Lebenszeichen (status/ok, status/ts,
@@ -150,6 +159,8 @@ if (!$fb_gerechnet) {
      * waehrend einer Aktualisierung. */
     if ($fb_warum === 'takt' || $fb_warum === 'sperre') {
         fb_lebenszeichen_senden(fb_config(), $fb_stand);
+        /* 0.12.37 (C1): was Endpunkt oder Befehlsbruecke hingelegt haben, spricht der Sender - angestossen hier. */
+        fb_ansage_anstossen();
     }
     /* C6 (Durchgang 30.09.2026): der wahre Grund. Bis 0.12.10 stand hier auch
      * bei --jetzt "innerhalb des Rechentakts", waehrend die Sperre belegt war
@@ -164,7 +175,7 @@ if (!$fb_gerechnet) {
     }
     exit(0);
 }
-fb_ansage_takt($fb_stand);     // 0.12.22: legt nur hin, wartet auf nichts; steuert nichts
+fb_ansage_anstossen();     // 0.12.37 (C1): die Flanken prueft fb_lauf() selbst; hier nur den Sender anstossen
 if ($fb_stand['meldung'] === 'KEIN_STANDORT') {
     fb_lauf_fehlerzeile("Es ist kein Standort eingetragen (Reiter Einstellungen). "
         . "Ohne Breite und Laenge gibt es keinen Sonnenstand.");

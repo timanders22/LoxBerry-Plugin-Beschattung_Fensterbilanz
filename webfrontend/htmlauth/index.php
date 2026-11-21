@@ -291,7 +291,7 @@ if ($fb_post && isset($_POST['speichern_modell'])) {
      * jeder Reiter hat seinen eigenen Handler, und ein Haken aus einem
      * fremden Formular kann diesen hier nicht zuruecksetzen. */
     foreach (array('daemmen_ein', 'stellung_ein', 'bericht_ein',
-                   'pv_gegenprobe', 'lernen_ein') as $fb_h) {
+                   'pv_gegenprobe', 'lernen_ein', 'pv_haus_ein') as $fb_h) {   // pv_haus_ein: 0.12.37 (E1)
         $fb_cfg[$fb_h] = !empty($_POST[$fb_h]) ? 1 : 0;
     }
     $fb_modell = (isset($_POST['himmelsmodell']) && is_string($_POST['himmelsmodell']))
@@ -574,22 +574,35 @@ if ($fb_post && isset($_POST['luecken_schliessen'])) {
              * beide Zahlen plausibel aussehen. */
             $fb_bil_l = fb_json_lesen($fb_p['bilanz']);
             if (isset($fb_bil_l['fenster']) && is_array($fb_bil_l['fenster'])) {
-                $fb_bf = array();
-                $fb_bs = array();
-                foreach ($fb_alt_l as $fb_neu_nr => $fb_alt_nr) {
-                    /* Die Bilanz zaehlt ab 1, die Konfiguration ab 0. */
-                    $fb_a = (string) ($fb_alt_nr + 1);
-                    $fb_n = (string) ($fb_neu_nr + 1);
-                    if (isset($fb_bil_l['fenster'][$fb_a])) {
-                        $fb_bf[$fb_n] = $fb_bil_l['fenster'][$fb_a];
+                /* 0.12.37 (fremder Pruefer B1): ALLE Spalten je Fensternummer wandern mit - fenster (Wh), zu_s
+                 * (Sekunden Beschattung, gelesen vom Reiter Test und vom Tagesbericht) und spitze. Bis 0.12.36 blieb
+                 * zu_s auf den alten Nummern, und spitze blieb ganz stehen, wenn kein verbliebenes Fenster eine trug.
+                 * Was keinem verbliebenen Fenster gehoert, faellt weg; eine Spalte ohne Eintrag wird leer, nicht alt. */
+                foreach (array('fenster', 'zu_s', 'spitze') as $fb_sp) {
+                    $fb_alt_sp = (isset($fb_bil_l[$fb_sp]) && is_array($fb_bil_l[$fb_sp])) ? $fb_bil_l[$fb_sp] : array();
+                    $fb_neu_sp = array();
+                    foreach ($fb_alt_l as $fb_neu_nr => $fb_alt_nr) {
+                        /* Die Bilanz zaehlt ab 1, die Konfiguration ab 0. */
+                        $fb_a = (string) ($fb_alt_nr + 1);
+                        if (isset($fb_alt_sp[$fb_a])) { $fb_neu_sp[(string) ($fb_neu_nr + 1)] = $fb_alt_sp[$fb_a]; }
                     }
-                    if (isset($fb_bil_l['spitze'][$fb_a])) {
-                        $fb_bs[$fb_n] = $fb_bil_l['spitze'][$fb_a];
-                    }
+                    $fb_bil_l[$fb_sp] = $fb_neu_sp;
                 }
-                $fb_bil_l['fenster'] = $fb_bf;
-                if ($fb_bs) { $fb_bil_l['spitze'] = $fb_bs; }
                 fb_json_schreiben($fb_p['bilanz'], $fb_bil_l, 0644);
+            }
+            /* Gleiche Bauart (0.12.37, B1): der Flankenmerker der Sprachansagen haelt den letzten Stand je
+             * Fensternummer. Ohne Umschreiben saehe der naechste Lauf eine Flanke 0 -> 1, wo nur eine Zeile
+             * gewandert ist, und kuendigte eine Beschattung an, die es nicht neu gibt. */
+            $fb_fl_d = $fb_p['datadir'] . '/ansage_flanken.json';
+            $fb_fl = is_file($fb_fl_d) ? json_decode((string) @file_get_contents($fb_fl_d), true) : null;
+            if (is_array($fb_fl) && isset($fb_fl['fenster']) && is_array($fb_fl['fenster'])) {
+                $fb_fl_n = array();
+                foreach ($fb_alt_l as $fb_neu_nr => $fb_alt_nr) {
+                    $fb_a = (string) ($fb_alt_nr + 1);
+                    if (isset($fb_fl['fenster'][$fb_a])) { $fb_fl_n[(string) ($fb_neu_nr + 1)] = $fb_fl['fenster'][$fb_a]; }
+                }
+                $fb_fl['fenster'] = $fb_fl_n;
+                fb_json_schreiben($fb_fl_d, $fb_fl, 0644);
             }
             $fb_meldungen[] = sprintf(fb_t('EINST.LUECKEN_ZU'),
                 $fb_luecken, count($fb_alt_l));
@@ -870,17 +883,22 @@ if ($fb_post && isset($_POST['projekt_datei'])) {
         /* memory_limit ist die EINZIGE Grenze, die auf diesem Weg noch gilt:
          * die Datei wird als Zeichenkette gelesen. Sie vorher zu pruefen ist
          * ehrlicher, als PHP mitten im Lesen abbrechen zu lassen - ein
-         * Abbruch dort sieht aus wie eine kaputte Datei. Der Faktor 4 ist
-         * gewaehlt und nicht gemessen: die Zeichenkette selbst, die Kopie
-         * beim Zerlegen und etwas Luft. */
+         * Abbruch dort sieht aus wie eine kaputte Datei.
+         *
+         * 0.12.37 (fremder Pruefer B2): bis 0.12.36 stand hier nur die Meldung, gelesen wurde trotzdem - und brach
+         * PHP dann ab, sah niemand die Meldung (die Seite starb mit). Und der Faktor 4 war gewaehlt, nicht gemessen.
+         * Gemessen an der Projektdatei dieser Anlage (4,4 MB, PHP 7.4.33 und 8.4.27): Lesen und Zerlegen kosten das
+         * 1,4-Fache der Dateigroesse zusaetzlich zu dem, was die Seite schon belegt. Gerechnet wird deshalb mit dem
+         * belegten Speicher (memory_get_usage(true): daran misst PHP die Grenze) plus dem Doppelten der Datei; reicht
+         * das nicht, wird NICHT gelesen und es gesagt. */
         $fb_gr = fb_grenzen();
-        if ($fb_gr['memory_limit'][1] < $fb_d['groesse'] * 4) {
+        $fb_bedarf = memory_get_usage(true) + 2 * (int) $fb_d['groesse'];
+        $fb_inhalt = false;
+        if ($fb_gr['memory_limit'][1] < $fb_bedarf) {
             $fb_fehler[] = sprintf(fb_t('PROJEKT.SPEICHER'),
                 $fb_d['name'], $fb_d['groesse'] / 1048576.0,
-                $fb_gr['memory_limit'][0]);
-        }
-        $fb_inhalt = fb_holen_datei($fb_d['pfad']);
-        if ($fb_inhalt === false) {
+                $fb_gr['memory_limit'][0], $fb_bedarf / 1048576.0);
+        } elseif (($fb_inhalt = fb_holen_datei($fb_d['pfad'])) === false) {
             $fb_fehler[] = sprintf(fb_t('PROJEKT.NICHT_LESBAR'), $fb_d['pfad']);
         } else {
             $fb_meldungen[] = sprintf(fb_t('PROJEKT.AUS_ORDNER'),
@@ -1105,6 +1123,8 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
     $fb_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
     /* Sonne-1 (Verbesserungsbau 01.10.2026): im selben Formular, ab Werk aus. */
     $fb_cfg['sonne_teilen'] = !empty($_POST['sonne_teilen']) ? 1 : 0;
+    /* 0.12.37 (Erweiterung E2): die Raumthemen unter haus/sonne/raum/, im selben Formular, ab Werk aus. */
+    $fb_cfg['sonne_raeume_ein'] = !empty($_POST['sonne_raeume_ein']) ? 1 : 0;
     /* Gruppe 3 / MQTT (0.12.19): der Haken der Befehlsbruecke, im selben Formular, ab Werk aus. */
     $fb_cfg['befehle_mqtt_ein'] = !empty($_POST['befehle_mqtt_ein']) ? 1 : 0;
     /* Gruppe 36 (0.12.20, E-E10): der Schalter des HTTP-Endpunkts, im selben Formular. */
@@ -1978,6 +1998,11 @@ window.addEventListener('resize', fbRollbalken);
   <label><input data-role="none" type="checkbox" name="pv_gegenprobe" value="1"<?= fb_eingabe_an('modell', 'pv_gegenprobe', $fb_cfg['pv_gegenprobe']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_PV_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('EINST.H_PV_GEGENPROBE') ?></p>
 </div>
+<?php /* 0.12.37 (Erweiterung E1): die PV-Prognose aus haus/pv, ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="pv_haus_ein" value="1"<?= fb_eingabe_an('modell', 'pv_haus_ein', $fb_cfg['pv_haus_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('EINST.L_PV_HAUS')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('EINST.H_PV_HAUS') ?></p>
+</div>
 <div class="sm-feld">
   <label for="fb_pv_abweichung"><?= fb_e(fb_t('EINST.L_PV_ABWEICHUNG')) ?></label>
   <input data-role="none" type="text" id="fb_pv_abweichung" name="pv_abweichung" value="<?= fb_e(fb_eingabe('modell', 'pv_abweichung', (int) $fb_cfg['pv_abweichung'])) ?>"<?= fb_markierung('modell', 'pv_abweichung') ?>>
@@ -2536,6 +2561,11 @@ if ($fb_alt_w) { ?>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="sonne_teilen" value="1"<?= fb_eingabe_an('mqtt', 'sonne_teilen', $fb_cfg['sonne_teilen']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.S1_EIN')) ?></label>
   <p class="sm-hilfe"><?= fb_t('MQTT.S1_HILFE') ?></p>
+</div>
+<?php /* 0.12.37 (Erweiterung E2): Sonnenlast je Raum, ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="sonne_raeume_ein" value="1"<?= fb_eingabe_an('mqtt', 'sonne_raeume_ein', $fb_cfg['sonne_raeume_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.S2_EIN')) ?></label>
+  <p class="sm-hilfe"><?= fb_t('MQTT.S2_HILFE') ?></p>
 </div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= fb_eingabe_an('mqtt', 'befehle_mqtt_ein', $fb_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>> <?= fb_e(fb_t('MQTT.BEFEHLE_EIN')) ?></label>

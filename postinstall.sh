@@ -18,6 +18,11 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-fensterbilanz}"
+# 0.12.37 (fremder Pruefer A1): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (etwa Alexa-NG 1.0.22). Vor jedem mkdir, chmod, mv und rm.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angelegt, nichts zurueckgespielt."; exit 1 ;;
+esac
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
@@ -86,6 +91,24 @@ fb_inhalt() {   # $1 Datei, $2 Art: token | json | eingerichtet
     fb_rc=$?
     [ "$fb_rc" = 0 ] || [ "$fb_rc" = 1 ] || return 2
     return "$fb_rc"
+}
+
+# ---------- Atomar hinlegen (0.12.37, fremder Pruefer A2) ----------
+# Wortgleich mit zs_hinlegen() in preupgrade.sh (Bauart Govee 0.9.34): die Kopie entsteht als <Ziel>.neu.<pid>, traegt
+# 0600, BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt. Bis 0.12.36
+# spielte dieses Skript Konfiguration und Messreihen mit "cp -p" zurueck: brach die Kopie ab (voller Datentraeger,
+# Dateigrenze), lag am Ziel eine halbe Datei (in WSL gemessen mit ulimit -f, Pruefung-Beschattung_Fensterbilanz-0.12.37).
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
 }
 
 # ---------- Die Marke aus preupgrade.sh ----------
@@ -166,7 +189,7 @@ elif [ -f "$BK" ]; then
                 echo "<INFO> Die Konfiguration trug kein Wortzeichen; sie liegt als"
                 echo "<INFO> $CF.kaputt daneben."
             fi
-            if cp -p "$BK" "$CF" && cmp -s "$BK" "$CF"; then
+            if zs_hinlegen "$BK" "$CF"; then
                 chmod 600 "$CF" 2>/dev/null
                 echo "<OK> Konfiguration aus Sicherung wiederhergestellt (mit Wortzeichen)."
             else
@@ -284,7 +307,7 @@ for N in bilanz lernen pv messwerte; do
             echo "<WARNING> nicht eingespielt, sie bleibt liegen."
             continue ;;
     esac
-    if cp -p "$R" "$Z" && cmp -s "$R" "$Z"; then
+    if zs_hinlegen "$R" "$Z"; then
         chmod 644 "$Z" 2>/dev/null
         rm -f "$R"
         ZURUECK=$((ZURUECK+1))

@@ -443,6 +443,11 @@ function fb_vorgaben()
          * dann wird gewarnt und nichts geaendert. AB WERK AUS. */
         'pv_gegenprobe'  => 0,
         'pv_abweichung'  => 25,    // Prozent
+        /* 0.12.37 (Erweiterung E1): die Ertragsprognose nicht ueber Loxone (pv_prognose), sondern direkt aus dem
+         * Haus-Thema haus/pv (Anbieter Weatherdata ab 0.9.10, Regeln/07): jetzt_w / kwp, also Watt je kWp - dieselbe
+         * Groessenordnung wie W/m2. Gelesen vom abgekoppelten Leser (fb_haus_pv_leser_lauf()), nur bei live
+         * empfangenem Zaehler, ok = 1 und datum = heute. AB WERK AUS; wirkt nur mit pv_gegenprobe. */
+        'pv_haus_ein'    => 0,
 
         /* ---- Aufheizkonstante lernen ----
          * Je Raum den gerechneten Tageseintrag gegen die gemessene
@@ -476,6 +481,11 @@ function fb_vorgaben()
          * eingerichteten Anlage aendert sich durch das Update nicht. Wirkt
          * nur mit mqtt_ein. Siehe fb_sonne_nachrichten(). */
         'sonne_teilen'   => 0,
+        /* 0.12.37 (Erweiterung E2): je Raum die Sonnenlast fuer Klimageraete und andere Abnehmer unter
+         * haus/sonne/raum/<raum>/ - jetzt durchs Glas, davon im Raum, in der Vorausschau und als Waermemenge des
+         * Tages (fb_sonne_raeume()). AB WERK AUS; wirkt nur mit sonne_teilen und mqtt_ein, fluechtig wie der Rest von
+         * haus/sonne, das Lebenszeichen bleibt haus/sonne/ts. */
+        'sonne_raeume_ein' => 0,
     );
 }
 
@@ -842,7 +852,8 @@ function fb_fenster_zahlfelder()
 function fb_haken_felder()
 {
     return array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe',
-                 'lernen_ein', 'mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein');
+                 'lernen_ein', 'mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein',
+                 'pv_haus_ein', 'sonne_raeume_ein');   // 0.12.37 (E1, E2)
 }
 
 function fb_haken_ok($w)
@@ -1060,6 +1071,8 @@ function fb_config_richten($cfg)
     $cfg['befehle_mqtt_ein'] = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;   // Gruppe 3 / MQTT
     $cfg['endpunkt_ein']   = empty($cfg['endpunkt_ein']) ? 0 : 1;   // Gruppe 36 (0.12.20)
     $cfg['sonne_teilen']   = empty($cfg['sonne_teilen']) ? 0 : 1;   // Sonne-1
+    $cfg['pv_haus_ein']    = empty($cfg['pv_haus_ein']) ? 0 : 1;    // 0.12.37 (E1)
+    $cfg['sonne_raeume_ein'] = empty($cfg['sonne_raeume_ein']) ? 0 : 1;   // 0.12.37 (E2)
     $t = preg_replace('#[^a-z0-9_/\-]#', '', strtolower(is_string($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''));
     /* M9 (Durchgang 30.09.2026): doppelte Schraegstriche zusammenziehen wie
      * fb_mqtt_thema() beim Senden - sonst zeigte die Oberflaeche haus//fb/...,
@@ -1171,6 +1184,14 @@ function fb_raumschluessel_richten($s)
  */
 function fb_config_sperre()
 {
+    /* 0.12.37 (fremder Pruefer C2): verschachtelt aufrufbar. Haelt DIESER Vorgang die Sperre schon, kommt ein Merkzeichen
+     * (true) zurueck statt eines zweiten Griffs - flock() auf einem zweiten Griff derselben Datei blockierte sich
+     * selbst. Damit duerfen fb_ansage_post(), fb_ansage_token_pflegen() und fb_cfg_vervollstaendigen() die Sperre
+     * nehmen, auch wenn ein Rufer (etwa das Sicherungsmodul) sie schon haelt. */
+    if (!empty($GLOBALS['fb_config_sperre_tiefe'])) {
+        $GLOBALS['fb_config_sperre_tiefe']++;
+        return true;
+    }
     $p = fb_paths();
     if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true)
         && !is_dir($p['datadir'])) {
@@ -1179,13 +1200,18 @@ function fb_config_sperre()
     $fp = @fopen($p['datadir'] . '/config.lock', 'c+');
     if ($fp === false) { return null; }
     if (!@flock($fp, LOCK_EX)) { fclose($fp); return null; }
+    $GLOBALS['fb_config_sperre_tiefe'] = 1;
     return $fp;
 }
 
-/** Die Gegenstelle zu fb_config_sperre(). Vertraegt auch null. */
+/** Die Gegenstelle zu fb_config_sperre(). Vertraegt auch null und das Merkzeichen true (0.12.37). */
 function fb_config_freigeben($fp)
 {
-    if ($fp) { @flock($fp, LOCK_UN); fclose($fp); }
+    if ($fp === true) {
+        if (!empty($GLOBALS['fb_config_sperre_tiefe'])) { $GLOBALS['fb_config_sperre_tiefe']--; }
+        return;
+    }
+    if ($fp) { @flock($fp, LOCK_UN); fclose($fp); $GLOBALS['fb_config_sperre_tiefe'] = 0; }
 }
 
 function fb_config_speichern($cfg)
@@ -1230,8 +1256,12 @@ function fb_cfg_vervollstaendigen()
         if (!array_key_exists($k, $roh)) { $fehlten[] = $k; }
     }
     if ($fehlten) {
+        /* Gleiche Bauart wie C2 (0.12.37): lesen und schreiben unter der Sperre - die Seite ruft das bei jedem Oeffnen,
+         * auch waehrend ein anderes Formular speichert. */
+        $fp = fb_config_sperre();
         $cfg = fb_config();
         fb_config_speichern($cfg);
+        fb_config_freigeben($fp);
         fb_log('Konfiguration vervollstaendigt: ' . implode(', ', $fehlten));
     }
     return $fehlten;
@@ -1354,7 +1384,7 @@ function fb_eingabe_felder($form)
     $felder = array(
         'modell' => array(
             'text'  => array_merge(array_keys(fb_zahlfelder()), array('himmelsmodell')),
-            'haken' => array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe', 'lernen_ein'),
+            'haken' => array('daemmen_ein', 'stellung_ein', 'bericht_ein', 'pv_gegenprobe', 'lernen_ein', 'pv_haus_ein'),
         ),
         'fenster' => array(
             'text'  => array('f_kuerzel', 'f_name', 'f_azimut', 'f_neigung', 'f_flaeche', 'f_gwert',
@@ -1365,7 +1395,7 @@ function fb_eingabe_felder($form)
         'raeume' => array('text' => array('r_qm'), 'haken' => array()),
         /* 0.12.28: die Haken "uebernehmen" der Einlese-Tabelle (p_wahl.<zeile>). */
         'vorschlag' => array('text' => array(), 'haken' => array('p_wahl')),
-        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein')),
+        'mqtt' => array('text' => array('mqtt_topic'), 'haken' => array('mqtt_ein', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein', 'sonne_raeume_ein')),
         'rechner' => array(
             'text'  => array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite'),
             'haken' => array('h_ersetzen'),
@@ -2661,6 +2691,10 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
                               fb_messwerte_verschieben($messwerte, (int) $cfg['vorschau']),
                               $jetzt + (int) $cfg['vorschau'], $vorher, $bilanz);
         foreach (array_keys($stand['fenster']) as $nr) {
+            /* 0.12.37 (E2): die Leistung durchs Glas in der Vorausschau - fuer haus/sonne/raum/<raum>/watt30. */
+            $stand['fenster'][$nr]['watt30'] =
+                isset($spaeter['fenster'][$nr]['watt'])
+                ? (int) $spaeter['fenster'][$nr]['watt'] : 0;
             $stand['fenster'][$nr]['urteil30'] =
                 isset($spaeter['fenster'][$nr]['urteil'])
                 ? (int) $spaeter['fenster'][$nr]['urteil'] : 0;
@@ -2727,6 +2761,12 @@ function fb_lauf($erzwingen = false, $erzeugen = true)
     }
 
     fb_mqtt_senden($cfg, $stand);
+    /* 0.12.37 (fremder Pruefer C1): die Flanken der Sprachansagen nach JEDER Rechnung und unter der Laufsperre - bis
+     * 0.12.36 nur im Cron (bin/fb_lauf.php). Kamen die Messwerte ueber Endpunkt oder Befehlsbruecke, rechnete meist
+     * dieser Weg; der Cron stieg danach am Rechentakt aus, und eine Flanke kam spaet oder nie (nachgestellt,
+     * Pruefung-Beschattung_Fensterbilanz-0.12.37, Zeilen C1). Der Merker wird hier fortgeschrieben, also sagt kein
+     * zweiter Weg dieselbe Flanke noch einmal an. Aus dem Endpunkt ($erzeugen = false) wird nur hingelegt. */
+    fb_ansage_takt($stand, $jetzt, (bool) $erzeugen);
     if ($sperre !== null) { @flock($sperre, LOCK_UN); fclose($sperre); }
     return array(true, $stand, '');
 }
@@ -3807,16 +3847,74 @@ function fb_sonne_stamm() { return 'haus/sonne'; }
  * Die Themen fuer die Tabelle im Reiter MQTT - dieselben Namen, die
  * fb_sonne_nachrichten() sendet (<azimut> steht fuer jede Fassade).
  */
-function fb_sonne_themen()
+function fb_sonne_themen($mit_raeumen = true)
 {
     $s = fb_sonne_stamm();
-    return array(
+    $t = array(
         $s . '/azimut'                 => 'MQTT.S1_T_AZIMUT',
         $s . '/elevation'              => 'MQTT.S1_T_ELEVATION',
         $s . '/fassaden'               => 'MQTT.S1_T_FASSADEN',
         $s . '/fassade/<azimut>/wirkt' => 'MQTT.S1_T_WIRKT',
-        $s . '/ts'                     => 'MQTT.S1_T_TS',
     );
+    /* 0.12.37 (E2): die Raumthemen - in der Tabelle immer, in der Probe nur mit sonne_raeume_ein. */
+    if ($mit_raeumen) {
+        $t[$s . '/raeume']                = 'MQTT.S2_T_RAEUME';
+        $t[$s . '/raum/<raum>/watt']      = 'MQTT.S2_T_WATT';
+        $t[$s . '/raum/<raum>/watt_rein'] = 'MQTT.S2_T_WATT_REIN';
+        $t[$s . '/raum/<raum>/watt30']    = 'MQTT.S2_T_WATT30';
+        $t[$s . '/raum/<raum>/wh_heute']  = 'MQTT.S2_T_WH';
+    }
+    $t[$s . '/ts'] = 'MQTT.S1_T_TS';
+    return $t;
+}
+
+/**
+ * 0.12.37 (E2): ein Raumschluessel als <raum> nach der Namensregel der Haus-Themen (Regeln/07): klein, ae/oe/ue/ss,
+ * jedes andere Zeichen ausser a-z, 0-9, _ und - wird _, hoechstens 40 Zeichen; zaehler und anbieter sind reserviert.
+ * '' = unbrauchbar.
+ */
+function fb_sonne_raumname($raum)
+{
+    $t = strtr((string) $raum, array('Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'));
+    $t = preg_replace('/[^a-z0-9_\-]/u', '_', strtolower($t));
+    if (!is_string($t)) { return ''; }
+    $t = substr($t, 0, 40);
+    return ($t === '' || in_array($t, array('zaehler', 'anbieter'), true)) ? '' : $t;
+}
+
+/**
+ * 0.12.37 (E2): je Raum die Sonnenlast aus dem Stand - alle AKTIVEN Fenster mit Kuerzel und Raum. watt = Leistung durchs
+ * Glas ohne Rollladen (W), watt_rein = davon im Raum nach Rollladen (gemeldete Stellung, sonst Befehl - dieselbe Regel
+ * wie die Tagesbilanz, fb_bilanz_wh()), watt30 = Leistung durchs Glas in der Vorausschau (-1 ohne Vorausschau),
+ * wh_heute = Waermemenge des Tages in den Raum (Wh). Zwei Raumschluessel mit demselben <raum> gehen nicht hinaus
+ * (melden, nicht waehlen). Rueckgabe array(<raum> => Werte, nach Namen sortiert; Liste der nicht gesendeten Schluessel).
+ */
+function fb_sonne_raeume($cfg, $stand)
+{
+    if (!is_array($stand) || !isset($stand['fenster']) || !is_array($stand['fenster'])) { return array(array(), array()); }
+    $vor = (int) $cfg['vorschau'] > 0;
+    $raeume = array();
+    $quelle = array();
+    $weg = array();
+    $nr = 0;
+    foreach ((isset($cfg['fenster']) && is_array($cfg['fenster'])) ? $cfg['fenster'] : array() as $f) {
+        $nr++;
+        if (!is_array($f) || (string) $f['kuerzel'] === '' || empty($f['aktiv']) || (string) $f['raum'] === '') { continue; }
+        if (!isset($stand['fenster'][(string) $nr]) || !is_array($stand['fenster'][(string) $nr])) { continue; }
+        $n = fb_sonne_raumname($f['raum']);
+        if ($n === '') { $weg[(string) $f['raum']] = true; continue; }
+        if (isset($quelle[$n]) && $quelle[$n] !== (string) $f['raum']) { $weg[$n] = true; continue; }
+        $quelle[$n] = (string) $f['raum'];
+        $e = $stand['fenster'][(string) $nr];
+        if (!isset($raeume[$n])) { $raeume[$n] = array('watt' => 0, 'watt_rein' => 0, 'watt30' => $vor ? 0 : -1, 'wh_heute' => 0); }
+        $raeume[$n]['watt'] += (int) (isset($e['watt']) ? $e['watt'] : 0);
+        $raeume[$n]['watt_rein'] += (int) round(fb_bilanz_wh($cfg, $e + array('watt' => 0), 1.0));
+        if ($vor) { $raeume[$n]['watt30'] += (int) (isset($e['watt30']) ? $e['watt30'] : 0); }
+        $raeume[$n]['wh_heute'] += (int) (isset($e['wh']) ? $e['wh'] : 0);
+    }
+    foreach (array_keys($weg) as $d) { unset($raeume[$d]); }
+    ksort($raeume);
+    return array($raeume, array_keys($weg));
 }
 
 /**
@@ -3880,6 +3978,16 @@ function fb_sonne_nachrichten($cfg, $stand)
     );
     foreach ($fa as $az => $d) {
         $m[$s . '/fassade/' . $az . '/wirkt'] = (int) $d['wirkt'];
+    }
+    /* 0.12.37 (E2, ab Werk aus): die Raumthemen vor ts - wer ts sieht, hat auch sie. */
+    if (!empty($cfg['sonne_raeume_ein'])) {
+        list($ra, ) = fb_sonne_raeume($cfg, $stand);
+        $m[$s . '/raeume'] = $ra ? implode(',', array_keys($ra)) : '-';
+        foreach ($ra as $n => $d) {
+            foreach (array('watt', 'watt_rein', 'watt30', 'wh_heute') as $k) {
+                $m[$s . '/raum/' . $n . '/' . $k] = (int) $d[$k];
+            }
+        }
     }
     $m[$s . '/ts'] = (int) $stand['ts'];
     return $m;
@@ -4822,7 +4930,13 @@ function fb_bilanz_fortschreiben($cfg, $stand, $bilanz, $messwerte, $jetzt)
 
     list($str, ) = fb_messwert($messwerte, 'strahlung', $ha, $jetzt);
     if ($str !== null) { $bilanz['strahlung'] += $str * $stunden; }
-    list($pv, ) = fb_messwert($messwerte, 'pv_prognose', $ha, $jetzt);
+    /* 0.12.37 (E1): mit pv_haus_ein kommt die Prognose aus haus/pv (fb_haus_pv_wert()), ein pv_prognose aus Loxone
+     * zaehlt dann nicht - zwei Quellen in einer Tagessumme waeren ein Vergleich ohne Massstab. */
+    if (!empty($cfg['pv_haus_ein'])) {
+        $pv = fb_haus_pv_wert($ha, $jetzt);
+    } else {
+        list($pv, ) = fb_messwert($messwerte, 'pv_prognose', $ha, $jetzt);
+    }
     if ($pv !== null) { $bilanz['pv'] += $pv * $stunden; }
 
     return $bilanz;
@@ -5029,14 +5143,20 @@ function fb_ansage_cfg()
     if (empty($c['ansage_aus_datei'])) {
         $f = rtrim(fb_paths()['configdir'], '/') . '/ansage.json';
         if (is_file($f)) {
-            $d = json_decode((string) @file_get_contents($f), true);
-            if (is_array($d)) {
-                foreach (array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft') as $k) {
-                    if (array_key_exists($k, $d) && fb_ansage_wert($k, $d[$k]) === true) { $c[$k] = $d[$k]; }
+            /* Gleiche Bauart wie C2 (0.12.37): die einmalige Uebernahme unter der Sperre, mit zweitem Blick. */
+            $fp = fb_config_sperre();
+            $c = fb_config();
+            if (empty($c['ansage_aus_datei'])) {
+                $d = json_decode((string) @file_get_contents($f), true);
+                if (is_array($d)) {
+                    foreach (array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft') as $k) {
+                        if (array_key_exists($k, $d) && fb_ansage_wert($k, $d[$k]) === true) { $c[$k] = $d[$k]; }
+                    }
                 }
+                $c['ansage_aus_datei'] = 1;
+                fb_ansage_cfg_schreiben($c);
             }
-            $c['ansage_aus_datei'] = 1;
-            fb_ansage_cfg_schreiben($c);
+            fb_config_freigeben($fp);
         }
     }
     return $c;
@@ -5094,18 +5214,30 @@ function fb_ansage_eingaben($setzen = null)
 {
     $f = fb_paths()['datadir'] . '/ansage_eingaben.json';
     if (is_array($setzen)) {
-        if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
-        @file_put_contents($f, (string) json_encode($setzen));
-        @chmod($f, 0600);
+        /* 0.12.37 (fremder Pruefer C4): ueber fb_json_schreiben() - Nebendatei, 0600 VOR dem Inhalt, rename. Bis
+         * 0.12.36 entstand die Datei mit den Rechten der umask, bekam 0600 erst danach und wurde an Ort und Stelle
+         * ueberschrieben. */
+        fb_json_schreiben($f, $setzen, 0600);
         return $setzen;
     }
     $d = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
-    if (is_array($d) && $d) { @file_put_contents($f, '{}'); return $d; }
+    if (is_array($d) && $d) { fb_json_schreiben($f, new stdClass(), 0600); return $d; }
     return array();
 }
 
-/** Das Formular lesen und speichern: array(gelungen, Fehlertexte, Hinweise). */
+/** Das Formular lesen und speichern: array(gelungen, Fehlertexte, Hinweise).
+ *  0.12.37 (fremder Pruefer C2): unter fb_config_sperre() wie alle uebrigen Speicher-Handler. Bis 0.12.36 las und
+ *  schrieb dieser Weg die Konfiguration ohne Sperre; speicherte ein zweites Formular zugleich, ging eine der beiden
+ *  Aenderungen verloren (gemessen, Pruefung-Beschattung_Fensterbilanz-0.12.37, Zeile C2b). */
 function fb_ansage_post(array $post)
+{
+    $fp = fb_config_sperre();
+    $r = fb_ansage_post_innen($post);
+    fb_config_freigeben($fp);
+    return $r;
+}
+
+function fb_ansage_post_innen(array $post)
 {
     $cfg = fb_ansage_cfg();
     $k = fb_ansage_k();
@@ -5220,7 +5352,7 @@ function fb_ansage_warte($fn)
  * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
  * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
  */
-function fb_ansage_legen(array $l, $jetzt = null)
+function fb_ansage_legen(array $l, $jetzt = null, $starten = true)
 {
     if (!$l) { return 'nichts'; }
     $jetzt = $jetzt === null ? time() : (int) $jetzt;
@@ -5228,6 +5360,12 @@ function fb_ansage_legen(array $l, $jetzt = null)
         foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
         return array(array_slice($alt, -50), null);
     });
+    return $starten ? fb_ansage_sender_starten() : 'hingelegt';
+}
+
+/** 0.12.37 (C1): den Sender abgekoppelt starten (wartet auf nichts). Rueckgabe gestartet | kein_start. */
+function fb_ansage_sender_starten()
+{
     $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
     $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
             . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; fb_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
@@ -5237,16 +5375,32 @@ function fb_ansage_legen(array $l, $jetzt = null)
     return $rc === 0 ? 'gestartet' : 'kein_start';
 }
 
+/** 0.12.37 (C1): liegt etwas in der Warteliste, den Sender anstossen - aus dem Takt, auch wenn er selbst nicht rechnet.
+ *  Ohne Warteliste wird keine angelegt. Rueckgabe nichts | gestartet | kein_start. */
+function fb_ansage_anstossen()
+{
+    if (!is_file(fb_paths()['datadir'] . '/ansage_warte.json')) { return 'nichts'; }
+    $n = fb_ansage_warte(function ($alt) { return array($alt, count($alt)); });
+    return ((int) $n > 0) ? fb_ansage_sender_starten() : 'nichts';
+}
+
 /** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
 function fb_ansage_token_pflegen($cfg = null)
 {
     if ($cfg === null) { $cfg = fb_ansage_cfg(); }
     list($neu, $her2, $g) = ansage_token_abgleich(fb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), fb_ansage_k());
     if (!$g) { return false; }
+    /* 0.12.37 (fremder Pruefer C2): Lesen, Abgleich und Schreiben unter fb_config_sperre(). Bis 0.12.36 wurde ohne
+     * Sperre neu gelesen und das Ergebnis des ersten Abgleichs daraufgeschrieben. */
+    $fp = fb_config_sperre();
     $cfg = fb_ansage_cfg();
+    list($neu, $her2, $g) = ansage_token_abgleich(fb_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), fb_ansage_k());
+    if (!$g) { fb_config_freigeben($fp); return false; }
     $cfg['tts'] = $neu;
     $cfg['ansage_token_herkunft'] = $her2;
-    if (!fb_ansage_cfg_schreiben($cfg)) { return false; }
+    $ok = fb_ansage_cfg_schreiben($cfg);
+    fb_config_freigeben($fp);
+    if (!$ok) { return false; }
     fb_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
     return true;
 }
@@ -5345,10 +5499,14 @@ function fb_ansage_senden($jetzt = null)
  * Aus bin/fb_lauf.php nach einem gerechneten Lauf: die Flanken. Der Merker haelt je Fenster den letzten Stand und die PV-Warnung. Der erste Lauf ohne Merker spricht nicht
  * (sonst kaeme nach jedem Update alles auf einmal). Wechselt nur, was die Ansage betrifft; Stellung und Rueckwerte bleiben unberuehrt. Rueckgabe: Zahl der hingelegten Anlaesse.
  */
-function fb_ansage_takt($stand, $jetzt = null)
+function fb_ansage_takt($stand, $jetzt = null, $anstossen = true)
 {
     if (!is_array($stand) || !isset($stand['fenster']) || !is_array($stand['fenster'])) { return 0; }
-    $cfg = fb_ansage_cfg();
+    /* 0.12.37 (fremder Pruefer C1): fb_lauf() ruft das nach JEDER Rechnung. $anstossen = false kommt aus dem Endpunkt
+     * und der Befehlsbruecke (fb_lauf(.., false)): nur lesen (fb_config(false)), Flanken merken, Anlaesse in die
+     * Warteliste legen - kein Sprechtoken pflegen, kein Sender, nichts nach config/. Den Sender stoesst der naechste
+     * Takt an (fb_ansage_anstossen() in bin/fb_lauf.php). */
+    $cfg = $anstossen ? fb_ansage_cfg() : fb_config(false);
     $f = fb_paths()['datadir'] . '/ansage_flanken.json';
     $alt = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
     $erstes = !is_array($alt);
@@ -5363,7 +5521,7 @@ function fb_ansage_takt($stand, $jetzt = null)
             $l[] = array('schluessel' => 'beschatten|' . $nr, 'text' => sprintf(fb_t('ANSAGEPLUGIN.SATZ_BESCHATTEN'), $n));
         }
     }
-    $main = fb_config();
+    $main = $anstossen ? fb_config() : fb_config(false);
     if (!empty($main['pv_gegenprobe'])) {
         $pv = fb_pv_pruefen($main);
         $neu['pv'] = (!empty($pv['warnt']) && $pv['tage'] >= 10) ? 1 : 0;
@@ -5373,10 +5531,254 @@ function fb_ansage_takt($stand, $jetzt = null)
     }
     @file_put_contents($f, (string) json_encode($neu));
     if ($l) {
-        fb_ansage_token_pflegen($cfg);
-        fb_ansage_legen($l, $jetzt);
+        if ($anstossen) {
+            fb_ansage_token_pflegen($cfg);
+            fb_ansage_legen($l, $jetzt);
+        } else {
+            fb_ansage_legen($l, $jetzt, false);
+        }
     }
     return count($l);
+}
+
+/* ==================================================================
+ * 0.12.37 (Erweiterung E1, ab Werk aus): die PV-Prognose aus haus/pv
+ *
+ * Anbieter ist Weatherdata (ab 0.9.10, Haken haus_pv_ein, Regeln/07): haus/pv/jetzt_w, haus/pv/kwp und haus/pv/datum
+ * retained, haus/pv/ok und haus/pv/zaehler/weatherdata jede Minute, nie retained. Ein Abnehmer verwendet die Werte
+ * nur bei live empfangenem Zaehler, ok = 1 und datum = heute. Gelesen wird von einem abgekoppelten Leser
+ * (bin/fb_lauf.php --haus-lesen, eigene Sperre haus_pv.lock, bis 65 s am Broker), den der Takt alle fuenf Minuten
+ * anstoesst und auf den er nie wartet - Bauart des abgekoppelten Lesers im Abfahrts-Assistenten (1.6.32). Abgelegt
+ * wird in <Daten>/haus_pv.json; die Tagesbilanz liest von dort (fb_haus_pv_wert()). Unter haus/ schreibt die
+ * Fensterbilanz dafuer nichts.
+ * ================================================================== */
+
+/** Die Datei des Lesers. */
+function fb_haus_pv_datei() { return fb_paths()['datadir'] . '/haus_pv.json'; }
+
+/** Die gelesenen Themen. */
+function fb_haus_pv_themen()
+{
+    return array('haus/pv/jetzt_w', 'haus/pv/kwp', 'haus/pv/datum', 'haus/pv/ok', 'haus/pv/zaehler/weatherdata');
+}
+
+/**
+ * Eine kurze Lesesitzung am Broker: abonniert $themen (QoS 0) und wartet, bis jedes Thema aus $warten einmal LIVE (ohne
+ * Retain-Merkmal) kam, hoechstens $fenster Sekunden. Anmeldung wie fb_mqtt_behalten_liste() (Brokeruser/Brokerpass aus
+ * general.json, nur im CONNECT-Paket, nie in einem Protokoll). Rueckgabe array('lage' => ok | kein_broker | abgelehnt |
+ * unvollstaendig, 'werte' => Thema => letzter Wert, 'live' => Thema => letzter live empfangener Wert).
+ */
+function fb_haus_sitzung_lesen(array $themen, array $warten, $fenster)
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'live' => array());
+    $p = fb_paths();
+    if ($p['home'] === '' || !$themen) { return $aus; }
+    $gen = fb_json_lesen($p['home'] . '/config/system/general.json');
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($k) use ($m) { return (isset($m[$k]) && is_scalar($m[$k])) ? (string) $m[$k] : ''; };
+    $host = trim($hol('Brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser');
+    $kennwort = $hol('Brokerpass');
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 3);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+    $ende = microtime(true) + max(1.0, (float) $fenster);
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes oder null (Verbindungsende, Frist). $erstes: kommt beim ersten Byte nichts, false. */
+    $lies = function ($n, $erstes = false) use ($s, &$ende) {
+        $d = '';
+        $bis = min($ende, microtime(true) + 5.0);
+        while (strlen($d) < $n) {
+            if (microtime(true) >= $bis) { return null; }
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                if (feof($s)) { return null; }
+                if ($erstes && $d === '') { return false; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1, true);
+        if ($k === false || $k === null) { return $k; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $flags = 0x02;
+    $nutz = $zk('fbhaus' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 120);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    $aus['lage'] = 'abgelehnt';
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = false;
+        while ($ack === false && microtime(true) < $ende) { $ack = $paket(); }
+        if (is_array($ack) && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach ($themen as $t) { $sub .= $zk((string) $t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $fertig = false;
+            while (!$fertig && microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }
+                if ($pk === false) { continue; }
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $rc = (string) substr($pk[1], 2);
+                    $nein = strlen($rc) !== count($themen);
+                    for ($i = 0; $i < strlen($rc); $i++) { if (ord($rc[$i]) >= 0x80) { $nein = true; } }
+                    if ($nein) { break; }
+                    $bestaetigt = true;
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = (string) substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    $aus['werte'][$t] = $wert;
+                    if (!($pk[0] & 1)) { $aus['live'][$t] = $wert; }
+                    $fertig = true;
+                    foreach ($warten as $w) { if (!array_key_exists($w, $aus['live'])) { $fertig = false; } }
+                }
+            }
+            $aus['lage'] = !$bestaetigt ? 'abgelehnt' : ($fertig ? 'ok' : 'unvollstaendig');
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/** Rein: aus einer Sitzung die Lage und den Wert (Watt je kWp). Lage ok | schweigt | ohne_prognose | datum | ungueltig
+ *  | kein_broker | abgelehnt. */
+function fb_haus_pv_auswerten(array $erg, $jetzt)
+{
+    $r = array('lage' => '', 'wert' => null, 'jetzt_w' => null, 'kwp' => null);
+    $w = isset($erg['werte']) && is_array($erg['werte']) ? $erg['werte'] : array();
+    $l = isset($erg['live']) && is_array($erg['live']) ? $erg['live'] : array();
+    $lage = isset($erg['lage']) ? (string) $erg['lage'] : '';
+    if ($lage === 'kein_broker' || $lage === 'abgelehnt') { $r['lage'] = $lage; return $r; }
+    if (!array_key_exists('haus/pv/zaehler/weatherdata', $l)) { $r['lage'] = 'schweigt'; return $r; }
+    if (!array_key_exists('haus/pv/ok', $l) || trim((string) $l['haus/pv/ok']) !== '1') { $r['lage'] = 'ohne_prognose'; return $r; }
+    if (!isset($w['haus/pv/datum']) || trim((string) $w['haus/pv/datum']) !== date('Ymd', (int) $jetzt)) {
+        $r['lage'] = 'datum';
+        return $r;
+    }
+    $jw = isset($w['haus/pv/jetzt_w']) ? trim((string) $w['haus/pv/jetzt_w']) : '';
+    $kp = isset($w['haus/pv/kwp']) ? trim((string) $w['haus/pv/kwp']) : '';
+    if (!preg_match('/^\d+(\.\d+)?\z/', $jw) || !preg_match('/^\d+(\.\d+)?\z/', $kp) || (float) $kp <= 0.0
+        || (float) $jw / (float) $kp > 1600.0) {
+        $r['lage'] = 'ungueltig';
+        return $r;
+    }
+    return array('lage' => 'ok', 'wert' => round((float) $jw / (float) $kp, 1), 'jetzt_w' => (float) $jw, 'kwp' => (float) $kp);
+}
+
+/** Der abgekoppelte Leser selbst (bin/fb_lauf.php --haus-lesen): eigene Sperre, sonst still beenden. Rueckgabe laeuft |
+ *  aus | Lage. */
+function fb_haus_pv_leser_lauf($fenster = 65)
+{
+    $p = fb_paths();
+    if (!is_dir($p['datadir'])) { return 'aus'; }
+    $fh = @fopen($p['datadir'] . '/haus_pv.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) {
+        if ($fh !== false) { fclose($fh); }
+        return 'laeuft';
+    }
+    $cfg = fb_config(false);
+    $lage = 'aus';
+    if (!empty($cfg['pv_haus_ein']) && !empty($cfg['pv_gegenprobe'])) {
+        $erg = fb_haus_sitzung_lesen(fb_haus_pv_themen(), array('haus/pv/zaehler/weatherdata', 'haus/pv/ok'), $fenster);
+        $jetzt = time();
+        $r = fb_haus_pv_auswerten($erg, $jetzt);
+        $cfg = fb_config(false);     // bis zu 65 s spaeter: ein inzwischen abgeschalteter Haken gilt
+        if (!empty($cfg['pv_haus_ein']) && !empty($cfg['pv_gegenprobe'])) {
+            fb_json_schreiben(fb_haus_pv_datei(), array('zeit' => $jetzt, 'lage' => $r['lage'], 'wert' => $r['wert'],
+                'jetzt_w' => $r['jetzt_w'], 'kwp' => $r['kwp']), 0644);
+            fb_log_wenn_neu('haus_pv', 'Haus-Thema haus/pv: ' . $r['lage']
+                . ($r['lage'] === 'ok' ? ' - die Gegenprobe rechnet mit der PV-Prognose aus haus/pv.'
+                                       : ' - die Gegenprobe zaehlt keine PV-Prognose, bis wieder eine gueltige kommt.'));
+            $lage = $r['lage'];
+        }
+    }
+    if ($lage === 'aus' && is_file(fb_haus_pv_datei())) { @unlink(fb_haus_pv_datei()); }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $lage;
+}
+
+/** Aus dem Takt: hoechstens einen Leser abgekoppelt starten, nie darauf warten. Rueckgabe aus | laeuft | gestartet |
+ *  kein_start. Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2 (wie fb_ansage_sender_starten()). */
+function fb_haus_pv_leser_starten()
+{
+    $cfg = fb_config(false);
+    $p = fb_paths();
+    if (empty($cfg['pv_haus_ein']) || empty($cfg['pv_gegenprobe'])) {
+        if (is_file(fb_haus_pv_datei())) { @unlink(fb_haus_pv_datei()); }
+        return 'aus';
+    }
+    if (!is_dir($p['datadir'])) { return 'kein_start'; }
+    $fh = @fopen($p['datadir'] . '/haus_pv.lock', 'c');
+    if ($fh === false) { return 'kein_start'; }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) { fclose($fh); return 'laeuft'; }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $skript = $p['bindir'] . '/fb_lauf.php';
+    if (!is_file($skript)) { $skript = dirname(dirname(__DIR__)) . '/bin/fb_lauf.php'; }
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --haus-lesen';
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Der Wert fuer die Tagesbilanz: Watt je kWp aus der letzten gueltigen Lesung, hoechstens $hoechstalter alt; sonst null. */
+function fb_haus_pv_wert($hoechstalter, $jetzt)
+{
+    $d = fb_json_lesen(fb_haus_pv_datei());
+    if (!is_array($d) || !isset($d['lage'], $d['zeit'], $d['wert']) || $d['lage'] !== 'ok' || !is_numeric($d['wert'])) {
+        return null;
+    }
+    $alter = (int) $jetzt - (int) $d['zeit'];
+    if ($alter < -300 || $alter > (int) $hoechstalter) { return null; }
+    return (float) $d['wert'];
 }
 
 /** Die Warnung ins Protokoll - hoechstens einmal, solange sie gleich bleibt. */
@@ -6831,7 +7233,8 @@ function fb_sicherung_freiwillig()
      * Vorgabe 0 (Entscheidung des Hausherrn 12.11.2026 "Ja, behalten"). */
     /* Gruppe 36 (0.12.20): 'endpunkt_ein' kennen Sicherungen bis 0.12.19 nicht. Fehlt er, behaelt das Zurueckspielen
      * den geltenden Wert (htmlauth/index.php, fb_zurueck) - eine alte Sicherung schaltet den HTTP-Weg nicht ab. */
-    return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein');
+    /* 0.12.37 (E1, E2): 'pv_haus_ein' und 'sonne_raeume_ein' kennen Sicherungen bis 0.12.36 nicht. */
+    return array('mqtt_praefix_alt', 'sonne_teilen', 'befehle_mqtt_ein', 'endpunkt_ein', 'pv_haus_ein', 'sonne_raeume_ein');
 }
 
 /**

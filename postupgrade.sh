@@ -34,6 +34,11 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-fensterbilanz}"
+# 0.12.37 (fremder Pruefer A1): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (etwa Alexa-NG 1.0.22). Vor jedem mkdir, chmod, mv und rm.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts nachgesehen."; exit 1 ;;
+esac
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 # Bis 0.12.9: BASE="${ARGV5:-$LBHOMEDIR}" und der feste Rueckfall $SELF/../..

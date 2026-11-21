@@ -171,7 +171,22 @@ function fb_test_pv()
     /* Gruppe 36 (0.12.20, Entscheidung 1): pv_prognose ist nie Pflicht. Fehlt sie bei eingeschalteter Gegenprobe, ruht
      * nur die Gegenprobe (fb_pv_ablegen() legt ohne PV-Summe keinen Tag ab) - das steht hier. */
     if (!empty($cfg['pv_gegenprobe'])) {
-        list($fb_pvw) = fb_messwert(fb_messwerte(), 'pv_prognose', (int) $cfg['hoechstalter'], time());
+        /* 0.12.37 (E1): mit pv_haus_ein kommt die Prognose aus haus/pv; die Zeile sagt, was die letzte Lesung ergab. */
+        if (!empty($cfg['pv_haus_ein'])) {
+            $fb_pvw = fb_haus_pv_wert((int) $cfg['hoechstalter'], time());
+            $fb_hd = fb_json_lesen(fb_haus_pv_datei());
+            $fb_hl = (is_array($fb_hd) && isset($fb_hd['lage'])) ? (string) $fb_hd['lage'] : 'nie';
+            $fb_hk = array('ok' => 'TEST.PV_HAUS_OK', 'schweigt' => 'TEST.PV_HAUS_SCHWEIGT',
+                           'ohne_prognose' => 'TEST.PV_HAUS_OHNE', 'datum' => 'TEST.PV_HAUS_DATUM',
+                           'ungueltig' => 'TEST.PV_HAUS_UNGUELTIG', 'kein_broker' => 'TEST.PV_HAUS_KEIN_BROKER',
+                           'abgelehnt' => 'TEST.PV_HAUS_ABGELEHNT');
+            $fb_ht = fb_klartext(isset($fb_hk[$fb_hl]) ? $fb_hk[$fb_hl] : 'TEST.PV_HAUS_NIE');
+            if ($fb_hl === 'ok') { $fb_ht = sprintf($fb_ht, (string) $fb_hd['wert']); }
+            $z[] = sprintf(fb_klartext('TEST.PV_HAUS'),
+                isset($fb_hd['zeit']) ? date('Y-m-d H:i:s', (int) $fb_hd['zeit']) : '-', $fb_ht);
+        } else {
+            list($fb_pvw) = fb_messwert(fb_messwerte(), 'pv_prognose', (int) $cfg['hoechstalter'], time());
+        }
         if ($fb_pvw === null) { $z[] = fb_klartext('TEST.PV_RUHT'); }
     }
     $daten = fb_json_lesen(fb_paths()['pv']);
@@ -308,7 +323,13 @@ function fb_probe_sonne1()
     if (!$m) { return array(false, fb_klartext('TEST.A_SONNE1_OHNE_SONNE')); }
     $fa = fb_sonne_fassaden($cfg, $stand);
     $soll = array();
-    foreach (array_keys(fb_sonne_themen()) as $t) {
+    /* 0.12.37 (E2): die Raumthemen nur mit sonne_raeume_ein, je <raum> aus fb_sonne_raeume(). */
+    list($fb_ra, ) = fb_sonne_raeume($cfg, $stand);
+    foreach (array_keys(fb_sonne_themen(!empty($cfg['sonne_raeume_ein']))) as $t) {
+        if (strpos($t, '<raum>') !== false) {
+            foreach (array_keys($fb_ra) as $fb_rn) { $soll[] = str_replace('<raum>', (string) $fb_rn, $t); }
+            continue;
+        }
         if (strpos($t, '<azimut>') === false) { $soll[] = $t; continue; }
         foreach (array_keys($fa) as $az) { $soll[] = str_replace('<azimut>', (string) $az, $t); }
     }

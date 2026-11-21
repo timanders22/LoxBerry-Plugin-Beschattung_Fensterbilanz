@@ -38,6 +38,11 @@ if [ -n "$2" ] && [ "$2" != "fensterbilanz" ]; then
     echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'fensterbilanz' und tut nichts."
     exit 0
 fi
+# 0.12.37 (fremder Pruefer A1): ein Ordnername mit "/" oder "." waere ein Pfad hinaus - dieselbe Formel wie
+# preupgrade.sh, Hausstandard in allen Hakenskripten (etwa Alexa-NG 1.0.22). Vor jedem rm und rm -rf; "system" wie Alexa-NG (Regeln/06).
+case "$PFOLDER" in
+    ''|.|..|*/*|system) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts geloescht."; exit 1 ;;
+esac
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
 #
