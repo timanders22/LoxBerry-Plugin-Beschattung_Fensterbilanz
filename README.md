@@ -1,6 +1,6 @@
 # LoxBerry-Plugin „Beschattung Fensterbilanz"
 
-Version 0.12.38
+Version 0.12.39
 
 Ein Urteil je Fenster: **ist der Sonneneintrag durchs Glas gerade erwünscht?**
 Eine Zahl von −100 (unbedingt beschatten) bis +100 (Sonne hereinlassen), dazu
@@ -10,6 +10,10 @@ tokengeschützten HTTP-Endpunkt.
 **Das Plugin schaltet nichts.** Es ersetzt den `AutoJalousie`-Baustein nicht.
 Es liefert die eine Größe, die Loxone fehlt, und hängt an dessen Eingang
 `AutoShade`.
+
+## Neu in 0.12.39
+
+- **Geändert – Raumnamen unter `haus/sonne/raum/` nach der gemeinsamen Namensregel (Entscheidung des Hausherrn 22.11.2026):** Der Name entsteht jetzt wie in allen Plugins: klein, Umlaute ausgeschrieben, jede Folge anderer Zeichen außer a–z, 0–9, `_` und `-` wird ein einziges `_`, ein `_` am Anfang und am Ende fällt weg, höchstens 40 Zeichen. Bisher wurde jedes Zeichen einzeln ersetzt. **Ein Raumname mit mehreren Leer- oder Sonderzeichen hintereinander oder mit solchen Zeichen am Anfang oder Ende ändert sich deshalb** (Beispiel: „Küche  2“ war `kueche__2`, ist jetzt `kueche_2`). Die Themen unter `haus/sonne/` gehen nicht zurückbehalten hinaus; unter dem alten Namen bleibt nichts stehen. Wer den Namen in einem anderen Plugin (etwa Raumklima) oder in Loxone eingetragen hat, trägt den neuen ein. Gemessen auf dem Arbeitsrechner (PHP 7.4 und 8.4); am Gerät nicht gemessen.
 
 ## Neu in 0.12.38
 

@@ -3869,16 +3869,18 @@ function fb_sonne_themen($mit_raeumen = true)
 }
 
 /**
- * 0.12.37 (E2): ein Raumschluessel als <raum> nach der Namensregel der Haus-Themen (Regeln/07): klein, ae/oe/ue/ss,
- * jedes andere Zeichen ausser a-z, 0-9, _ und - wird _, hoechstens 40 Zeichen; zaehler und anbieter sind reserviert.
- * '' = unbrauchbar.
+ * 0.12.37 (E2): ein Raumschluessel als <raum> nach der gemeinsamen Namensregel (Regeln/07 Nr. 15, Entscheidung des Hausherrn 22.11.2026), wie
+ * ew_haus_name() (Ecowitt-Weiche), hausName() (Zigbee2MqttNG) und klima_name() (BLE-Scanner NG): klein, ae/oe/ue/ss,
+ * jede Folge anderer Zeichen ausser a-z, 0-9, _ und - wird ein _, _ am Rand faellt weg, hoechstens 40 Zeichen
+ * (danach rechts kein _);
+ * zaehler und anbieter sind reserviert. '' = unbrauchbar. Bis 0.12.38 wurde jedes Zeichen einzeln ersetzt.
  */
 function fb_sonne_raumname($raum)
 {
-    $t = strtr((string) $raum, array('Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'));
-    $t = preg_replace('/[^a-z0-9_\-]/u', '_', strtolower($t));
-    if (!is_string($t)) { return ''; }
-    $t = substr($t, 0, 40);
+    $t = str_replace(array("\u{00E4}", "\u{00F6}", "\u{00FC}", "\u{00DF}", "\u{00C4}", "\u{00D6}", "\u{00DC}"),
+                     array('ae', 'oe', 'ue', 'ss', 'ae', 'oe', 'ue'), (string) $raum);
+    $t = preg_replace('/[^a-z0-9_-]+/', '_', strtolower($t));
+    $t = rtrim(substr(trim((string) $t, '_'), 0, 40), '_');
     return ($t === '' || in_array($t, array('zaehler', 'anbieter'), true)) ? '' : $t;
 }
 
