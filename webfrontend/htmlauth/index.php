@@ -1103,6 +1103,12 @@ if ($fb_post && isset($_POST['wasware'])) {
 
 /* ---------------- Speichern: MQTT ---------------- */
 /* 0.12.22: Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 0.12.41: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($fb_post && isset($_POST['meld_test'])) {
+    list($fb_at, $fb_ag) = fb_meld_test();
+    if ($fb_at) { $fb_meldungen[] = fb_t('SIGNALMELDUNG.T_OK'); } else { $fb_fehler[] = $fb_ag; }
+    $fb_tab = 'tab-settings';
+}
 if ($fb_post && isset($_POST['ansage_test'])) {
     list($fb_at, $fb_ag) = fb_ansage_test();
     if ($fb_at) { $fb_meldungen[] = fb_t('ANSAGEPLUGIN.M_TEST_OK'); } else { $fb_fehler[] = fb_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $fb_ag; }
@@ -1160,6 +1166,12 @@ if ($fb_post && isset($_POST['speichern_mqtt'])) {
         $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA'), $fb_thema);
     } elseif (!fb_thema_gueltig($fb_thema)) {
         $fb_fehler[] = sprintf(fb_t('FEHLER.THEMA_FORM'), $fb_thema);
+    } elseif (hb_bereich($fb_thema) !== '' && $fb_thema !== (string) fb_config()['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.12.41 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $fb_fehler[] = sprintf(fb_t('HAUSBEREICH.FEHLER'), $fb_thema, hb_bereich($fb_thema));
     } else {
         $fb_cfg['mqtt_topic'] = $fb_thema;
     }
@@ -1358,7 +1370,8 @@ if ($fb_post && isset($_POST['fb_zurueck'])) {
             }
             return $neu;
         };
-        $fb_b['speichern'] = function ($neu) { return fb_config_speichern($neu); };
+        // 0.12.41: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $fb_b['speichern'] = function ($neu) { return fb_config_speichern($neu, false); };
         $fb_b['zweitschrift'] = function () { $p = fb_paths(); return array($p['config'], $p['sicherung']); };
         $fb_b['nachziehen'] = function ($neu, $vorher) use (&$fb_merkmal) {
             $h = array();
@@ -1407,6 +1420,32 @@ $fb_formwerte = array();
 foreach (array('h_zeile', 'h_hoehe', 'h_fenster', 'h_vor', 'h_seit', 'h_breite', 'h_ersetzen') as $fb_fk) {
     if ($fb_rechner !== null && isset($_POST[$fb_fk]) && is_string($_POST[$fb_fk])) {
         $fb_formwerte[$fb_fk] = $_POST[$fb_fk];
+    }
+}
+/* 0.12.41: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Unter der Konfigurationssperre, geschrieben ohne
+ * "Dateiwert behalten". $fb_post ist nach dem Wachposten nur bei gueltigem Merkmal gesetzt. */
+if ($fb_post && sicherung_lade_eingang($_POST) !== '') {
+    $fb_ladeb = fb_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $fb_fehler[] = sicherung_t('K_LADE_HAKEN_FEHLT', $fb_ladeb);
+    } else {
+        $fb_lsp = fb_config_sperre();
+        $fb_ld = fb_lade_roh();
+        $fb_lv = fb_config(false);
+        $fb_un = array();
+        if ($fb_ld !== null) {
+            list($fb_lneu, $fb_un) = sicherung_lade_uebernehmen_stand($fb_ld, $fb_lv, sicherung_lade_beanstandungen($fb_ladeb, $fb_ld, $fb_lv));
+            if ($fb_un && !fb_config_speichern($fb_lneu, false)) {
+                $fb_fehler[] = fb_t('FEHLER.SPEICHERN');
+                $fb_un = array();
+            }
+        }
+        fb_config_freigeben($fb_lsp);
+        if ($fb_un) {
+            fb_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $fb_un)));
+            $fb_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $fb_ladeb), implode(', ', $fb_un));
+        }
     }
 }
 /* X-2: nur nach einer Beanstandung, nur das beanstandete Formular. */
@@ -1685,7 +1724,12 @@ window.addEventListener('resize', fbRollbalken);
 <?php if ($fb_ergaenzt) { ?>
 <div class="sm-hinweis"><?= sprintf(fb_t('ALLG.ERGAENZT'), fb_e(implode(', ', $fb_ergaenzt))) ?></div>
 <?php } ?>
+<?php /* 0.12.41: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$fb_lade = fb_lade_beanstandungen();
+fb_lade_melden($fb_lade); ?>
 
+<?= sicherung_lade_kasten(fb_lade_b(true), isset($fb_lade) ? $fb_lade : fb_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="fmt" value="' . fb_e($fb_merkmal) . '"><input data-role="none" type="hidden" name="activetab" value="' . fb_e($fb_tab) . '">') ?>
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= fb_e(fb_t('ALLG.LETZTER_LAUF')) ?>
     <b class="<?= fb_alter() >= 0 && fb_alter() < 900 ? 'sm-an' : 'sm-aus' ?>"><?= fb_alter() < 0 ? '&ndash;' : (int) floor(fb_alter() / 60) ?></b>

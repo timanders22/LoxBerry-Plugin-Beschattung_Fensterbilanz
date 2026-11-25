@@ -889,6 +889,11 @@ function fb_test_selbstpruefung()
     list($ok, $txt) = fb_mqtt_kongruent();
     $z[] = fb_pruefzeile(fb_klartext('TEST.F_MQTT_THEMEN'), $ok, $txt);
 
+    /* 0.12.41: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)? */
+    $fb_hb = fb_pruef_praefix_haus($cfg);
+    $z[] = fb_pruefzeile(fb_klartext('HAUSBEREICH.F_TEST'),
+                         $fb_hb[0] === 1 ? true : ($fb_hb[0] === 0 ? false : null), $fb_hb[1]);
+
     /* Gruppe 3 / MQTT (0.12.19): die Namenstabelle (Reiter Einbindung, Schritt 3) gegen die Themenliste, die das
      * Senden speist - und die Lage der Befehlsbruecke, gemessen wie im Waechter. */
     list($nt_n, $nt_tab, $nt_send) = fb_mqtt_namen_pruefen($cfg);
@@ -989,6 +994,13 @@ function fb_test_selbstpruefung()
         $z[] = fb_pruefzeile(fb_klartext('TEST.F_KERN'), null,
                              fb_klartext('TEST.A_LAUFDATEI_NEIN'));
     }
+
+    /* 0.12.41: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - [ !! ], solange ein gespeicherter Wert beim
+     * Laden nicht so gilt, wie er gespeichert ist. */
+    $fb_ladeb = fb_lade_b(false);
+    $fb_la = fb_lade_beanstandungen(null, false);
+    $z[] = fb_pruefzeile(sicherung_t('K_LADE_FRAGE', $fb_ladeb), !$fb_la,
+        $fb_la ? implode(' ', sicherung_lade_saetze($fb_ladeb, $fb_la)) : sicherung_t('K_LADE_KEINE', $fb_ladeb));
 
     $stand_zahl = fb_pruefzeile(null);
     $z[] = str_repeat('-', 68);
@@ -1230,7 +1242,8 @@ function fb_test_endpunkt()
 function fb_probe_endpunkt()
 {
     $token = fb_config()['aktionstoken'];
-    if (!fb_token_gueltig($token)) { return array(null, fb_klartext('TEST.A_TOKEN_NEIN')); }
+    /* 0.12.41 (Punkt 2 und 11, 24.11.2026): der Endpunkt nimmt jedes nicht leere Text-Wortzeichen - also wird damit gefragt. */
+    if (!is_string($token) || trim($token) === '') { return array(null, fb_klartext('TEST.A_TOKEN_NEIN')); }
     /* O9 (Durchgang 30.09.2026): Zeitgrenze 3 s, und KEINE Antwort ist
      * "nicht feststellbar" (grauer Strich mit Satz), kein Kreuz (Regeln/04,
      * Selbstpruefung ruft den eigenen Endpunkt auf). Bis 0.12.10 stand nach

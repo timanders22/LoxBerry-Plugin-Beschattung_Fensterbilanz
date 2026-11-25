@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.12.41)
 require_once __DIR__ . '/sicherung.php';         // 0.12.32: gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php)
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.12.41, Regeln/07)
 /**
  * Fensterbilanz - gemeinsame Bibliothek
  *
@@ -1214,9 +1216,13 @@ function fb_config_freigeben($fp)
     if ($fp) { @flock($fp, LOCK_UN); fclose($fp); $GLOBALS['fb_config_sperre_tiefe'] = 0; }
 }
 
-function fb_config_speichern($cfg)
+function fb_config_speichern($cfg, $lade_behalten = true)
 {
     $p = fb_paths();
+    /* 0.12.41 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen, beim Vervollstaendigen (schreibt Dateiwerte) und beim Knopf "Angezeigte Werte uebernehmen". */
+    if ($lade_behalten && is_array($cfg)) { $cfg = fb_lade_behalten($cfg); }
     if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0700, true); }
     if (!fb_json_schreiben($p['config'], $cfg, 0600)) { return false; }
     list($zurueck, $zustand) = fb_json_lesen_geprueft($p['config']);
@@ -1246,6 +1252,59 @@ function fb_config_speichern($cfg)
  * NUR aus dem angemeldeten Bereich aufrufen - die Funktion schreibt.
  * Rueckgabe: die Namen der Schluessel, die gefehlt haben.
  */
+/* ==================================================================
+ * Lade-Beanstandungen (0.12.41; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * fb_config_richten() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Grenzen (Zeichen entfernt,
+ * geklemmt, angeglichen, ein doppeltes Kuerzel abgeschaltet). Das bleibt - aber jede solche Ersetzung wird gemeldet
+ * (Reiter Test rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben.
+ * ================================================================== */
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function fb_lade_roh()
+{
+    list($roh, $zustand) = fb_json_lesen_geprueft(fb_paths()['config']);
+    return ($zustand === 'ok' && is_array($roh)) ? $roh : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen; geheim sind die Sprechtoken (aktionstoken immer). $maskiert = false
+ *  fuer die Selbstpruefung (Text, maskiert bei der Ausgabe). */
+function fb_lade_b($maskiert = true)
+{
+    $b = fb_sicherung_beschreibung();
+    $b['geheim'] = array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim());
+    $b['e'] = $maskiert ? 'fb_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst fb_config(false)). */
+function fb_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = fb_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(fb_lade_b($maskiert), $d, is_array($cfg) ? $cfg : fb_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function fb_lade_behalten(array $cfg)
+{
+    $d = fb_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = fb_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(fb_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function fb_lade_melden(array $beanst)
+{
+    $d = fb_paths()['datadir'];
+    if ($d === '' || !is_dir($d)) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        fb_log(sicherung_lade_protokollzeile($beanst));
+    }
+}
+
 function fb_cfg_vervollstaendigen()
 {
     $p = fb_paths();
@@ -1260,7 +1319,12 @@ function fb_cfg_vervollstaendigen()
          * auch waehrend ein anderes Formular speichert. */
         $fp = fb_config_sperre();
         $cfg = fb_config();
-        fb_config_speichern($cfg);
+        /* 0.12.41 (Lade-Beanstandungen, Regeln/05 "Vervollstaendigen, Bauform Docker NG"): geschrieben werden die
+         * WERTE AUS DER DATEI plus die fehlenden Schluessel (mit dem Wert, den fb_config() liefert); bis 0.12.40 die
+         * ganze gerichtete Konfiguration - ein doppeltes Kuerzel schaltete dabei ein Fenster still aus. */
+        $fb_neu = is_array($roh) ? $roh : array();
+        foreach ($fehlten as $fb_k) { $fb_neu[$fb_k] = array_key_exists($fb_k, $cfg) ? $cfg[$fb_k] : fb_vorgaben()[$fb_k]; }
+        fb_config_speichern($fb_neu, false);
         fb_config_freigeben($fp);
         fb_log('Konfiguration vervollstaendigt: ' . implode(', ', $fehlten));
     }
@@ -1318,6 +1382,9 @@ function fb_token()
      * Seite GESAGT (fb_token_gewuerfelt()), nicht nur protokolliert. */
     $cfg = fb_config();
     if (fb_token_gueltig($cfg['aktionstoken'])) { return $cfg['aktionstoken']; }
+    /* 0.12.41 (Lade-Beanstandungen, Regeln/05): ein vorhandenes Token in falscher Form bleibt und wird gemeldet
+     * (fb_lade_beanstandungen()); bis 0.12.40 wurde es hier ersetzt ('ersetzt') - jede Adresse in Loxone bekam 403. */
+    if (is_string($cfg['aktionstoken']) && trim($cfg['aktionstoken']) !== '') { return $cfg['aktionstoken']; }
     $fp = fb_config_sperre();
     if ($fp === null) {
         $war = $cfg['aktionstoken'];
@@ -1327,7 +1394,9 @@ function fb_token()
         return (string) $cfg['aktionstoken'];
     }
     $cfg = fb_config();                     // zweiter Blick unter der Sperre
-    if (!fb_token_gueltig($cfg['aktionstoken'])) {
+    /* 0.12.41 (Punkt 2 und 11, 24.11.2026): dieselbe Bedingung wie oben - ein inzwischen geschriebenes formwidriges,
+     * nicht leeres Wortzeichen bleibt. */
+    if (!is_string($cfg['aktionstoken']) || trim($cfg['aktionstoken']) === '') {
         $war = $cfg['aktionstoken'];
         $cfg['aktionstoken'] = fb_token_erzeugen();
         fb_config_speichern($cfg);
@@ -1602,7 +1671,9 @@ function fb_formtoken()
      * (gemessen, Code-Pruefer Nr. 1: ein POST mit diesem Merkmal leerte das
      * Protokoll). */
     $t = fb_config()['aktionstoken'];
-    if (!fb_token_gueltig($t)) { return ''; }
+    /* 0.12.41 (Lade-Beanstandungen, Regeln/05, Entscheidung 2 des Hausherrn 24.11.2026): ein vorhandenes Token falscher
+     * Form gilt weiter (fb_token()) - also traegt es auch das Merkmal; bis 0.12.40 nur ein formgueltiges. Nur Text. */
+    if (!is_string($t) || trim($t) === '') { return ''; }
     return hash_hmac('sha256', 'formular-v1', $t);
 }
 
@@ -3712,6 +3783,7 @@ function fb_mqtt_senden($cfg, $stand)
         return 0;
     }
     $praefix = (string) $cfg['mqtt_topic'];
+    fb_praefix_haus_melden($cfg);   // 0.12.41: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     /* Gruppe 3 / MQTT (0.12.19, Entwurf fb 2.2 a): der Zaehler des Lebenszeichens eins weiter. Laesst er sich
      * nicht schreiben, geht kein Lebenszeichen hinaus (kein erfundener Zaehler) - Loxone meldet es dann. */
     $zaehler = fb_lebenszeichen_naechster();
@@ -5098,19 +5170,20 @@ function fb_median($reihe)
 /** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
 function fb_ansage_schluessel()
 {
-    return array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft', 'ansage_aus_datei');
+    return array('tts', 'ansage_regeln', 'ansage_haken', 'meldung', 'ansage_token_herkunft', 'ansage_aus_datei');
 }
 
 /** Die Vorgaben: nie gesetzt = ab Werk EIN. Ein gespeicherter Block bleibt, auch 'aus'. */
 function fb_ansage_vorgaben()
 {
-    return array('tts' => ansage_werk_block(), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('beschatten' => 1, 'geber' => 1), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
+    return array('tts' => ansage_werk_block(), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('beschatten' => 1, 'geber' => 1), 'meldung' => meld_vorgaben(fb_meld_haken_vorgabe(), fb_meld_haken_vorgabe()), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
 }
 
 /** Wertpruefung fuer die Sprachansagen: null = nicht meine Schluessel, sonst tauglich ja/nein. */
 function fb_ansage_wert($k, $w)
 {
     if (!in_array((string) $k, fb_ansage_schluessel(), true)) { return null; }
+    if ((string) $k === 'meldung') { return !meld_block_pruefen($w, fb_ansage_anlaesse()); }     // 0.12.41
     $g = '';
     switch ((string) $k) {
         case 'tts':
@@ -5203,7 +5276,16 @@ function fb_ansage_anlaesse()
 }
 
 /** Ist der Haken dieses Anlasses gesetzt? Fehlt er, gilt die Vorgabe der Linie. */
+/** 0.12.41: Will die Ansage ODER die Meldung an SignalBot diesen Anlass? So legt die Erkennung ihn fuer beide Wege hin;
+ * fb_ansage_senden() trennt sie wieder (fb_meld_nur_ansage()). */
 function fb_ansage_anlass_an($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    return fb_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(fb_meld_block($cfg), (string) $a);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? (bis 0.12.41 hiess das fb_ansage_anlass_an()) */
+function fb_ansage_anlass_sprache($a, $cfg = null)
 {
     if ($cfg === null) { $cfg = fb_ansage_cfg(); }
     $h = (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken'])) ? $cfg['ansage_haken'] : array();
@@ -5248,12 +5330,14 @@ function fb_ansage_post_innen(array $post)
     $h = array();
     $neu = ansage_formular_lesen($post, fb_tts($cfg), $m, $b, array('modi' => fb_ansage_modi(), 'ziele' => true, 'token_vor_ort' => true, 'aus_gewinnt' => true), $k, $h);
     list($r, $hk) = ansage_regeln_formular($post, fb_ansage_regeln($cfg), fb_ansage_anlaesse(), $m, $b, $k);
+    // 0.12.41: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das ganze Formular an, wie die Regeln)
+    $meld = meld_formular_lesen($post, array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, fb_ansage_anlaesse(), $m, $b, fb_meld_k(), fb_meld_haken_vorgabe());
     if ($m) {
         $t = array();
         foreach ($m as $x) { $t[] = $x['text']; }
         $e = array('_bean' => array_values($b));
         foreach ($post as $n => $w) {
-            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0) {
+            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0 || strncmp((string) $n, 'meld_', 5) === 0) {
                 if ((string) $n !== 'tts_alexa_token' && (string) $n !== 'tts_google_token') { $e[$n] = $w; }
             }
         }
@@ -5265,6 +5349,7 @@ function fb_ansage_post_innen(array $post)
     $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
+    $cfg['meldung'] = $meld;
     $t = array();
     foreach ($h as $x) { $t[] = $x['text']; }
     return array(fb_ansage_cfg_schreiben($cfg), array(), $t);
@@ -5288,8 +5373,14 @@ function fb_ansage_form_html($felder)
     $o[] = '<form action="index.php" method="post" autocomplete="off">' . $felder;
     $o[] = ansage_formular_html(fb_tts($cfg), $h + array('modi' => fb_ansage_modi(), 'ziele' => true, 'ziele_post' => isset($ein['tts_ziel_art']) ? $ein : null), $k);
     $o[] = ansage_regeln_html(fb_ansage_regeln($cfg), isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken']) ? $cfg['ansage_haken'] : array('beschatten' => 1, 'geber' => 1), fb_ansage_anlaesse(), $h + array('token_vor_ort' => true), $k);
+    // 0.12.41: Statusmeldungen an SignalBot (gemeinsames Modul meldung.php), im selben Formular
+    $o[] = '<h3>' . $e(fb_t('SIGNALMELDUNG.TITEL')) . '</h3>';
+    $o[] = meld_formular_html(fb_meld_block($cfg), fb_ansage_anlaesse(), $h, fb_meld_k());
+    list(, $meld_lage) = meld_pruefzeile(fb_meld_block($cfg), fb_meld_bean($cfg), fb_meld_k());
+    $o[] = '<div class="sm-hilfe">' . $e(fb_t('SIGNALMELDUNG.F_TEST') . ' ' . $meld_lage) . '</div>';
     $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_speichern" value="1">' . $e(fb_t('ANSAGEPLUGIN.K_SPEICHERN')) . '</button>';
     $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(fb_t('ANSAGEPLUGIN.K_TEST')) . '</button></div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">' . $e(fb_t('SIGNALMELDUNG.K_TEST')) . '</button></div>';     // 0.12.41
     $o[] = '</form>';
     $o[] = fb_ansage_lage_html($cfg);
     return implode("\n", $o) . "\n";
@@ -5481,6 +5572,8 @@ function fb_ansage_senden($jetzt = null)
         $conf = fb_ansage_cfg();
         fb_ansage_token_pflegen($conf);
         $conf = fb_ansage_cfg();
+        fb_meld_senden($frisch, $conf);     // 0.12.41: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = fb_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, fb_tts($conf), fb_ansage_regeln($conf), fb_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -7113,6 +7206,7 @@ function fb_sicherung_beschreibung(&$namen = null)
                  + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
         'ansage_haken' => sicherung_block(array('beschatten', 'geber')) + array('fehlt' => 'behalten'),
+        'meldung'      => meld_sicherung_knoten(fb_ansage_anlaesse(), fb_meld_k()),     // 0.12.41
         'fenster' => sicherung_liste(array_keys(fb_fenster_vorgabe()), 'kuerzel'),
         'raumflaechen' => sicherung_offen(),
         /* Gruppe 36 (0.12.20): eine Sicherung bis 0.12.19 kennt endpunkt_ein nicht - der geltende Wert
@@ -7260,6 +7354,10 @@ function fb_sicherung_wert($k, $w, &$namen = null)
         case 'aktionstoken':
             return ($w === '' || fb_token_gueltig($w)) ? array() : array(fb_t('EINST.SICH_W_TOKEN'));
         case 'mqtt_topic':
+            /* 0.12.41: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if (fb_thema_gueltig($w) && hb_bereich($w) !== '') {
+                return array($k . ': ' . sprintf(fb_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+            }
             return fb_thema_gueltig($w) ? array() : array(sprintf(fb_t('EINST.SICH_W_THEMA'), $k));
         case 'mqtt_praefix_alt':
             return ($w === '' || fb_thema_gueltig($w)) ? array()
@@ -7897,4 +7995,112 @@ function fb_vorlage_befehle()
      * bb_vorlage() der Stammfassung 1.0.2. Inhalt sonst byte-gleich; XML liest CRLF und LF gleich, ein Neuimport ist
      * nicht noetig. Der Reiter Test prueft LF == CRLF fuer alle drei Vorlagen. */
     return array('VQ_fensterbilanz_mqtt.xml', implode("\r\n", $x) . "\r\n");
+}
+
+/**
+ * 0.12.41 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function fb_pruef_praefix_haus($cfg)
+{
+    $p = (isset($cfg['mqtt_topic']) && (string) $cfg['mqtt_topic'] !== '' ? (string) $cfg['mqtt_topic'] : 'fenster');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(fb_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(fb_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(fb_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 0.12.41: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function fb_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (isset($cfg['mqtt_topic']) && (string) $cfg['mqtt_topic'] !== '' ? (string) $cfg['mqtt_topic'] : 'fenster');
+    if ($merk === null) {
+        $merk = fb_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        fb_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('fb_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.12.41, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23.11.2026 ("haus/meldung (Empfehlung)", "Wie empfohlen"): dieselben
+ * Anlaesse wie die Ansage, eigener Haken je Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung legt
+ * einen Anlass hin, wenn Ansage ODER Meldung ihn will (fb_ansage_anlass_an()); der Sender trennt die Wege wieder.
+ */
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function fb_meld_haken_vorgabe()
+{
+    return array('beschatten' => 1, 'geber' => 1);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function fb_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    list($b) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, fb_ansage_anlaesse(), fb_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function fb_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    list(, $f) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, fb_ansage_anlaesse(), fb_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function fb_meld_k()
+{
+    return fb_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function fb_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $anl = fb_ansage_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !fb_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function fb_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = fb_ansage_cfg(); }
+    $b = fb_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, fb_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        fb_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function fb_meld_test()
+{
+    $r = meld_testmeldung(fb_meld_k());
+    fb_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
 }

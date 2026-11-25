@@ -57,7 +57,9 @@ $fb_cfg  = fb_config(false);          // NUR lesen - siehe Kopf
  * (string) - ein Wortzeichen als Liste wurde zu der Zeichenkette, die PHP aus
  * Listen macht, und ?token=<diese Zeichenkette> bekam HTTP 200 (gemessen unter
  * 7.4 und 8.5, Code-Pruefer Nr. 1). Ein unbrauchbares gilt wie keines: 403. */
-$fb_soll = fb_token_gueltig($fb_cfg['aktionstoken']) ? $fb_cfg['aktionstoken'] : '';
+/* 0.12.41 (Entscheidung des Hausherrn 24.11.2026, Punkt 2 und 11): ein formwidriges, nicht leeres Wortzeichen gilt
+ * weiter (gemeldet ueber fb_lade_beanstandungen()); Liste und Zahl gelten weiter wie keines (C1). */
+$fb_soll = (is_string($fb_cfg['aktionstoken']) && trim($fb_cfg['aktionstoken']) !== '') ? $fb_cfg['aktionstoken'] : '';
 /* is_string() VOR dem Cast, an JEDEM Parameter dieser Datei.
  *
  * Ein Feldparameter (?token[]=x) wird von (string) zu "array" - unter PHP 8
